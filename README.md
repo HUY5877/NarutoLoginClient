@@ -2,7 +2,7 @@
 
 React / TSX 前端和 TypeScript 客户端后端放在同一个仓库。客户端后端生成唯一任务 ID，将任务直接投放到 Redis，Python 工作进程通过 Redis 取任务并上传二维码到阿里云 OSS；客户端后端检查 OSS，页面读取并显示二维码。
 
-**当前已接入 Redis 与 OSS 的客户端协议，Redis 实例尚未配置，Python 项目仍需适配新队列协议。** 网站可以独立启动和部署；未配置 `REDIS_URL` 时，申请接口明确返回 `503 / REDIS_NOT_CONFIGURED`，不会假装投递成功。当前无法运行完整二维码流程，也尚未实现雷电点击、真实扫码确认或登录成功回调。
+**当前客户端已配置 Redis DB 0 与 OSS，Python 项目仍需适配新队列协议。** 网站可以独立启动和部署；其他环境未配置 `REDIS_URL` 时，申请接口明确返回 `503 / REDIS_NOT_CONFIGURED`，不会假装投递成功。完整的自动二维码流程尚未接通，也尚未实现雷电点击、真实扫码确认或登录成功回调。
 
 ## 本地启动
 
@@ -95,6 +95,8 @@ OSS_ACCESS_KEY_SECRET=your-access-key-secret
 Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run build`，静态输出目录为 `src/frontend/dist`；`api` 下的函数承接 `/api` 请求。网页和接口共用一个域名，不需要对外开放本地的 `4300` 端口。
 
 已关联 [sust-acmer/naruto-login-client](https://vercel.com/sust-acmer/naruto-login-client) 与本仓库，生产分支为 `main`。每次推送 `main` 都会自动构建并更新生产网站，无需 `.github` 工作流。
+
+生产网站：[登录中心](https://naruto-login-client.vercel.app)。本地 `.env` 和 Vercel 的 Production、Preview 已分别配置 `REDIS_URL`，使用同一个 Redis 的 DB 0；凭据不写入代码或文档。
 
 提交作者邮箱必须能关联到当前 GitHub 账号；本仓库已使用该账号的 GitHub noreply 邮箱。若换电脑后 Vercel 提示无法识别提交作者，请检查该仓库的 `git config user.email`。
 
