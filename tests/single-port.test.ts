@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { devNull } from 'node:os';
@@ -42,8 +43,8 @@ async function assertHmrConnection(base: string, token: string) {
 }
 
 async function assertModuleGraph(base: string, main: string) {
-  const visited = new Set<string>(['/src/frontend/main.tsx']);
-  let modules = [{ path: '/src/frontend/main.tsx', source: main }];
+  const visited = new Set<string>(['/main.tsx']);
+  let modules = [{ path: '/main.tsx', source: main }];
   while (modules.length) {
     const pending = new Set<string>();
     for (const { path, source } of modules) {
@@ -65,8 +66,8 @@ async function assertModuleGraph(base: string, main: string) {
       return { path, source: await response.text() };
     }));
   }
-  assert(visited.has('/src/frontend/App.tsx'));
-  assert(visited.has('/src/frontend/styles.css'));
+  assert(visited.has('/App.tsx'));
+  assert(visited.has('/styles.css'));
   assert([...visited].some(path => /\/deps\/react\.js\?v=/.test(path)), '必须验证实际预构建依赖');
 }
 
@@ -121,15 +122,15 @@ test('开发页面、模块、HMR 和 API 共用一个端口，未知 API 保持
     await delay(100);
   }
 
-  const [page, main, client, health, missing, denied] = await Promise.all(
-    ['/', '/src/frontend/main.tsx', '/@vite/client', '/api/health', '/api/does-not-exist', '/.env']
+  const [page, main, client, health, missing] = await Promise.all(
+    ['/', '/main.tsx', '/@vite/client', '/api/health', '/api/does-not-exist']
       .map(path => fetch(`${base}${path}`, { signal: AbortSignal.timeout(10000) })),
   );
   assert.equal(page.status, 200);
   assert.match(page.headers.get('content-type') ?? '', /text\/html/);
   const html = await page.text();
   assert.match(html, /src="\/@vite\/client"/);
-  assert.match(html, /src="\/src\/frontend\/main\.tsx"/);
+  assert.match(html, /src="\/main\.tsx"/);
 
   assert.equal(main.status, 200);
   assert.match(main.headers.get('content-type') ?? '', /javascript/);
@@ -153,7 +154,15 @@ test('开发页面、模块、HMR 和 API 共用一个端口，未知 API 保持
   assert.equal(missing.status, 404);
   assert.match(missing.headers.get('content-type') ?? '', /application\/json/);
   assert.deepEqual(await missing.json(), { error: '接口不存在。' });
-  assert.equal(denied.status, 403);
-  await denied.body?.cancel();
+  // The project root is outside the frontend root; check Vite's absolute-file route.
+  // The tracked example guarantees coverage even when no local .env exists.
+  const privateFiles = ['.env.example'];
+  if (existsSync(resolve(root, '.env'))) privateFiles.push('.env');
+  for (const file of privateFiles) {
+    const path = resolve(root, file).replaceAll('\\', '/');
+    const denied = await fetch(`${base}/@fs/${encodeURI(path)}`, { signal: AbortSignal.timeout(10000) });
+    await denied.body?.cancel();
+    assert.equal(denied.status, 403, `${file} must not be served`);
+  }
   await assertHmrConnection(base, JSON.parse(tokenMatch[1]) as string);
 });

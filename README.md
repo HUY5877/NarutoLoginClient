@@ -121,10 +121,11 @@ OSS_ACCESS_KEY_SECRET=your-access-key-secret
 
 组件配置位于 `components.json`，新增组件可执行 `npm exec -- shadcn add <组件名>`。`@/` 指向 `src/frontend/`。扫码申请、轮询、过期与取消逻辑独立在 `hooks/use-login-session.ts`，更换界面不改变 API 协议。
 
-前端、后端和测试共用一份 `tsconfig.json`，路径别名也只在这里定义。Vite 共用一份配置，分别构建前端到 `dist/`、后端到 `dist-server/`。根目录仅保留四个 JSON 文件：`package.json` 管理命令与依赖，`package-lock.json` 锁定依赖版本，`tsconfig.json` 检查 TypeScript，`components.json` 配置 shadcn CLI。
+前端、后端和测试共用一份 `tsconfig.json`，路径别名也只在这里定义。Vite 共用一份配置，以 `src/frontend/` 为前端根目录，入口为其中的 `index.html`；分别构建前端到项目根目录的 `dist/`、后端到 `dist-server/`。根目录仅保留四个 JSON 文件：`package.json` 管理命令与依赖，`package-lock.json` 锁定依赖版本，`tsconfig.json` 检查 TypeScript，`components.json` 配置 shadcn CLI。
 
 ```text
 src/frontend/      TSX 登录页、shadcn 主题
+  index.html       页面入口
   components/ui/   官方 shadcn/ui 组件
   hooks/           登录申请与二维码轮询
 src/server/        TypeScript HTTP 后端、任务网关、OSS 读适配器

@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "tsx watch src/server/index.ts --dev",
     "typecheck": "tsc --noEmit",
-    "build": "npm run typecheck && vite build && vite build --ssr src/server/index.ts --outDir dist-server",
+    "build": "npm run typecheck && vite build && vite build --ssr src/server/index.ts",
     "start": "node dist-server/index.js",
     "test": "tsx --test tests/*.test.ts"
   },
