@@ -130,7 +130,43 @@
 }
 
 .login-shell {
-  background: linear-gradient(180deg, #eef3f5 0, #f7f9fa 38rem);
+  position: relative;
+  isolation: isolate;
+}
+
+.village-backdrop {
+  position: fixed;
+  z-index: -1;
+  inset: 0;
+  overflow: hidden;
+  background: #d6e5e8;
+  pointer-events: none;
+}
+
+.village-backdrop picture,
+.village-backdrop img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.village-backdrop img {
+  object-fit: cover;
+  object-position: center 28%;
+}
+
+.village-backdrop::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, #eef3f51a 0%, #eef3f533 55%, #eef3f559 100%);
+  content: '';
+}
+
+.village-footer {
+  padding: 0.75rem 1rem;
+  border: 1px solid #ffffffb3;
+  border-radius: 0.875rem;
+  background: #ffffffed;
 }
 
 .headband-mark {
@@ -150,9 +186,9 @@
   isolation: isolate;
   overflow: hidden;
   min-height: 14.5rem;
-  border: 1px solid #d6e2e7;
+  border: 1px solid #ffffffb3;
   border-radius: 1.25rem;
-  background: #e5edf1;
+  background: linear-gradient(100deg, #f1f6f8f5 0%, #eef4f7ed 48%, #e5edf1a6 100%);
 }
 
 .village-hero-copy {
@@ -232,6 +268,8 @@
 }
 
 @media (max-width: 639px) {
+  .village-backdrop img { object-position: 51% top; }
+  .village-footer { padding: 0.625rem 0.75rem; }
   .village-hero { min-height: 14rem; }
   .village-hero-copy { width: 70%; padding: 1.4rem 1.2rem; }
   .village-hero-copy p { max-width: 11rem; font-size: 0.75rem; line-height: 1.8; }

@@ -146,6 +146,12 @@ export default function App() {
 
   return (
     <div className="login-shell min-h-svh text-foreground">
+      <div className="village-backdrop" aria-hidden="true">
+        <picture>
+          <source media="(max-width: 639px)" srcSet="/images/konoha-background-mobile.webp" />
+          <img src="/images/konoha-background.webp" alt="" width="1536" height="1024" fetchPriority="high" />
+        </picture>
+      </div>
       <header className="border-b border-border/70 bg-white/85">
         <div className="mx-auto flex h-18 max-w-5xl items-center justify-between gap-3 px-5 sm:px-8">
           <div className="flex items-center gap-3" aria-label="忍者日常">
@@ -371,7 +377,7 @@ export default function App() {
           </div>
         </div>
 
-        <footer className="mt-6 flex flex-wrap items-center justify-between gap-2 text-xs leading-5 text-muted-foreground">
+        <footer className="village-footer mt-6 flex flex-wrap items-center justify-between gap-2 text-xs leading-5 text-muted-foreground">
           <span className="flex items-center gap-2"><img src="/icons/leaf-village.svg" alt="" width="16" height="16" aria-hidden="true" />忍者日常 · 木叶相见</span>
           <span>模拟体验 · 非官方项目</span>
         </footer>
