@@ -9,7 +9,7 @@ import type { LoginEventService } from './login-events.js';
 
 export interface Dependencies {
   events: Pick<LoginEventService, 'create' | 'getForUser' | 'getActive' | 'recordStatus'>;
-  auth: Pick<AuthService, 'register' | 'login' | 'getUser' | 'logout' | 'listApplications' | 'reviewApplication'>;
+  auth: Pick<AuthService, 'register' | 'login' | 'getUser' | 'listApplications' | 'reviewApplication'>;
   storage: ObjectReader;
   now?: () => number;
 }
@@ -24,7 +24,7 @@ function sessionId(req: Request): string {
 
 function sessionToken(req: Request): string | undefined {
   const value = req.get('Cookie')?.split(';').map(part => part.trim()).find(part => part.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
-  return value && /^[0-9a-f]{64}$/.test(value) ? value : undefined;
+  return value && value.length <= 2048 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value) ? value : undefined;
 }
 
 function cookieOptions(req: Request): CookieOptions {
@@ -63,8 +63,7 @@ export function createApp(config: Config, { events, auth, storage, now = Date.no
     res.cookie(cookieName, result.token, { ...cookieOptions(req), expires: result.expiresAt });
     res.json({ user: result.user });
   });
-  app.post('/api/auth/logout', async (req, res) => {
-    await auth.logout(sessionToken(req));
+  app.post('/api/auth/logout', (req, res) => {
     res.clearCookie(cookieName, cookieOptions(req));
     res.status(204).end();
   });

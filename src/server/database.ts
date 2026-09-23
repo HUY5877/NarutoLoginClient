@@ -23,19 +23,11 @@ export interface StoredUser {
   isAdmin: boolean;
 }
 
-export interface StoredSession {
-  tokenHash: string;
-  userId: string;
-  expiresAt: Date;
-}
-
 export interface AuthStore {
   initialize(): Promise<void>;
   createRegistration(user: StoredUser, applicationId: string, now: Date): Promise<RegistrationApplication>;
   findUser(usernameKey: string): Promise<(StoredUser & { applicationStatus?: ApplicationStatus | null }) | null>;
-  createSession(session: StoredSession): Promise<void>;
-  findSessionUser(tokenHash: string, now: Date): Promise<PublicUser | null>;
-  deleteSession(tokenHash: string): Promise<void>;
+  findActiveUser(userId: string): Promise<PublicUser | null>;
   listRegistrationApplications(status: ApplicationStatus | 'all', limit: number): Promise<RegistrationApplication[]>;
   reviewRegistration(applicationId: string, adminId: string, decision: 'approved' | 'rejected', reason: string | null, now: Date): Promise<RegistrationApplication>;
   close(): Promise<void>;
@@ -133,14 +125,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS naruto_login_registration_applications_pending
   ON naruto_login.registration_applications (user_id) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS naruto_login_registration_applications_status_created_idx
   ON naruto_login.registration_applications (status, created_at DESC);
-CREATE TABLE IF NOT EXISTS naruto_login.sessions (
-  token_hash text PRIMARY KEY CHECK (token_hash ~ '^[a-f0-9]{64}$'),
-  user_id uuid NOT NULL REFERENCES naruto_login.users(id) ON DELETE CASCADE,
-  expires_at timestamptz NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS naruto_login_sessions_expires_at_idx ON naruto_login.sessions (expires_at);
-CREATE INDEX IF NOT EXISTS naruto_login_sessions_user_id_idx ON naruto_login.sessions (user_id);
 CREATE TABLE IF NOT EXISTS naruto_login.login_events (
   id uuid PRIMARY KEY,
   user_id uuid NOT NULL REFERENCES naruto_login.users(id) ON DELETE CASCADE,
@@ -203,11 +187,6 @@ export class PgAuthStore implements AuthStore, LoginEventStore {
         // Serialize schema setup across concurrent cold starts without touching existing data.
         await client.query('SELECT pg_advisory_xact_lock(19830527, 1179018068)');
         await client.query(schema);
-        // Bound maintenance work during startup; the expiration index avoids a full-table scan.
-        await client.query(`DELETE FROM naruto_login.sessions WHERE token_hash IN (
-          SELECT token_hash FROM naruto_login.sessions WHERE expires_at <= now()
-          ORDER BY expires_at LIMIT 1000
-        )`);
       }).catch(error => {
         this.initialization = undefined;
         throw error;
@@ -257,25 +236,12 @@ export class PgAuthStore implements AuthStore, LoginEventStore {
     return result.rows[0] ?? null;
   }
 
-  async createSession(session: StoredSession): Promise<void> {
-    await this.pool.query(
-      'INSERT INTO naruto_login.sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)',
-      [session.tokenHash, session.userId, session.expiresAt],
-    );
-  }
-
-  async findSessionUser(tokenHash: string, now: Date): Promise<PublicUser | null> {
+  async findActiveUser(userId: string): Promise<PublicUser | null> {
     const result = await this.pool.query<PublicUser>(
-      `SELECT u.id, u.username, u.is_admin AS "isAdmin" FROM naruto_login.sessions s
-       JOIN naruto_login.users u ON u.id = s.user_id
-       WHERE s.token_hash = $1 AND s.expires_at > $2 AND u.is_invalid = false`,
-      [tokenHash, now],
+      'SELECT id, username, is_admin AS "isAdmin" FROM naruto_login.users WHERE id = $1 AND is_invalid = false',
+      [userId],
     );
     return result.rows[0] ?? null;
-  }
-
-  async deleteSession(tokenHash: string): Promise<void> {
-    await this.pool.query('DELETE FROM naruto_login.sessions WHERE token_hash = $1', [tokenHash]);
   }
 
   async listRegistrationApplications(status: ApplicationStatus | 'all', limit: number): Promise<RegistrationApplication[]> {
@@ -305,9 +271,6 @@ export class PgAuthStore implements AuthStore, LoginEventStore {
       if (!application) throw new ApplicationReviewError('NOT_FOUND');
       if (application.status !== 'pending') throw new ApplicationReviewError('ALREADY_REVIEWED');
       await client.query('UPDATE naruto_login.users SET is_invalid = $2 WHERE id = $1', [application.userId, decision === 'rejected']);
-      if (decision === 'rejected') {
-        await client.query('DELETE FROM naruto_login.sessions WHERE user_id = $1', [application.userId]);
-      }
       await client.query(
         `UPDATE naruto_login.registration_applications SET status = $2, reviewed_at = $3, reviewed_by = $4, reason = $5
          WHERE id = $1 AND status = 'pending'`, [applicationId, decision, now, adminId, reason],

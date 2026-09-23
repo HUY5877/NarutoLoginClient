@@ -1,21 +1,31 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { decodeJwt, decodeProtectedHeader, jwtVerify, SignJWT, type JWTPayload } from 'jose';
 import type { Config } from './config.js';
 import { ApplicationReviewError, PgAuthStore, UsernameTakenError, type ApplicationStatus,
-  type AuthStore, type PublicUser, type RegistrationApplication, type StoredSession, type StoredUser } from './database.js';
+  type AuthStore, type PublicUser, type RegistrationApplication, type StoredUser } from './database.js';
 import { ApiError } from './errors.js';
 
 export type User = PublicUser;
 export interface AuthSession { user: User; token: string; expiresAt: Date }
 export interface AuthOptions { store?: AuthStore; now?: () => number }
 
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const JWT_TTL_SECONDS = 7 * 24 * 60 * 60;
+const JWT_ISSUER = 'naruto-login-client';
+const JWT_AUDIENCE = 'naruto-login-client';
 const unavailable = () => new ApiError(503, '账号服务暂时不可用，请稍后重试。', 'AUTH_UNAVAILABLE');
-const tokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
 const publicUser = (user: User): User => ({ id: user.id, username: user.username, isAdmin: user.isAdmin === true });
 const requireAdmin = (admin: User) => {
   if (admin.isAdmin !== true) throw new ApiError(403, '需要管理员权限。', 'ADMIN_REQUIRED');
 };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function validClaims(payload: JWTPayload, now: number): boolean {
+  return typeof payload.sub === 'string' && uuid.test(payload.sub)
+    && typeof payload.jti === 'string' && uuid.test(payload.jti)
+    && typeof payload.iat === 'number' && Number.isSafeInteger(payload.iat) && payload.iat >= 0 && payload.iat <= now
+    && typeof payload.exp === 'number' && Number.isSafeInteger(payload.exp) && payload.exp > now
+    && payload.exp > payload.iat && payload.exp - payload.iat <= JWT_TTL_SECONDS;
+}
 
 function credentials(body: unknown): { username: string; usernameKey: string; password: string } {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new ApiError(400, '请填写用户名和密码。', 'INVALID_CREDENTIALS');
@@ -41,7 +51,7 @@ export class AuthService {
   private initialization?: Promise<void>;
   private readonly now: () => number;
 
-  constructor(private readonly config: Pick<Config, 'databaseUrl' | 'timeoutMs'>, options: AuthOptions = {}) {
+  constructor(private readonly config: Pick<Config, 'databaseUrl' | 'timeoutMs' | 'jwtSecret'>, options: AuthOptions = {}) {
     this.store = options.store;
     this.now = options.now ?? Date.now;
   }
@@ -71,10 +81,22 @@ export class AuthService {
     catch { throw unavailable(); }
   }
 
-  private newSession(user: User): { result: AuthSession; stored: StoredSession } {
-    const token = randomBytes(32).toString('hex');
-    const expiresAt = new Date(this.now() + SESSION_TTL_MS);
-    return { result: { user: publicUser(user), token, expiresAt }, stored: { tokenHash: tokenHash(token), userId: user.id, expiresAt } };
+  private jwtKey(): Uint8Array {
+    const key = new TextEncoder().encode(this.config.jwtSecret ?? '');
+    if (key.byteLength < 32) throw new ApiError(503, '登录签名密钥未配置，请先配置 JWT_SECRET。', 'JWT_NOT_CONFIGURED');
+    return key;
+  }
+
+  private async newSession(user: User): Promise<AuthSession> {
+    const key = this.jwtKey();
+    const issuedAt = Math.floor(this.now() / 1000);
+    const expires = issuedAt + JWT_TTL_SECONDS;
+    try {
+      const token = await new SignJWT().setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+        .setSubject(user.id).setIssuer(JWT_ISSUER).setAudience(JWT_AUDIENCE)
+        .setIssuedAt(issuedAt).setExpirationTime(expires).setJti(randomUUID()).sign(key);
+      return { user: publicUser(user), token, expiresAt: new Date(expires * 1000) };
+    } catch { throw unavailable(); }
   }
 
   async register(body: unknown): Promise<{ application: RegistrationApplication; message: string }> {
@@ -103,20 +125,31 @@ export class AuthService {
       if (user.applicationStatus === 'rejected') throw new ApiError(403, '注册申请未通过审核，请联系管理员。', 'REGISTRATION_REJECTED');
       throw new ApiError(403, '账号已被停用，请联系管理员。', 'ACCOUNT_DISABLED');
     }
-    const session = this.newSession(user);
-    await this.request(store => store.createSession(session.stored));
-    return session.result;
+    return await this.newSession(user);
   }
 
   async getUser(token: string | undefined): Promise<User | null> {
-    if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
-    const user = await this.request(store => store.findSessionUser(tokenHash(token), new Date(this.now())));
+    if (!token || token.length > 4096 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)) return null;
+    const now = Math.floor(this.now() / 1000);
+    // Reject malformed input without requiring a configured key or a database.
+    // Decoding is only a format check; identity is trusted after jwtVerify below.
+    try {
+      const header = decodeProtectedHeader(token);
+      if (header.alg !== 'HS256' || header.typ !== 'JWT' || !validClaims(decodeJwt(token), now)) return null;
+    } catch { return null; }
+    const key = this.jwtKey();
+    let subject: string;
+    try {
+      const { payload } = await jwtVerify(token, key, {
+        algorithms: ['HS256'], issuer: JWT_ISSUER, audience: JWT_AUDIENCE, typ: 'JWT',
+        requiredClaims: ['sub', 'iat', 'exp', 'jti'], maxTokenAge: JWT_TTL_SECONDS,
+        currentDate: new Date(this.now()),
+      });
+      if (!validClaims(payload, now)) return null;
+      subject = payload.sub!;
+    } catch { return null; }
+    const user = await this.request(store => store.findActiveUser(subject));
     return user ? publicUser(user) : null;
-  }
-
-  async logout(token: string | undefined): Promise<void> {
-    if (!token || !/^[a-f0-9]{64}$/.test(token)) return;
-    await this.request(store => store.deleteSession(tokenHash(token)));
   }
 
   async listApplications(admin: User, status: unknown): Promise<{ applications: RegistrationApplication[] }> {

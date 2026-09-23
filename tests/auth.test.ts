@@ -1,29 +1,33 @@
 import { strict as assert } from 'node:assert';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { AuthService, type User } from '../src/server/auth.js';
 import { loadConfig } from '../src/server/config.js';
 import { ApplicationReviewError, PgAuthStore, UsernameTakenError, type ApplicationStatus,
-  type AuthStore, type RegistrationApplication, type StoredSession, type StoredUser } from '../src/server/database.js';
+  type AuthStore, type RegistrationApplication, type StoredUser } from '../src/server/database.js';
 import { ApiError } from '../src/server/errors.js';
 
-const config = loadConfig({ DATABASE_URL: 'postgresql://fixture:fixture@127.0.0.1:5432/fixture' });
+const jwtSecret = 'jwt-unit-test-fixture-secret-'.repeat(2);
+const config = loadConfig({ DATABASE_URL: 'postgresql://fixture:fixture@127.0.0.1:5432/fixture', JWT_SECRET: jwtSecret });
 const start = Date.parse('2026-09-23T00:00:00.000Z');
 const password = '火影账号密码🔐2026';
-const digest = (token: string) => createHash('sha256').update(token).digest('hex');
 interface MockPgClient {
   query(sql: string, values?: unknown[]): Promise<{ rows: unknown[] }>;
   release(destroy?: boolean): void;
 }
-const { Pool } = createRequire(new URL('../src/server/package.json', import.meta.url))('pg') as {
+const serverRequire = createRequire(new URL('../src/server/package.json', import.meta.url));
+const { SignJWT, UnsecuredJWT, decodeJwt, decodeProtectedHeader } = serverRequire('jose') as typeof import('../src/server/node_modules/jose/dist/types/index.d.ts');
+const { Pool } = serverRequire('pg') as {
   Pool: { prototype: { connect(): Promise<MockPgClient> } };
 };
 
 class MemoryAuthStore implements AuthStore {
   users = new Map<string, StoredUser>();
-  sessions = new Map<string, StoredSession>();
   applications = new Map<string, RegistrationApplication>();
+  activeUserReads = 0;
   initialized = 0;
   closed = 0;
   async initialize() { this.initialized++; }
@@ -41,11 +45,9 @@ class MemoryAuthStore implements AuthStore {
     const application = [...this.applications.values()].find(value => value.userId === user.id);
     return { ...user, applicationStatus: application?.status };
   }
-  async createSession(session: StoredSession) { this.sessions.set(session.tokenHash, { ...session }); }
-  async findSessionUser(tokenHash: string, now: Date): Promise<User | null> {
-    const session = this.sessions.get(tokenHash);
-    if (!session || session.expiresAt.getTime() <= now.getTime()) return null;
-    const user = [...this.users.values()].find(value => value.id === session.userId);
+  async findActiveUser(userId: string): Promise<User | null> {
+    this.activeUserReads++;
+    const user = [...this.users.values()].find(value => value.id === userId);
     return user && !user.isInvalid ? { id: user.id, username: user.username, isAdmin: user.isAdmin } : null;
   }
   async listRegistrationApplications(status: ApplicationStatus | 'all', limit: number) {
@@ -68,7 +70,6 @@ class MemoryAuthStore implements AuthStore {
     const application = [...this.applications.values()].find(value => value.userId === user.id)!;
     application.status = 'approved';
   }
-  async deleteSession(tokenHash: string) { this.sessions.delete(tokenHash); }
   async close() { this.closed++; }
 }
 
@@ -117,7 +118,7 @@ test('注册保存待审申请和原始密码，不生成会话、不返回凭�
   assert.ok(!JSON.stringify(first).includes(password));
   assert.ok(!JSON.stringify(second).includes(password));
   assert.equal(rows[0].usernameKey, 'naruto_01');
-  assert.equal(store.sessions.size, 0);
+  assert.equal(Object.hasOwn(first, 'token'), false);
   assert.equal(store.applications.size, 2);
   await assert.rejects(service.login({ username: 'NARUTO_01', password }), errorIs(403, 'REGISTRATION_PENDING'));
 });
@@ -133,7 +134,6 @@ test('并发注册通过存储唯一约束拒绝大小写不同的重复用户�
   assert.ok(failed && failed.status === 'rejected');
   errorIs(409, 'USERNAME_TAKEN')(failed.reason);
   assert.equal(store.users.size, 1);
-  assert.equal(store.sessions.size, 0);
   assert.equal(store.applications.size, 1);
   assert.equal(store.initialized, 1);
 });
@@ -175,7 +175,6 @@ test('用户名不存在和密码错误返回同一种认证失败', async () =>
   const failure = errorIs(401, 'INVALID_CREDENTIALS', '用户名或密码错误。');
   await assert.rejects(service.login({ username: 'Unknown', password }), failure);
   await assert.rejects(service.login({ username: 'Naruto', password: 'wrong-password' }), failure);
-  assert.equal(store.sessions.size, 0);
 });
 
 test('先验证密码再返回待审核、拒绝或停用状态，禁用账户不能生成会话', async () => {
@@ -189,7 +188,6 @@ test('先验证密码再返回待审核、拒绝或停用状态，禁用账户�
   }
   store.applications.clear();
   await assert.rejects(service.login({ username: 'Naruto', password }), errorIs(403, 'ACCOUNT_DISABLED'));
-  assert.equal(store.sessions.size, 0);
 });
 
 test('管理员批准后账号才可登录，审核响应保留操作者和时间且不暴露密码', async () => {
@@ -199,7 +197,7 @@ test('管理员批准后账号才可登录，审核响应保留操作者和时�
   const reviewed = await service.reviewApplication(admin, registered.application.id, { decision: 'approved', reason: ' 已确认 ', isAdmin: true });
   assert.deepEqual(reviewed.application, { ...registered.application, status: 'approved', reason: '已确认',
     reviewedBy: admin.id, reviewedAt: new Date(start).toISOString() });
-  assert.equal(store.sessions.size, 0);
+  assert.equal(Object.hasOwn(reviewed, 'token'), false);
   const loggedIn = await service.login({ username: 'NARUTO', password });
   assert.deepEqual(loggedIn.user, { id: registered.application.userId, username: 'Naruto', isAdmin: false });
   assert.deepEqual(Object.keys(loggedIn.user).sort(), ['id', 'isAdmin', 'username']);
@@ -218,7 +216,6 @@ test('拒绝申请保持账号禁用且不生成会话，允许空备注及最�
     assert.equal(result.application.status, 'rejected');
     await assert.rejects(service.login({ username: `Rejected${index}`, password }), errorIs(403, 'REGISTRATION_REJECTED'));
   }
-  assert.equal(store.sessions.size, 0);
 });
 
 test('非管理员不能列出或审核申请，权限校验先于数据库访问', async () => {
@@ -275,7 +272,7 @@ test('审核不存在、已审核和管理员权限已撤销分别映射为404�
   await assert.rejects(service.reviewApplication(admin, result.application.id, { decision: 'approved' }), errorIs(403, 'ADMIN_REQUIRED'));
 });
 
-test('已登录会话在账号禁用后立即失效，公开管理员标志读取当前值', async () => {
+test('JWT每次认证读取最新角色，禁用或删除账号后立即失效', async () => {
   const { service, store } = fixture();
   await service.register({ username: 'Naruto', password });
   store.approve('naruto');
@@ -285,6 +282,9 @@ test('已登录会话在账号禁用后立即失效，公开管理员标志读�
   stored.isAdmin = true;
   assert.equal((await service.getUser(loggedIn.token))?.isAdmin, true);
   stored.isInvalid = true;
+  assert.equal(await service.getUser(loggedIn.token), null);
+  stored.isInvalid = false;
+  store.users.delete('naruto');
   assert.equal(await service.getUser(loggedIn.token), null);
 });
 
@@ -299,61 +299,119 @@ test('审核与申请列表数据库错误统一脱敏', async t => {
   await assert.rejects(service.listApplications(admin, 'all'), sanitized);
 });
 
-test('每次认证生成独立的 7 天会话，数据库只保存令牌的 SHA-256 摘要', async () => {
+test('登录签发独立的7天HS256 JWT，声明不含密码或权限且不写入会话表', async () => {
   const { service, store, setNow } = fixture();
   await service.register({ username: 'Naruto', password });
   store.approve('naruto');
   const registered = await service.login({ username: 'Naruto', password });
   const loggedIn = await service.login({ username: 'naruto', password });
-  assert.match(registered.token, /^[a-f0-9]{64}$/);
-  assert.match(loggedIn.token, /^[a-f0-9]{64}$/);
+  assert.match(registered.token, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+  assert.match(loggedIn.token, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
   assert.notEqual(registered.token, loggedIn.token);
   assert.equal(registered.expiresAt.getTime() - start, 7 * 24 * 60 * 60 * 1000);
-  assert.equal(store.sessions.size, 2);
+  assert.equal('sessions' in store, false);
+  assert.equal(store.users.size, 1);
+  assert.equal(store.applications.size, 1);
   for (const result of [registered, loggedIn]) {
-    assert.equal(store.sessions.has(result.token), false);
-    assert.deepEqual(store.sessions.get(digest(result.token)), { tokenHash: digest(result.token), userId: registered.user.id, expiresAt: result.expiresAt });
-    assert.ok(!JSON.stringify([...store.sessions.values()]).includes(result.token));
+    assert.deepEqual(decodeProtectedHeader(result.token), { alg: 'HS256', typ: 'JWT' });
+    const payload = decodeJwt(result.token);
+    assert.deepEqual(Object.keys(payload).sort(), ['aud', 'exp', 'iat', 'iss', 'jti', 'sub']);
+    assert.equal(payload.sub, registered.user.id);
+    assert.equal(payload.iss, 'naruto-login-client');
+    assert.equal(payload.aud, 'naruto-login-client');
+    assert.equal(payload.iat, start / 1000);
+    assert.equal(payload.exp, result.expiresAt.getTime() / 1000);
+    assert.match(payload.jti!, /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+    assert.ok(!JSON.stringify(payload).includes(password));
     assert.deepEqual(await service.getUser(result.token), registered.user);
   }
+  assert.notEqual(decodeJwt(registered.token).jti, decodeJwt(loggedIn.token).jti);
   assert.equal(await service.getUser('f'.repeat(64)), null);
-  assert.equal(await service.getUser(digest(registered.token)), null);
   setNow(registered.expiresAt.getTime() - 1);
   assert.deepEqual(await service.getUser(registered.token), registered.user);
   setNow(registered.expiresAt.getTime());
   assert.equal(await service.getUser(registered.token), null);
 });
 
-test('会话可跨服务实例恢复，登出立即吊销指定会话而不影响其他会话', async () => {
+test('同密钥JWT跨进程有效，清除浏览器凭据不会创建服务端撤销记录', async () => {
   const { service, store } = fixture();
   await service.register({ username: 'Naruto', password });
   store.approve('naruto');
   const first = await service.login({ username: 'Naruto', password });
-  const second = await service.login({ username: 'Naruto', password });
   const restarted = new AuthService(config, { store, now: () => start });
   assert.deepEqual(await restarted.getUser(first.token), first.user);
-  await restarted.logout(first.token);
-  assert.equal(await service.getUser(first.token), null);
-  assert.deepEqual(await service.getUser(second.token), first.user);
-  assert.equal(store.sessions.size, 1);
-  await service.logout(first.token);
+  const child = spawnSync(process.execPath, ['--import', pathToFileURL(serverRequire.resolve('tsx')).href, '--input-type=module', '-e', `
+    import { readFileSync } from 'node:fs';
+    import { AuthService } from ${JSON.stringify(new URL('../src/server/auth.ts', import.meta.url).href)};
+    const data = JSON.parse(readFileSync(0, 'utf8'));
+    const store = { initialize: async () => {}, findActiveUser: async id => id === data.user.id ? data.user : null };
+    const auth = new AuthService(data.config, { store, now: () => data.now });
+    process.stdout.write(JSON.stringify(await auth.getUser(data.token)));
+  `], { input: JSON.stringify({ config, token: first.token, user: first.user, now: start }), encoding: 'utf8', timeout: 10000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), first.user);
+  assert.equal(await restarted.getUser(undefined), null);
+  assert.deepEqual(await restarted.getUser(first.token), first.user);
+  assert.equal('logout' in service, false);
   await restarted.close();
   assert.equal(store.closed, 1);
 });
 
-test('缺少数据库配置时认证返回受控 503，匿名或无效凭据读取不需要数据库', async () => {
-  const service = new AuthService(loadConfig({}));
-  for (const token of [undefined, '', 'not-a-token', 'A'.repeat(64)]) {
+test('缺少数据库配置时认证返回受控503，匿名和无效JWT无需数据库或签名密钥', async () => {
+  const service = new AuthService(loadConfig({ JWT_SECRET: jwtSecret }), { now: () => start });
+  const anonymous = new AuthService(loadConfig({}));
+  for (const token of [undefined, '', 'not-a-token', 'A'.repeat(64), 'a.b.c', 'eyJhbGciOiJIUzI1NiJ9.e30.invalid', 'x'.repeat(5000)]) {
     assert.equal(await service.getUser(token), null);
-    await service.logout(token);
+    assert.equal(await anonymous.getUser(token), null);
   }
   const missing = errorIs(503, 'DATABASE_NOT_CONFIGURED');
   await assert.rejects(service.initialize(), missing);
   await assert.rejects(service.register({ username: 'Naruto', password }), missing);
   await assert.rejects(service.login({ username: 'Naruto', password }), missing);
-  await assert.rejects(service.getUser('a'.repeat(64)), missing);
-  await assert.rejects(service.logout('a'.repeat(64)), missing);
+  const enabled = fixture();
+  await enabled.service.register({ username: 'Naruto', password });
+  enabled.store.approve('naruto');
+  const signed = await enabled.service.login({ username: 'Naruto', password });
+  await assert.rejects(service.getUser(signed.token), missing);
   await service.close();
+});
+
+test('签发和验证依赖固定JWT密钥，缺少或过短密钥返回受控503且不回显值', async () => {
+  const { service, store } = fixture();
+  await service.register({ username: 'Naruto', password });
+  store.approve('naruto');
+  const signed = await service.login({ username: 'Naruto', password });
+  for (const secret of [undefined, 'short-test-secret']) {
+    const missing = new AuthService({ ...config, jwtSecret: secret }, { store, now: () => start });
+    await assert.rejects(missing.login({ username: 'Naruto', password }), errorIs(503, 'JWT_NOT_CONFIGURED', '登录签名密钥未配置，请先配置 JWT_SECRET。'));
+    await assert.rejects(missing.getUser(signed.token), errorIs(503, 'JWT_NOT_CONFIGURED'));
+  }
+  const otherKey = new AuthService({ ...config, jwtSecret: 'different-test-key-'.repeat(3) }, { store, now: () => start });
+  assert.equal(await otherKey.getUser(signed.token), null);
+  const unicodeKey = new AuthService({ ...config, jwtSecret: '测'.repeat(11) }, { store, now: () => start });
+  const valid = await unicodeKey.login({ username: 'Naruto', password });
+  assert.deepEqual(await unicodeKey.getUser(valid.token), signed.user);
+});
+
+test('拒绝篡改、none或非HS256算法、错误issuer/audience及无效身份时间声明，不查询账号', async () => {
+  const { service, store } = fixture();
+  await service.register({ username: 'Naruto', password });
+  store.approve('naruto');
+  const signed = await service.login({ username: 'Naruto', password });
+  const payload = decodeJwt(signed.token);
+  const key = new TextEncoder().encode(jwtSecret);
+  const invalidTokens = [new UnsecuredJWT(payload).encode(),
+    signed.token.replace(/\.[^.]+$/, part => `.${part[1] === 'A' ? 'B' : 'A'}${part.slice(2)}`),
+    await new SignJWT(payload).setProtectedHeader({ alg: 'HS384', typ: 'JWT' }).sign(key),
+  ];
+  for (const overrides of [
+    { iss: 'other-issuer' }, { aud: 'other-audience' }, { sub: 'not-a-uuid' }, { sub: undefined },
+    { jti: 'invalid' }, { jti: undefined }, { iat: undefined }, { iat: start / 1000 + 1 },
+    { iat: start / 1000 + 0.5 }, { exp: undefined }, { exp: start / 1000 },
+    { exp: start / 1000 - 1 }, { exp: start / 1000 + 7 * 86400 + 1 }, { nbf: start / 1000 + 1 },
+  ]) invalidTokens.push(await new SignJWT({ ...payload, ...overrides }).setProtectedHeader({ alg: 'HS256', typ: 'JWT' }).sign(key));
+  for (const token of invalidTokens) assert.equal(await service.getUser(token), null);
+  assert.equal(store.activeUserReads, 0);
 });
 
 test('初始化在并发调用时仅执行一次，失败脱敏后允许下次重试', async t => {
@@ -383,15 +441,10 @@ test('数据库读写异常不泄露连接信息、SQL、密码或内部错误',
   const sanitized = errorIs(503, 'AUTH_UNAVAILABLE', '账号服务暂时不可用，请稍后重试。');
   t.mock.method(store, 'createRegistration', fail);
   await assert.rejects(service.register({ username: 'OtherUser', password }), sanitized);
-  t.mock.method(store, 'createSession', fail);
-  await assert.rejects(service.login({ username: 'Naruto', password }), sanitized);
   t.mock.method(store, 'findUser', fail);
   await assert.rejects(service.login({ username: 'Naruto', password }), sanitized);
-  t.mock.method(store, 'findSessionUser', fail);
+  t.mock.method(store, 'findActiveUser', fail);
   await assert.rejects(service.getUser(registered.token), sanitized);
-  t.mock.method(store, 'deleteSession', fail);
-  await assert.rejects(service.logout(registered.token), sanitized);
-  assert.equal(store.sessions.size, 1);
 });
 
 test('数据库连接地址可省略，仅接受 PostgreSQL URL 且配置错误不回显地址', () => {

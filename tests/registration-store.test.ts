@@ -28,7 +28,6 @@ function user(id = userId): StoredUser {
 function fixture(t: TestContext) {
   const users = new Map<string, StoredUser>([[adminId, user(adminId)]]);
   const applications = new Map<string, ApplicationRow>();
-  const sessions = new Map<string, { userId: string; expiresAt: Date }>();
   const operations: Operation[] = [];
   const undos = new Map<number, Array<() => void>>();
   const locks = new Map<string, Promise<void>>();
@@ -81,10 +80,10 @@ function fixture(t: TestContext) {
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))[0];
       return { rows: record ? [{ ...record, applicationStatus: latest?.status ?? null }] : [] };
     }
-    if (sql.startsWith('SELECT u.id, u.username, u.is_admin')) {
-      assert.match(sql, /s.token_hash = \$1 AND s.expires_at > \$2 AND u.is_invalid = false$/);
-      const session = sessions.get(String(values[0]));
-      const record = session && session.expiresAt > (values[1] as Date) ? users.get(session.userId) : null;
+    if (sql.startsWith('SELECT id, username, is_admin')) {
+      assert.equal(sql, 'SELECT id, username, is_admin AS "isAdmin" FROM naruto_login.users WHERE id = $1 AND is_invalid = false');
+      assert.equal(values.length, 1);
+      const record = users.get(String(values[0]));
       return { rows: record && !record.isInvalid ? [{ id: record.id, username: record.username, isAdmin: record.isAdmin }] : [] };
     }
     if (sql.startsWith('SELECT ') && sql.includes('FROM naruto_login.registration_applications a')) {
@@ -113,12 +112,6 @@ function fixture(t: TestContext) {
       record.isInvalid = values[1] as boolean;
       return { rows: [] };
     }
-    if (sql === 'DELETE FROM naruto_login.sessions WHERE user_id = $1') {
-      for (const [key, record] of sessions) if (record.userId === values[0]) {
-        undo(client, () => sessions.set(key, record)); sessions.delete(key);
-      }
-      return { rows: [] };
-    }
     if (sql.startsWith('UPDATE naruto_login.registration_applications')) {
       if (failReviewUpdate) throw new Error('review update failed');
       assert.match(sql, /WHERE id = \$1 AND status = 'pending'$/);
@@ -140,7 +133,7 @@ function fixture(t: TestContext) {
   t.mock.method(Pool.prototype, 'query', (sql: string, values?: unknown[]) => query(0, sql, values));
   const store = new PgAuthStore('postgresql://fixture:fixture@127.0.0.1:5432/fixture');
   t.after(() => store.close());
-  return { store, users, applications, sessions, operations,
+  return { store, users, applications, operations,
     failInsert() { failApplicationInsert = true; }, failReview() { failReviewUpdate = true; } };
 }
 
@@ -159,19 +152,19 @@ test('迁移保留旧账号有效性，新账号默认禁用，管理员默认 f
   assert.match(schema, /UNIQUE INDEX IF NOT EXISTS \S+ ON naruto_login.registration_applications \(user_id\) WHERE status = 'pending'/);
   assert.match(schema, /reviewed_by uuid REFERENCES naruto_login.users\(id\) ON DELETE SET NULL/);
   assert.doesNotMatch(schema, /UPDATE naruto_login.users|is_admin[^;]*DEFAULT true|DROP |TRUNCATE /);
+  for (const operation of operations) assert.doesNotMatch(operation.sql, /naruto_login\.sessions/);
 });
 
-test('注册强制创建禁用且非管理员的账号和 pending 申请，不创建会话或公开密码', async t => {
-  const { store, users, sessions, operations } = fixture(t);
+test('注册强制创建禁用且非管理员的账号和 pending 申请，不访问会话表或公开密码', async t => {
+  const { store, users, operations } = fixture(t);
   const application = await store.createRegistration(user(), appId, now);
   assert.deepEqual(application, { id: appId, userId, username: 'Naruto', status: 'pending',
     createdAt: now.toISOString(), reviewedAt: null, reviewedBy: null, reason: null });
   assert.equal(users.get(userId)?.isInvalid, true);
   assert.equal(users.get(userId)?.isAdmin, false);
   assert.equal(users.get(userId)?.password, password);
-  assert.equal(sessions.size, 0);
   assert.ok(!JSON.stringify(application).includes(password));
-  assert.equal(operations.some(value => value.sql.startsWith('INSERT INTO naruto_login.sessions')), false);
+  for (const operation of operations) assert.doesNotMatch(operation.sql, /naruto_login\.sessions/);
   const insert = operations.find(value => value.sql.startsWith('INSERT INTO naruto_login.users'))!;
   assert.ok(!insert.sql.includes(password));
   assert.equal(insert.values[3], password);
@@ -189,21 +182,31 @@ test('重复用户名映射为 UsernameTakenError，申请插入失败会回滚�
   assert.equal(f.operations.at(-1)?.sql, 'ROLLBACK');
 });
 
-test('账号查询读取最新申请状态，会话实时拒绝禁用账号并读取最新管理员标记', async t => {
-  const { store, users, sessions, applications } = fixture(t);
+test('账号查询读取最新申请状态', async t => {
+  const { store, applications } = fixture(t);
   await store.createRegistration(user(), appId, now);
   assert.equal((await store.findUser('naruto'))?.applicationStatus, 'pending');
-  sessions.set('token', { userId, expiresAt: new Date(now.getTime() + 10000) });
-  assert.equal(await store.findSessionUser('token', now), null);
-  users.get(userId)!.isInvalid = false;
-  assert.deepEqual(await store.findSessionUser('token', now), { id: userId, username: 'Naruto', isAdmin: false });
-  users.get(userId)!.isAdmin = true;
-  assert.equal((await store.findSessionUser('token', now))?.isAdmin, true);
-  users.get(userId)!.isInvalid = true;
-  assert.equal(await store.findSessionUser('token', now), null);
   applications.set(secondAppId, { ...applications.get(appId)!, id: secondAppId, status: 'rejected', createdAt: later });
   assert.equal((await store.findUser('naruto'))?.applicationStatus, 'rejected');
   assert.equal((await store.findUser('admin'))?.applicationStatus, null);
+});
+
+test('按用户 ID 查询当前启用账号，禁用或删除即时返回 null，管理员角色变更即时生效', async t => {
+  const { store, users } = fixture(t);
+  await store.createRegistration(user(), appId, now);
+  assert.equal(await store.findActiveUser(userId), null);
+  users.get(userId)!.isInvalid = false;
+  assert.deepEqual(await store.findActiveUser(userId), { id: userId, username: 'Naruto', isAdmin: false });
+  users.get(userId)!.isAdmin = true;
+  assert.equal((await store.findActiveUser(userId))?.isAdmin, true);
+  users.get(userId)!.isAdmin = false;
+  assert.equal((await store.findActiveUser(userId))?.isAdmin, false);
+  users.get(userId)!.isInvalid = true;
+  assert.equal(await store.findActiveUser(userId), null);
+  users.get(userId)!.isInvalid = false;
+  users.delete(userId);
+  assert.equal(await store.findActiveUser(userId), null);
+  assert.equal(await store.findActiveUser(otherId), null);
 });
 
 test('列表按状态和条数过滤，只返回公开申请字段并按新申请优先排序', async t => {
@@ -256,33 +259,30 @@ test('找不到申请和重复审批分别返回受控业务错误，最终审�
   assert.equal(users.get(userId)?.isInvalid, false);
 });
 
-test('拒绝申请禁用账号并撤销其全部会话，不影响其他账号，原因使用 SQL 参数', async t => {
-  const { store, users, sessions, operations } = fixture(t);
+test('拒绝申请后账号查询立即失效，不影响其他账号，原因使用 SQL 参数', async t => {
+  const { store, users, operations } = fixture(t);
   await store.createRegistration(user(), appId, now);
   users.get(userId)!.isInvalid = false;
-  sessions.set('one', { userId, expiresAt: later });
-  sessions.set('two', { userId, expiresAt: later });
-  sessions.set('admin', { userId: adminId, expiresAt: later });
   const reason = "' ; DROP TABLE users; --";
   const result = await store.reviewRegistration(appId, adminId, 'rejected', reason, later);
   assert.equal(result.status, 'rejected');
   assert.equal(result.reason, reason);
   assert.equal(users.get(userId)?.isInvalid, true);
-  assert.deepEqual([...sessions.keys()], ['admin']);
+  assert.equal(await store.findActiveUser(userId), null);
+  assert.equal((await store.findActiveUser(adminId))?.isAdmin, true);
+  for (const operation of operations) assert.doesNotMatch(operation.sql, /naruto_login\.sessions/);
   const update = operations.find(value => value.sql.startsWith('UPDATE naruto_login.registration_applications'))!;
   assert.ok(!update.sql.includes(reason));
   assert.equal(update.values[4], reason);
 });
 
-test('审批写入失败会回滚账号禁用和会话撤销，不留下半完成审批', async t => {
+test('审批写入失败会回滚账号禁用，不留下半完成审批', async t => {
   const f = fixture(t);
   await f.store.createRegistration(user(), appId, now);
   f.users.get(userId)!.isInvalid = false;
-  f.sessions.set('one', { userId, expiresAt: later });
   f.failReview();
   await assert.rejects(f.store.reviewRegistration(appId, adminId, 'rejected', null, later), /review update failed/);
   assert.equal(f.users.get(userId)?.isInvalid, false);
-  assert.equal(f.sessions.has('one'), true);
   assert.equal(f.applications.get(appId)?.status, 'pending');
   assert.equal(f.operations.at(-1)?.sql, 'ROLLBACK');
 });

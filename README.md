@@ -14,7 +14,7 @@ npm ci
 npm run dev
 ```
 
-打开 <http://127.0.0.1:4300>。页面、API 和开发热更新共用一个端口；不需要单独启动 Vite，也不需要 Python HTTP 服务。页面可在没有 `.env` 的情况下打开，注册登录需要 PostgreSQL，投递登录任务需要 Redis。
+打开 <http://127.0.0.1:4300>。页面、API 和开发热更新共用一个端口；不需要单独启动 Vite，也不需要 Python HTTP 服务。页面可在没有 `.env` 的情况下打开，注册需要 PostgreSQL，登录还需 `JWT_SECRET`，投递登录任务需要 Redis。
 
 需要配置时，将根目录 `.env.example` 复制为 `.env` 并填写已有服务的信息，不要覆盖原有配置或提交密钥。客户端和 Python 工作进程必须连接同一个 Redis，并使用一致的队列键、OSS Bucket 和对象前缀。
 
@@ -33,7 +33,7 @@ npm start
 
 ```text
 TSX 页面注册 → PostgreSQL 待审核账号与申请 → 管理员审批
-TSX 页面登录 → 校验账号启用状态 → PostgreSQL 会话 → HttpOnly Cookie
+TSX 页面登录 → 校验账号启用状态 → 后端签发 JWT → 浏览器 HttpOnly Cookie
 TSX 页面 POST /api/login-sessions
   → 页面先保存本次 requestId，刷新时复用同一个编号
   → TS 后端校验网站账号，在 PostgreSQL 事件表保存 UUID、状态和过期时间
@@ -49,17 +49,23 @@ TSX 页面每秒 GET /api/login-sessions/{id}
   → TS 后端 GET OSS 对象并转发 PNG
 ```
 
-浏览器只访问客户端 API。数据库、Redis 连接信息和 OSS 密钥由 TS 后端读取；登录凭证通过 HttpOnly Cookie 保存，有效期为 7 天。二维码申请默认有效期为 120 秒，获取成功后仍占用该账号名额，失败或过期才允许重新申请。
+浏览器只访问客户端 API。数据库、Redis 连接信息、JWT 签名密钥和 OSS 密钥由 TS 后端读取；登录 JWT 通过 HttpOnly Cookie 保存，有效期为 7 天，前端 JavaScript 无法读取。二维码申请默认有效期为 120 秒，获取成功后仍占用该账号名额，失败或过期才允许重新申请。
 
 ## 网站账号
 
-只需新增一个 `DATABASE_URL`，例如 `postgresql://username:password@host:5432/naruto_login`。本项目使用独立数据库 `naruto_login`，不使用 `hackathon`。首次访问认证功能时自动在目标库创建或迁移 `naruto_login.users`、`naruto_login.sessions`、`naruto_login.login_events` 和 `naruto_login.registration_applications`，不会改动其他业务表。用户名为 3–24 个汉字、英文字母、数字、下划线或短横线，英文字母不区分大小写，数据库唯一约束防止并发重复注册；密码为 6–128 个字符，按当前项目要求以明文保存在 `users.password` 中，API 不返回该字段。会话表仅保存随机登录凭证的 SHA-256 摘要。
+配置 `DATABASE_URL`（例如 `postgresql://username:password@host:5432/naruto_login`）和 `JWT_SECRET`。本项目使用独立数据库 `naruto_login`，不使用 `hackathon`。首次访问认证功能时自动在目标库创建或迁移 `naruto_login.users`、`naruto_login.login_events` 和 `naruto_login.registration_applications`，不会改动其他业务表。用户名为 3–24 个汉字、英文字母、数字、下划线或短横线，英文字母不区分大小写，数据库唯一约束防止并发重复注册；密码为 6–128 个字符，按当前项目要求以明文保存在 `users.password` 中，API 不返回该字段。
+
+后端使用 `jose` 签发和验证 HS256 JWT，包含用户 ID、签发时间、7 天过期时间及随机编号，固定校验签发者和受众。JWT 不保存密码或管理员角色；每次请求验签后查询 `users` 的实时启用状态与权限。后端不再创建或读写 `sessions` 表。退出只清除当前浏览器的 Cookie，不维护令牌撤销表；未过期 JWT 本身仍有效，停用账号会阻止其继续使用。
+
+`JWT_SECRET` 至少为 32 字节，随机生成一次后保存在根目录 `.env`，所有同环境后端实例使用同一值，不能每次启动重新生成。可用 `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"` 生成。修改密钥会使原 JWT 全部失效，用户需重新登录。此配置不使用 `VITE_` 前缀，不进入前端构建产物。
+
+旧版本升级顺序：先配置线上 `JWT_SECRET` 并发布 JWT 版本，确认旧版本不再承接流量，再连接 `naruto_login` 数据库执行 `DROP TABLE IF EXISTS naruto_login.sessions;`。新版本不会自动删表，避免本地调试时影响仍依赖旧表的线上实例；新库只会创建上述三张业务表。旧版 Cookie 在升级后需要重新登录。
 
 新注册的用户固定为 `is_invalid=true`、`is_admin=false`，同时创建一条待审批申请，不签发登录 Cookie。`is_invalid=true` 表示账号尚未获准登录或已停用；审批通过后改为 `false`。`is_admin=true` 表示管理员，页面右上角显示「管理员」菜单，可打开注册申请审核面板，按状态筛选申请并批准或拒绝。审批表保存状态、申请时间、审核人、审核时间和可选备注；同一申请只能审核一次，重复审核返回 `409`。
 
 数据库迁移保留旧用户原有登录资格，旧账号不会自动变成管理员。初始管理员必须由数据库管理员显式指定；公开注册及审核接口都不能设置 `is_admin`。现有数据库已按用户要求设置首个管理员 `HUY1`，密码不写入仓库。每次接口请求都重新检查账号启用状态与角色，禁用账号或撤销管理员角色后，已有 Cookie 也不能绕过权限检查。
 
-未配置数据库时，注册登录返回 `503 / DATABASE_NOT_CONFIGURED`；未登录申请二维码返回 `401 / AUTH_REQUIRED`。同账号并发申请通过数据库账号行锁和唯一约束复用当前事件；Redis Lua 负责同任务重试不重复入队。不能通过修改请求中的用户 ID 访问其他账号的二维码。
+未配置数据库时，注册登录返回 `503 / DATABASE_NOT_CONFIGURED`；缺少 JWT 签名密钥时无法签发或验证 JWT，返回 `503 / JWT_NOT_CONFIGURED`；未登录申请二维码返回 `401 / AUTH_REQUIRED`。同账号并发申请通过数据库账号行锁和唯一约束复用当前事件；Redis Lua 负责同任务重试不重复入队。不能通过修改请求中的用户 ID 访问其他账号的二维码。
 
 ## 刷新与事件恢复
 
@@ -125,7 +131,8 @@ Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run 
 
 | 变量 | 内容 |
 | --- | --- |
-| `DATABASE_URL` | PostgreSQL 连接地址，用于网站账号与登录会话 |
+| `DATABASE_URL` | PostgreSQL 连接地址，用于账号、审批和二维码事件 |
+| `JWT_SECRET` | 至少 32 字节的随机后端签名密钥，同环境所有实例保持一致 |
 | `REDIS_URL` | 云端和 Python 均可访问的 Redis 地址；暂缺时可不填，申请接口会返回明确的 503 |
 | `STORAGE_DRIVER` | `oss` |
 | `OSS_REGION` | `oss-cn-shanghai` |
@@ -156,7 +163,7 @@ Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run 
 | `GET /api/auth/me` | 当前网站账号，未登录返回 `{ user: null }` |
 | `POST /api/auth/register` | 提交用户名、密码，返回 `201` 和待审批申请，不自动登录 |
 | `POST /api/auth/login` | 审批通过且启用的账号可登录，设置 HttpOnly Cookie；待审核/拒绝/禁用返回 `403` |
-| `POST /api/auth/logout` | 撤销当前登录会话并清除 Cookie |
+| `POST /api/auth/logout` | 清除当前浏览器的 JWT Cookie，无需访问数据库 |
 | `GET /api/admin/registration-applications?status=pending` | 管理员查看最近 100 条申请，支持 `pending`、`approved`、`rejected`、`all` |
 | `POST /api/admin/registration-applications/:id/review` | 管理员提交 `{decision: "approved" 或 "rejected", reason?: string}`，审核人与时间由后端确定 |
 | `POST /api/login-sessions` | `{requestId}` 创建或恢复同一事件，返回 `202` 和 `id`、状态、有效时间、`showGetButton` |
@@ -196,4 +203,4 @@ npm run build
 
 所有写接口使用 `Content-Type: application/json`，并校验请求来源。
 
-测试使用模拟数据库、Redis 驱动、OSS 方法和临时目录，不需要真实云端凭据。覆盖注册唯一性、登录与会话撤销、任务归属、同账号互斥、失败处理、存储就绪判定、过期与 PNG 响应，并检查单端口开发启动。
+测试使用模拟数据库、Redis 驱动、OSS 方法和临时目录，不需要真实云端凭据。覆盖注册唯一性、JWT 签发/验签/过期、退出清除 Cookie、实时权限、任务归属、同账号互斥、失败处理、存储就绪判定、过期与 PNG 响应，并检查单端口开发启动。

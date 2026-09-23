@@ -10,6 +10,7 @@ export interface Config {
   port: number;
   redisUrl?: string;
   databaseUrl?: string;
+  jwtSecret?: string;
   redisQueueKey: string;
   localObjectsDir: string;
   sessionTtlMs: number;
@@ -41,6 +42,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     } catch { throw new Error('REDIS_URL 必须为有效的 redis:// 或 rediss:// 连接地址'); }
   }
   const redisQueueKey = env.REDIS_QUEUE_KEY ?? 'naruto:login:tasks';
+  const jwtSecret = env.JWT_SECRET?.trim() || undefined;
+  if (jwtSecret && Buffer.byteLength(jwtSecret, 'utf8') < 32) throw new Error('JWT_SECRET 至少需要 32 字节，请使用随机生成的密钥');
   const databaseUrl = env.DATABASE_URL?.trim() || undefined;
   if (databaseUrl) {
     try {
@@ -53,7 +56,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!/^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(ossPrefix)) throw new Error('OSS_KEY_PREFIX 格式不正确');
   const config: Config = {
     host: env.HOST ?? '127.0.0.1', port: integer(env, 'PORT', 4300, 1, 65535),
-    redisUrl, redisQueueKey, databaseUrl,
+    redisUrl, redisQueueKey, databaseUrl, jwtSecret,
     localObjectsDir: resolve(env.LOCAL_OBJECTS_DIR ?? resolve(serverRoot, '../../.data/login-objects')),
     sessionTtlMs: integer(env, 'SESSION_TTL_MS', 120000, 5000, 600000),
     timeoutMs: integer(env, 'REQUEST_TIMEOUT_MS', 5000, 100, 30000),

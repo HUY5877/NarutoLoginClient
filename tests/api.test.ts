@@ -6,16 +6,17 @@ import { AuthService, type AuthSession, type User } from '../src/server/auth.js'
 import { loadConfig } from '../src/server/config.js';
 import { ApiError } from '../src/server/errors.js';
 import type { Task } from '../src/server/queue.js';
+import type { AuthStore } from '../src/server/database.js';
 
 const config = loadConfig({});
 const id = '123e4567-e89b-42d3-a456-426614174000';
 const requestId = '123e4567-e89b-42d3-a456-426614174111';
-const token = 'a'.repeat(64);
-const otherToken = 'b'.repeat(64);
+const token = 'eyJhbGciOiJIUzI1NiJ9.user-fixture.signature';
+const otherToken = 'eyJhbGciOiJIUzI1NiJ9.other-fixture.signature';
 const user: User = { id: '456e7890-e89b-42d3-a456-426614174000', username: 'naruto', isAdmin: false };
 const otherUser: User = { id: '456e7890-e89b-42d3-a456-426614174001', username: 'sasuke', isAdmin: false };
 const admin: User = { id: '456e7890-e89b-42d3-a456-426614174002', username: 'admin-fixture', isAdmin: true };
-const adminToken = 'c'.repeat(64);
+const adminToken = 'eyJhbGciOiJIUzI1NiJ9.admin-fixture.signature';
 const adminHeaders = { Cookie: `naruto_session=${adminToken}` };
 const start = Date.now();
 const baseTask: Task = { id, status: 'opening_game', createdAt: new Date(start).toISOString(),
@@ -35,7 +36,7 @@ function events(overrides: Partial<Dependencies['events']> = {}): Dependencies['
     getActive: async () => null, recordStatus: async () => {}, ...overrides };
 }
 function auth(overrides: Partial<Dependencies['auth']> = {}): Dependencies['auth'] {
-  return { register: async () => registration, login: async () => authSession, logout: async () => {},
+  return { register: async () => registration, login: async () => authSession,
     listApplications: async () => ({ applications: [application] }), reviewApplication: async () => ({ application }),
     getUser: async value => value === token ? user : value === otherToken ? otherUser : value === adminToken ? admin : null, ...overrides };
 }
@@ -138,7 +139,7 @@ test('全部写接口拒绝跨站请求，同源页面可以申请登录', async
 
 test('全部写接口要求 JSON 内容类型，拒绝表单、文本和缺失类型', async () => {
   const unexpected = async (): Promise<never> => assert.fail('unsupported content types must not invoke a write');
-  await withApi({ auth: auth({ register: unexpected, login: unexpected, logout: unexpected }), events: events({ create: unexpected }) }, async base => {
+  await withApi({ auth: auth({ register: unexpected, login: unexpected }), events: events({ create: unexpected }) }, async base => {
     for (const path of ['/api/login-sessions', '/api/auth/register', '/api/auth/login', '/api/auth/logout']) {
       for (const type of ['text/plain', 'application/x-www-form-urlencoded']) {
         assert.equal((await fetch(`${base}${path}`, { ...post, headers: { ...headers, 'Content-Type': type } })).status, 415, path);
@@ -162,7 +163,7 @@ test('注册只提交待审批申请，不设置登录Cookie；获准登录后�
       assert.deepEqual(await response.json(), { user });
       assert.equal(response.headers.get('cache-control'), 'no-store');
       const cookie = response.headers.get('set-cookie') ?? '';
-      assert.match(cookie, new RegExp(`^naruto_session=${token};`));
+      assert.ok(cookie.startsWith(`naruto_session=${token};`));
       assert.match(cookie, /; HttpOnly(?:;|$)/);
       assert.match(cookie, /; SameSite=Lax(?:;|$)/);
       assert.match(cookie, /; Path=\/(?:;|$)/);
@@ -232,10 +233,8 @@ test('受信代理转发 HTTPS 时账户 Cookie 带 Secure', async () => {
   }, true);
 });
 
-test('退出撤销服务端会话并清除 Cookie，原 Cookie 无法继续申请二维码', async () => {
-  let revoked = false;
-  await withApi({ auth: auth({ getUser: async value => !revoked && value === token ? user : null,
-    logout: async value => { assert.equal(value, token); revoked = true; } }) }, async base => {
+test('退出仅清除浏览器JWT Cookie，清除后未登录；不会建立服务端撤销状态', async () => {
+  await withApi({}, async base => {
     assert.deepEqual(await (await fetch(`${base}/api/auth/me`, { headers })).json(), { user });
     const response = await fetch(`${base}/api/auth/logout`, post);
     assert.equal(response.status, 204);
@@ -243,18 +242,81 @@ test('退出撤销服务端会话并清除 Cookie，原 Cookie 无法继续申�
     const cookie = response.headers.get('set-cookie') ?? '';
     assert.match(cookie, /^naruto_session=;/);
     assert.match(cookie, /Expires=Thu, 01 Jan 1970/);
-    assert.equal(revoked, true);
-    assert.deepEqual(await (await fetch(`${base}/api/auth/me`, { headers })).json(), { user: null });
-    const denied = await fetch(`${base}/api/login-sessions`, post);
+    assert.match(cookie, /; HttpOnly(?:;|$)/);
+    assert.match(cookie, /; SameSite=Lax(?:;|$)/);
+    assert.match(cookie, /; Path=\/(?:;|$)/);
+    assert.deepEqual(await (await fetch(`${base}/api/auth/me`)).json(), { user: null });
+    const denied = await fetch(`${base}/api/login-sessions`, { ...post, headers: jsonHeaders });
     assert.equal(denied.status, 401);
     assert.equal((await denied.json() as { code: string }).code, 'AUTH_REQUIRED');
+    assert.deepEqual(await (await fetch(`${base}/api/auth/me`, { headers })).json(), { user });
+  });
+});
+
+test('数据库或JWT配置不可用时仍能退出，并按HTTPS清除相同属性的Cookie', async () => {
+  const unavailable = async (): Promise<never> => assert.fail('logout must not read authentication or database state');
+  await withApi({ auth: auth({ getUser: unavailable }) }, async base => {
+    for (const cookie of ['', token, 'legacy-token']) {
+      const response = await fetch(`${base}/api/auth/logout`, { ...post, headers: {
+        ...jsonHeaders, Cookie: `naruto_session=${cookie}`, 'X-Forwarded-Proto': 'https', Origin: base.replace('http:', 'https:'),
+      } });
+      assert.equal(response.status, 204);
+      assert.match(response.headers.get('set-cookie') ?? '', /; Secure(?:;|$)/);
+    }
+  }, true);
+});
+
+test('真实JWT经Cookie恢复身份，重启服务仍有效，篡改/过期/停用被拒绝', async () => {
+  const secret = 'api-test-only-jwt-signing-secret-at-least-32-bytes';
+  const jwtConfig = loadConfig({ DATABASE_URL: 'postgresql://fixture:fixture@localhost/fixture', JWT_SECRET: secret });
+  let now = start;
+  let enabled = true;
+  let activeReads = 0;
+  const unexpected = async (): Promise<never> => assert.fail('login must not create persisted session state');
+  const store: AuthStore = {
+    initialize: async () => {},
+    findUser: async () => ({ ...user, usernameKey: user.username, password: 'api-fixture-password', isInvalid: false }),
+    findActiveUser: async value => { activeReads++; assert.equal(value, user.id); return enabled ? user : null; },
+    createRegistration: unexpected, listRegistrationApplications: unexpected, reviewRegistration: unexpected,
+    close: async () => {},
+  };
+  const service = new AuthService(jwtConfig, { store, now: () => now });
+  let cookie = '';
+  await withApi({ auth: service }, async base => {
+    const response = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: jsonHeaders,
+      body: JSON.stringify({ username: user.username, password: 'api-fixture-password' }) });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { user });
+    cookie = response.headers.get('set-cookie')!.split(';')[0];
+    assert.match(cookie, /^naruto_session=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    const me = await fetch(`${base}/api/auth/me`, { headers: { Cookie: cookie } });
+    assert.deepEqual(await me.json(), { user });
+  });
+  const restarted = new AuthService(jwtConfig, { store, now: () => now });
+  await withApi({ auth: restarted }, async base => {
+    const headers = { Cookie: cookie };
+    assert.deepEqual(await (await fetch(`${base}/api/auth/me`, { headers })).json(), { user });
+    const before = activeReads;
+    const [header, payload, signature] = cookie.split('=')[1].split('.');
+    const forgedPayload = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(payload, 'base64url').toString()), sub: otherUser.id })).toString('base64url');
+    const forged = await fetch(`${base}/api/auth/me`, { headers: { Cookie: `naruto_session=${header}.${forgedPayload}.${signature}` } });
+    assert.deepEqual(await forged.json(), { user: null });
+    assert.equal(activeReads, before, 'invalid signature must not reach the database');
+    enabled = false;
+    assert.equal((await fetch(`${base}/api/login-sessions/active`, { headers })).status, 401);
+    enabled = true;
+    now = start + 7 * 24 * 60 * 60 * 1000;
+    assert.deepEqual(await (await fetch(`${base}/api/auth/me`, { headers })).json(), { user: null });
+    assert.equal((await fetch(`${base}/api/login-sessions/active`, { headers })).status, 401);
   });
 });
 
 test('缺失或无效 Cookie 及仅 Bearer 不能访问二维码接口，且不访问 Redis/OSS', async () => {
   const unexpected = async (): Promise<never> => assert.fail('unauthenticated requests must not touch events or storage');
   const attempts: Record<string, string>[] = [{}, { Authorization: `Bearer ${token}` },
-    { Cookie: 'naruto_session=invalid' }, { Cookie: `naruto_session=${'d'.repeat(64)}` }];
+    { Cookie: 'naruto_session=invalid' }, { Cookie: `naruto_session=${'d'.repeat(64)}` },
+    { Cookie: 'naruto_session=eyJhbGciOiJIUzI1NiJ9.unknown.signature' },
+    { Cookie: `naruto_session=${'a'.repeat(2048)}.b.c` }];
   await withApi({ events: { create: unexpected, getForUser: unexpected, getActive: unexpected, recordStatus: unexpected }, storage: { exists: unexpected, read: unexpected } }, async base => {
     for (const requestHeaders of attempts) {
       for (const path of ['/api/login-sessions/active', `/api/login-sessions/${id}`, `/api/login-sessions/${id}/qr`]) {
@@ -381,6 +443,11 @@ test('OSS 必需配置、TTL、数据库和 Redis 配置在启动时校验', () 
   assert.throws(() => loadConfig({ REDIS_URL: 'not-a-url' }), /REDIS_URL/);
   assert.throws(() => loadConfig({ REDIS_QUEUE_KEY: 'invalid key' }), /REDIS_QUEUE_KEY/);
   assert.throws(() => loadConfig({ DATABASE_URL: 'https://example.com/database' }), /DATABASE_URL/);
+  assert.throws(() => loadConfig({ JWT_SECRET: 'short-key-do-not-echo' }), error => {
+    assert(error instanceof Error); assert.match(error.message, /JWT_SECRET/); assert.doesNotMatch(error.message, /short-key-do-not-echo/); return true;
+  });
+  assert.equal(loadConfig({ JWT_SECRET: 'a'.repeat(32) }).jwtSecret, 'a'.repeat(32));
+  assert.equal(loadConfig({}).jwtSecret, undefined);
   assert.equal(loadConfig({ REDIS_URL: 'rediss://user:password@redis.example:6379/0' }).redisQueueKey, 'naruto:login:tasks');
   assert.equal(loadConfig({}).redisUrl, undefined);
   assert.throws(() => loadConfig({ OSS_KEY_PREFIX: '../escape' }), /OSS_KEY_PREFIX/);
