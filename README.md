@@ -94,7 +94,9 @@ OSS_ACCESS_KEY_SECRET=your-access-key-secret
 
 Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run build`，静态输出目录为 `src/frontend/dist`；`api` 下的函数承接 `/api` 请求。网页和接口共用一个域名，不需要对外开放本地的 `4300` 端口。
 
-将 Vercel 项目关联此 Git 仓库，生产分支设为 `main`。关联完成后，每次推送 `main` 都会自动构建并更新生产网站，无需 `.github` 工作流。
+已关联 [sust-acmer/naruto-login-client](https://vercel.com/sust-acmer/naruto-login-client) 与本仓库，生产分支为 `main`。每次推送 `main` 都会自动构建并更新生产网站，无需 `.github` 工作流。
+
+提交作者邮箱必须能关联到当前 GitHub 账号；本仓库已使用该账号的 GitHub noreply 邮箱。若换电脑后 Vercel 提示无法识别提交作者，请检查该仓库的 `git config user.email`。
 
 在 Vercel 项目的 Environment Variables 中设置：
 
