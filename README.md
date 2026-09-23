@@ -101,8 +101,14 @@ OSS_STS_TOKEN=...
 
 ## 目录与验证
 
+前端采用 **shadcn/ui（Radix Nova）+ Tailwind CSS v4**，按钮、卡片、提示、进度、帮助弹窗、折叠面板和空状态均由官方 CLI 安装的组件组成；图标使用 Lucide，Geist 字体本地打包。主题通过 `src/frontend/styles.css` 的 shadcn CSS 变量配置，不再维护手写基础控件和装饰插画。
+
+组件配置位于 `components.json`，新增组件可执行 `npm exec -- shadcn add <组件名>`。`@/` 指向 `src/frontend/`。扫码申请、轮询、过期与取消逻辑独立在 `hooks/use-login-session.ts`，更换界面不改变 API 协议。
+
 ```text
-src/frontend/      TSX 页面、状态轮询、样式
+src/frontend/      TSX 登录页、shadcn 主题
+  components/ui/   官方 shadcn/ui 组件
+  hooks/           登录申请与二维码轮询
 src/server/        TypeScript HTTP 后端、任务网关、OSS 读适配器
 tests/             HTTP 接口、请求失败及存储轮询测试
 vite.config.ts     前端构建与开发代理

@@ -1,374 +1,363 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  ArrowRight,
+  Check,
+  CheckCheck,
+  CircleAlert,
+  CircleHelp,
+  Clock3,
+  Flame,
+  Gamepad2,
+  QrCode,
+  RefreshCw,
+  ScanLine,
+  ShieldCheck,
+  Smartphone,
+  TimerOff,
+} from 'lucide-react';
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { AspectRatio } from '@/components/ui/aspect-ratio';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty';
+import {
+  Item,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemMedia,
+  ItemTitle,
+} from '@/components/ui/item';
+import { Separator } from '@/components/ui/separator';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Spinner } from '@/components/ui/spinner';
+import { useLoginSession } from '@/hooks/use-login-session';
 
-type SessionStatus =
-  | 'queued'
-  | 'starting_emulator'
-  | 'opening_game'
-  | 'preparing_qr'
-  | 'qr_ready'
-  | 'failed'
-  | 'expired';
-type Phase = 'idle' | 'submitting' | SessionStatus;
+const preparationSteps = [
+  { title: '提交登录申请', description: '为本次登录创建独立申请', icon: ArrowRight },
+  { title: '准备游戏环境', description: '等待游戏进入二维码登录页', icon: Gamepad2 },
+  { title: '获取登录二维码', description: '二维码准备好后会自动显示', icon: QrCode },
+];
 
-interface Session {
-  id: string;
-  status: SessionStatus;
-  createdAt: string;
-  expiresAt: string;
-  simulation: boolean;
-  error?: string;
-}
-
-interface CreatedSession extends Session {
-  accessToken: string;
-  pollAfterMs: number;
-}
-
-const statusLabels: Record<Phase, string> = {
-  idle: '等待生成二维码',
-  submitting: '正在创建登录申请',
-  queued: '申请已收到，正在排队',
-  starting_emulator: '正在准备独立游戏环境',
-  opening_game: '正在打开火影忍者',
-  preparing_qr: '正在准备登录二维码',
-  qr_ready: '模拟二维码已就绪',
-  failed: '这次准备未能完成',
-  expired: '二维码已过期',
-};
-
-class RequestError extends Error {
-  constructor(message: string, readonly status = 0) {
-    super(message);
-  }
-}
-
-function delay(ms: number, signal: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    if (signal.aborted) return reject(new DOMException('Aborted', 'AbortError'));
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new DOMException('Aborted', 'AbortError'));
-    };
-    const timer = window.setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
-async function request(path: string, signal: AbortSignal, init?: RequestInit) {
-  if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-  const timeoutController = new AbortController();
-  const onAbort = () => timeoutController.abort();
-  signal.addEventListener('abort', onAbort, { once: true });
-  const timeout = window.setTimeout(() => timeoutController.abort(), 10_000);
-  try {
-    const response = await fetch(path, {
-      ...init,
-      cache: 'no-store',
-      signal: timeoutController.signal,
-    });
-    if (!response.ok) {
-      const message = response.status === 429
-        ? '申请较多，请稍后重新生成。'
-        : response.status === 401 || response.status === 403
-          ? '登录申请已失效，请重新生成二维码。'
-          : response.status === 404 || response.status === 410
-            ? '登录申请已过期，请重新生成二维码。'
-            : '暂时无法连接登录服务，请稍后重新生成。';
-      throw new RequestError(message, response.status);
-    }
-    // Read the body while the timeout and cancellation signal still apply.
-    const body = await response.arrayBuffer();
-    return new Response(body, { status: response.status, headers: response.headers });
-  } catch (error) {
-    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-    if (error instanceof RequestError) throw error;
-    throw new RequestError('登录服务连接超时或网络中断，请稍后重新生成。');
-  } finally {
-    clearTimeout(timeout);
-    signal.removeEventListener('abort', onAbort);
-  }
-}
-
-async function retryRead(path: string, token: string, signal: AbortSignal, onRetry: () => void) {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await request(path, signal, { headers: { Authorization: `Bearer ${token}` } });
-    } catch (error) {
-      const retryable = error instanceof RequestError &&
-        (error.status === 0 || error.status === 429 || error.status >= 500);
-      if (!retryable || attempt >= 2 || signal.aborted) throw error;
-      onRetry();
-      await delay(1_000 * (attempt + 1), signal);
-    }
-  }
-}
-
-function validSession(value: Session): boolean {
-  return typeof value?.id === 'string' && value.id.length > 0 &&
-    typeof value.status === 'string' && Object.hasOwn(statusLabels, value.status) &&
-    !['idle', 'submitting'].includes(value.status) &&
-    Number.isFinite(Date.parse(value.expiresAt));
-}
-
-function Icon({ name, className = '' }: {
-  name: 'leaf' | 'arrow' | 'scan' | 'check' | 'refresh' | 'shield' | 'phone' | 'clock';
-  className?: string;
-}) {
-  const paths: Record<string, ReactNode> = {
-    leaf: <><path d="M18.6 5.4c-6.4-1.7-13.4 2.1-13.4 8.2 0 3.4 3 5.7 5.8 4.3 3.5-1.8 3.5-6.8.1-7.2-2.1-.2-3.2 2.4-1.5 3.6" /><path d="m5 19 5-4M18.6 5.4l-1.1 8.2" /></>,
-    arrow: <><path d="M4 12h15M13 6l6 6-6 6" /></>,
-    scan: <><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M3 12h18" /><path d="M8 8h2v2H8zm6 6h2v2h-2z" /></>,
-    check: <path d="m5 12 4 4L19 6" />,
-    refresh: <><path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 18 17" /></>,
-    shield: <><path d="m12 3 8 3v6c0 5-8 9-8 9S4 17 4 12V6z" /><path d="m8 12 3 3 5-6" /></>,
-    phone: <><rect x="6" y="2" width="12" height="20" rx="3" /><path d="M10 5h4m-3 14h2" /></>,
-    clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
-  };
-  return <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
-}
-
-function ScrollArt() {
+function LoginHelp() {
   return (
-    <div className="scroll-art" aria-hidden="true">
-      <span className="art-coordinate">木ノ葉 · 修行手帖</span>
-      <svg viewBox="0 0 560 280" className="landscape">
-        <defs>
-          <linearGradient id="mountain-fade" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stopColor="#a3b4b7" stopOpacity=".35" />
-            <stop offset="1" stopColor="#a3b4b7" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        <circle cx="336" cy="126" r="84" fill="none" stroke="#bac7c8" strokeWidth=".8" />
-        <circle cx="336" cy="126" r="102" fill="none" stroke="#bac7c8" strokeWidth=".6" strokeDasharray="2 8" />
-        <circle cx="336" cy="126" r="66" fill="#e2e8e8" />
-        <path d="M337 83c-36-10-75 11-75 45 0 19 17 32 33 24 19-10 19-38 0-40-12-1-18 13-8 20m-26 48 27-29m49-68-6 45" fill="none" stroke="#607a7e" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M0 213 77 159l53 29 67-80 97 114 79-45 61 31 61-63 65 73v62H0Z" fill="url(#mountain-fade)" />
-        <path d="M0 245c109-42 151 22 262-8s179-44 298-3M32 258c109-17 202 21 312-7" fill="none" stroke="#a4b9bb" strokeWidth="1" opacity=".55" />
-        <path d="m93 115 18-9-8 19-10-10m10 10 20 1m-20-1-1 19" fill="none" stroke="#cf7445" strokeWidth="1.5" />
-        <path d="m463 81 10-4-5 11-5-7m5 7 11 2" fill="none" stroke="#cf7445" strokeWidth="1.2" />
-        <path d="M56 226h24m-12-12v24M461 156h14m-7-7v14" stroke="#8da1a4" strokeWidth="1" />
-      </svg>
-      <span className="art-stamp">日<br />常</span>
-      <span className="art-caption">每一次出发，都是新的修行。</span>
-    </div>
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="sm" className="gap-2 text-muted-foreground">
+          <CircleHelp aria-hidden="true" />
+          使用帮助
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>如何准备登录二维码</DialogTitle>
+          <DialogDescription>每次生成都会创建一份独立的登录申请。</DialogDescription>
+        </DialogHeader>
+        <ItemGroup className="py-1">
+          {[
+            ['生成二维码', '点击「生成登录二维码」，提交本次登录申请。'],
+            ['等待准备完成', '保持页面打开，页面会自动更新准备进度和二维码。'],
+            ['查看本次二维码', '当前是模拟环境，只能预览流程，扫描后不能登录真实账号。'],
+          ].map(([title, description], index) => (
+            <Item key={title} role="listitem" size="sm" className="items-start px-0">
+              <ItemMedia variant="icon" className="size-8 rounded-lg bg-primary/10 text-primary">
+                <span className="text-sm font-semibold">{index + 1}</span>
+              </ItemMedia>
+              <ItemContent>
+                <ItemTitle>{title}</ItemTitle>
+                <ItemDescription className="line-clamp-none leading-6">{description}</ItemDescription>
+              </ItemContent>
+            </Item>
+          ))}
+        </ItemGroup>
+        <Alert>
+          <Clock3 aria-hidden="true" />
+          <AlertTitle>二维码过期后可以重新生成</AlertTitle>
+          <AlertDescription>遇到连接中断时，页面会自动重试；仍然失败时，点击重新生成即可。</AlertDescription>
+        </Alert>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 export default function App() {
-  const [phase, setPhase] = useState<Phase>('idle');
-  const [session, setSession] = useState<Session | null>(null);
-  const [qrUrl, setQrUrl] = useState<string | null>(null);
-  const [error, setError] = useState('');
-  const [retrying, setRetrying] = useState(false);
-  const [now, setNow] = useState(Date.now());
-  const controllerRef = useRef<AbortController | null>(null);
-  const generationRef = useRef(0);
-  const qrUrlRef = useRef<string | null>(null);
-  const submittingRef = useRef(false);
+  const {
+    phase,
+    session,
+    qrUrl,
+    error,
+    retrying,
+    pending,
+    remainingSeconds,
+    countdown,
+    isError,
+    statusLabel,
+    startLogin,
+    handleQrError,
+  } = useLoginSession();
 
-  const replaceQr = useCallback((next: string | null) => {
-    if (qrUrlRef.current) URL.revokeObjectURL(qrUrlRef.current);
-    qrUrlRef.current = next;
-    setQrUrl(next);
-  }, []);
-
-  useEffect(() => () => {
-    generationRef.current += 1;
-    controllerRef.current?.abort();
-    if (qrUrlRef.current) URL.revokeObjectURL(qrUrlRef.current);
-  }, []);
-
-  useEffect(() => {
-    if (!session || phase === 'expired' || phase === 'failed') return;
-    const generation = generationRef.current;
-    const tick = () => {
-      if (generationRef.current !== generation) return;
-      const timestamp = Date.now();
-      setNow(timestamp);
-      if (timestamp >= Date.parse(session.expiresAt)) {
-        generationRef.current += 1;
-        controllerRef.current?.abort();
-        submittingRef.current = false;
-        replaceQr(null);
-        setPhase('expired');
-        setRetrying(false);
-      }
-    };
-    tick();
-    const interval = window.setInterval(tick, 1_000);
-    return () => clearInterval(interval);
-  }, [session, phase, replaceQr]);
-
-  async function startLogin() {
-    // Ref closes the gap before React renders the disabled button.
-    if (submittingRef.current) return;
-    submittingRef.current = true;
-    controllerRef.current?.abort();
-    const controller = new AbortController();
-    controllerRef.current = controller;
-    const generation = ++generationRef.current;
-    const active = () => generationRef.current === generation && !controller.signal.aborted;
-    setPhase('submitting');
-    setSession(null);
-    setError('');
-    setRetrying(false);
-    replaceQr(null);
-
-    try {
-      // Creation is deliberately not retried: a lost response must not enqueue duplicates.
-      const response = await request('/api/login-sessions', controller.signal, { method: 'POST' });
-      const created = await response.json() as CreatedSession;
-      if (!validSession(created) || typeof created.accessToken !== 'string' || !created.accessToken) {
-        throw new RequestError('登录服务返回了无效信息，请重新生成二维码。');
-      }
-      if (!active()) return;
-      const { accessToken, pollAfterMs, ...publicSession } = created;
-      setSession(publicSession);
-      setPhase(publicSession.status);
-      setNow(Date.now());
-      const path = `/api/login-sessions/${encodeURIComponent(created.id)}`;
-      const pollInterval = Number.isFinite(pollAfterMs) ? Math.min(5_000, Math.max(500, pollAfterMs)) : 1_000;
-      let current: Session = publicSession;
-
-      while (active()) {
-        if (Date.now() >= Date.parse(current.expiresAt)) {
-          setPhase('expired');
-          break;
-        }
-        if (current.status === 'failed') {
-          throw new RequestError('游戏环境暂时未能准备完成，请重新生成二维码。');
-        }
-        if (current.status === 'expired') {
-          setPhase('expired');
-          break;
-        }
-        if (current.status === 'qr_ready') {
-          const qrResponse = await retryRead(`${path}/qr`, accessToken, controller.signal, () => {
-            if (active()) setRetrying(true);
-          });
-          if (!(qrResponse.headers.get('content-type') ?? '').toLowerCase().startsWith('image/png')) {
-            throw new RequestError('二维码格式异常，请重新生成二维码。');
-          }
-          const blob = await qrResponse.blob();
-          if (!active()) return;
-          if (Date.now() >= Date.parse(current.expiresAt)) {
-            setPhase('expired');
-            break;
-          }
-          if (!blob.size) throw new RequestError('二维码图片为空，请重新生成二维码。');
-          replaceQr(URL.createObjectURL(blob));
-          setPhase('qr_ready');
-          setRetrying(false);
-          break;
-        }
-        await delay(pollInterval, controller.signal);
-        const next = await retryRead(path, accessToken, controller.signal, () => {
-          if (active()) setRetrying(true);
-        });
-        current = await next.json() as Session;
-        if (!validSession(current) || current.id !== created.id) {
-          throw new RequestError('登录状态暂时不可用，请重新生成二维码。');
-        }
-        if (!active()) return;
-        setSession(current);
-        // Keep showing preparation until the actual image has been retrieved.
-        setPhase(current.status === 'qr_ready' ? 'preparing_qr' : current.status);
-        setRetrying(false);
-      }
-    } catch (caught) {
-      if (!active()) return;
-      replaceQr(null);
-      setPhase(caught instanceof RequestError && [404, 410].includes(caught.status) ? 'expired' : 'failed');
-      setError(caught instanceof RequestError ? caught.message : '登录状态读取失败，请重新生成二维码。');
-      setRetrying(false);
-    } finally {
-      if (generationRef.current === generation) submittingRef.current = false;
-    }
-  }
-
-  const pending = ['submitting', 'queued', 'starting_emulator', 'opening_game', 'preparing_qr'].includes(phase);
-  const remainingSeconds = session ? Math.max(0, Math.ceil((Date.parse(session.expiresAt) - now) / 1_000)) : 0;
-  const countdown = `${Math.floor(remainingSeconds / 60).toString().padStart(2, '0')}:${(remainingSeconds % 60).toString().padStart(2, '0')}`;
-  const step = phase === 'qr_ready' ? 3 : ['opening_game', 'preparing_qr'].includes(phase) ? 2 : pending ? 1 : 0;
-  const isError = phase === 'failed' || phase === 'expired';
+  const ready = phase === 'qr_ready' && Boolean(qrUrl);
+  const activeStage = phase === 'submitting' ? 0
+    : ['queued', 'starting_emulator', 'opening_game'].includes(phase) ? 1
+      : phase === 'preparing_qr' ? 2
+        : ready ? 3 : -1;
 
   return (
-    <div className="app-shell">
-      <header className="site-header">
-        <div className="brand" aria-label="忍者日常">
-          <span className="brand-mark"><Icon name="leaf" /></span>
-          <span>忍者日常<span className="brand-en">NINJA DAILY</span></span>
+    <div className="min-h-svh bg-muted/35 text-foreground">
+      <header className="border-b bg-background">
+        <div className="mx-auto flex h-18 max-w-5xl items-center justify-between gap-3 px-5 sm:px-8">
+          <div className="flex items-center gap-3" aria-label="忍者日常">
+            <Badge className="size-9 rounded-xl p-0 [&>svg]:size-5!">
+              <Flame aria-hidden="true" />
+            </Badge>
+            <span className="text-base font-semibold tracking-tight">忍者日常</span>
+            <Separator orientation="vertical" className="mx-1 hidden h-5! sm:block" />
+            <span className="hidden text-sm text-muted-foreground sm:block">登录中心</span>
+          </div>
+          <LoginHelp />
         </div>
-        <span className="header-divider" />
-        <span className="page-label">登录中心</span>
-        <span className="environment-tag"><span />本地模拟模式</span>
       </header>
 
-      <main className="login-layout">
-        <section className="intro" aria-labelledby="intro-title">
-          <div className="eyebrow"><span className="short-rule" />今天，也要向前一步</div>
-          <h1 id="intro-title">日常修行，<br />从这里<span className="title-accent">开始。</span></h1>
-          <p className="intro-copy">为熟悉的忍者世界，留一点时间。<br />准备你的登录二维码，让今天的冒险就位。</p>
-          <ScrollArt />
-          <div className="intro-note"><Icon name="shield" /><span>无需输入账号密码<span className="note-divider">/</span>每次申请独立准备</span></div>
-        </section>
-
-        <section className="login-card" aria-labelledby="login-title">
-          <div className="card-topline"><span>ACCOUNT ACCESS</span><span className="card-seal">登 录</span></div>
-          <div className="card-heading">
-            <h2 id="login-title">扫码登录</h2>
-            <p>火影忍者手游 · 与安卓好友玩</p>
+      <main className="mx-auto max-w-5xl px-5 py-9 sm:px-8 sm:py-12 lg:py-14">
+        <div className="mb-7 flex flex-wrap items-end justify-between gap-4 sm:mb-8">
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">登录你的忍者日常</h1>
+            <p className="mt-3 text-sm leading-6 text-muted-foreground sm:text-base">
+              生成专属二维码，准备进入熟悉的忍者世界。
+            </p>
           </div>
-          <div className="login-channel"><span className="channel-icon"><Icon name="phone" /></span><span>安卓 QQ 区</span><span className="channel-fixed">当前登录方式</span></div>
+          <Badge variant="outline" className="gap-1.5 bg-background px-2.5 py-1 text-muted-foreground">
+            <Gamepad2 aria-hidden="true" />
+            模拟环境
+          </Badge>
+        </div>
 
-          <div className={`qr-stage ${qrUrl ? 'has-qr' : ''} ${isError ? 'has-error' : ''}`} aria-busy={pending}>
-            <span className="corner corner-tl" /><span className="corner corner-tr" /><span className="corner corner-bl" /><span className="corner corner-br" />
-            {qrUrl && phase === 'qr_ready' ? (
-              <img className="qr-image" src={qrUrl} alt="本地模拟登录二维码，仅用于流程演示，不能登录真实账号" onError={() => {
-                replaceQr(null);
-                setPhase('failed');
-                setError('二维码图片加载失败，请重新生成。');
-              }} />
-            ) : (
-              <div className="qr-placeholder">
-                <div className={`scan-symbol ${pending ? 'is-preparing' : ''}`}>
-                  <Icon name={isError ? 'refresh' : 'scan'} />
-                  {pending && <span className="scan-line" />}
-                </div>
-                <span className="placeholder-title">{isError ? (phase === 'expired' ? '已超过有效时间' : '准备遇到了一点问题') : pending ? '正在为你准备' : '你的冒险，即将开启'}</span>
-                <span className="placeholder-hint">{isError ? '点击下方按钮重新生成' : pending ? '首次准备可能需要一点时间' : '点击下方按钮生成二维码'}</span>
+        <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6">
+          <Card className="gap-0 overflow-hidden shadow-sm">
+            <CardHeader className="gap-2 px-6 pb-6 sm:px-8">
+              <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-lg font-semibold">
+                <ScanLine className="size-5 text-primary" aria-hidden="true" />
+                扫码登录
+              </CardTitle>
+              <CardDescription className="text-sm">火影忍者手游 · 与安卓好友玩</CardDescription>
+              <CardAction>
+                <Badge variant="secondary" className="gap-1.5 font-normal">
+                  <Smartphone aria-hidden="true" />
+                  安卓 QQ 区
+                </Badge>
+              </CardAction>
+            </CardHeader>
+            <Separator />
+
+            <CardContent className="flex flex-col items-center px-6 py-8 sm:px-8 sm:py-9">
+              <div className="w-full max-w-64" aria-busy={pending}>
+                <AspectRatio ratio={1} className="overflow-hidden rounded-xl border bg-background">
+                  {ready && qrUrl ? (
+                    <img
+                      className="size-full object-contain"
+                      src={qrUrl}
+                      alt="本地模拟登录二维码，仅用于流程演示，不能登录真实账号"
+                      onError={handleQrError}
+                    />
+                  ) : (
+                    <>
+                      {pending && <Skeleton className="absolute inset-0 size-full rounded-none motion-reduce:animate-none" />}
+                      <Empty className="relative h-full gap-4 border-0 p-5 md:p-5">
+                        <EmptyHeader className="gap-2.5">
+                          <EmptyMedia variant="icon" className={isError ? 'mb-1 text-destructive' : 'mb-1 text-muted-foreground'}>
+                            {pending ? <Spinner aria-hidden="true" className="size-6 motion-reduce:animate-none" />
+                              : phase === 'expired' ? <TimerOff aria-hidden="true" />
+                                : isError ? <CircleAlert aria-hidden="true" />
+                                  : <QrCode aria-hidden="true" />}
+                          </EmptyMedia>
+                          <EmptyTitle className="text-base">
+                            {phase === 'expired' ? '二维码已过期'
+                              : isError ? '二维码准备失败'
+                                : pending ? '正在准备二维码' : '准备开始登录'}
+                          </EmptyTitle>
+                          <EmptyDescription className="text-sm leading-6">
+                            {isError ? '点击下方按钮重新生成'
+                              : pending ? '请保持页面打开，准备好后会自动显示'
+                                : '点击下方按钮，生成本次登录二维码'}
+                          </EmptyDescription>
+                        </EmptyHeader>
+                      </Empty>
+                    </>
+                  )}
+                </AspectRatio>
               </div>
-            )}
-          </div>
 
-          <div className={`status-message ${isError ? 'status-error' : ''}`} role="status" aria-live="polite" aria-atomic="true">
-            {pending ? <span className="status-spinner" aria-hidden="true" /> : phase === 'qr_ready' ? <Icon name="check" /> : <span className="status-dot" />}
-            <span>{retrying ? '连接暂时中断，正在重试…' : statusLabels[phase]}</span>
-            {phase === 'qr_ready' && <span className="countdown" aria-label={`剩余 ${remainingSeconds} 秒`}><Icon name="clock" />{countdown}</span>}
-          </div>
-          {error && phase === 'failed' && <p className="error-detail" role="alert">{error}</p>}
-          <button className="generate-button" type="button" onClick={() => { void startLogin(); }} disabled={pending}>
-            <span>{pending ? '正在生成二维码…' : phase === 'idle' ? '生成登录二维码' : '重新生成二维码'}</span>
-            <Icon name={phase === 'idle' ? 'arrow' : 'refresh'} />
-          </button>
-          <p className="simulation-note"><span className="simulation-label">模拟演示</span>当前二维码仅用于验证流程，不能授权真实账号。</p>
+              <div className="mt-5 flex min-h-6 flex-wrap items-center justify-center gap-x-3 gap-y-2 text-sm" role="status" aria-live="polite" aria-atomic="true">
+                <span className={`inline-flex items-center gap-2 ${isError ? 'text-destructive' : 'text-muted-foreground'}`}>
+                  {pending ? <Spinner aria-hidden="true" className="size-3.5 motion-reduce:animate-none" />
+                    : ready ? <Check className="size-4 text-primary" aria-hidden="true" />
+                      : <Clock3 className="size-3.5" aria-hidden="true" />}
+                  {retrying ? '连接暂时中断，正在重试…' : statusLabel}
+                </span>
+                {ready && (
+                  <Badge variant="secondary" className="gap-1.5 font-mono tabular-nums" aria-label={`剩余 ${remainingSeconds} 秒`}>
+                    <Clock3 aria-hidden="true" />
+                    {countdown}
+                  </Badge>
+                )}
+              </div>
 
-          <ol className="progress-steps" aria-label="二维码准备进度">
-            {['提交申请', '准备游戏', '获取二维码'].map((label, index) => (
-              <li key={label} className={step > index + 1 || phase === 'qr_ready' ? 'is-complete' : step === index + 1 ? 'is-current' : ''} aria-current={step === index + 1 && pending ? 'step' : undefined}>
-                <span className="step-marker">{step > index + 1 || phase === 'qr_ready' ? <Icon name="check" /> : index + 1}</span>
-                <span>{label}</span>
-              </li>
-            ))}
-          </ol>
-          {session && <details className="session-details"><summary>查看本次申请</summary><div><span>申请编号</span><code>{session.id}</code></div><p>关闭页面后，可重新生成新的登录二维码。</p></details>}
-        </section>
+              {error && phase === 'failed' && (
+                <Alert variant="destructive" className="mt-5">
+                  <CircleAlert aria-hidden="true" />
+                  <AlertTitle>暂时无法获取二维码</AlertTitle>
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
+
+              <Button
+                type="button"
+                size="lg"
+                className="mt-6 h-11 w-full max-w-sm gap-2 text-sm"
+                onClick={() => { void startLogin(); }}
+                disabled={pending}
+              >
+                {pending ? <Spinner aria-hidden="true" className="motion-reduce:animate-none" />
+                  : phase === 'idle' ? <QrCode aria-hidden="true" />
+                    : <RefreshCw aria-hidden="true" />}
+                {pending ? '正在生成二维码…' : phase === 'idle' ? '生成登录二维码' : '重新生成二维码'}
+                {phase === 'idle' && <ArrowRight className="ml-1" aria-hidden="true" />}
+              </Button>
+              <p className="mt-3 flex items-center gap-1.5 text-sm text-muted-foreground">
+                <ShieldCheck className="size-3.5" aria-hidden="true" />
+                无需在此输入账号密码
+              </p>
+            </CardContent>
+
+            <CardFooter className="flex-col items-stretch gap-4 border-t bg-muted/20 px-6 py-5 sm:px-8">
+              <Alert className="border-0 bg-transparent p-0 text-muted-foreground">
+                <CircleAlert aria-hidden="true" />
+                <AlertTitle className="text-sm font-medium text-foreground">当前为模拟登录演示</AlertTitle>
+                <AlertDescription className="text-sm leading-6">
+                  二维码仅用于预览登录流程，不能授权或登录真实账号。
+                </AlertDescription>
+              </Alert>
+              {session && (
+                <Accordion type="single" collapsible>
+                  <AccordionItem value="session" className="border-b-0 border-t">
+                    <AccordionTrigger className="py-3 text-sm font-normal text-muted-foreground">本次申请详情</AccordionTrigger>
+                    <AccordionContent className="space-y-3 pb-1 text-sm">
+                      <div className="space-y-1.5">
+                        <p className="text-muted-foreground">申请编号</p>
+                        <code className="block break-all rounded-md border bg-background px-3 py-2 font-mono text-xs leading-5">{session.id}</code>
+                      </div>
+                      <p className="leading-6 text-muted-foreground">关闭页面后，可以重新生成新的登录二维码。</p>
+                    </AccordionContent>
+                  </AccordionItem>
+                </Accordion>
+              )}
+            </CardFooter>
+          </Card>
+
+          <div className="space-y-5 lg:space-y-6">
+            <Card className="gap-4 shadow-sm">
+              <CardHeader className="gap-2">
+                <CardTitle role="heading" aria-level={2} className="text-base">登录准备</CardTitle>
+                <CardDescription className="text-sm">每次申请，独立准备。</CardDescription>
+                <CardAction>
+                  <Badge variant="outline" className="font-normal text-muted-foreground">
+                    {ready ? '已就绪' : isError ? '已结束' : pending ? '准备中' : '待开始'}
+                  </Badge>
+                </CardAction>
+              </CardHeader>
+              <CardContent>
+                <ItemGroup aria-label="二维码准备进度" className="gap-1">
+                  {preparationSteps.map(({ title, description, icon: StepIcon }, index) => {
+                    const complete = activeStage > index;
+                    const active = pending && activeStage === index;
+                    return (
+                      <Item key={title} role="listitem" size="sm" variant={active ? 'muted' : 'default'} className="items-start gap-3 px-2.5 py-3" aria-current={active ? 'step' : undefined}>
+                        <ItemMedia variant="icon" className={`size-8 rounded-lg ${active || complete ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
+                          {complete ? <Check aria-hidden="true" />
+                            : active ? <Spinner aria-hidden="true" className="motion-reduce:animate-none" />
+                              : <StepIcon aria-hidden="true" />}
+                        </ItemMedia>
+                        <ItemContent className="gap-1">
+                          <ItemTitle className={active || complete ? 'text-sm' : 'text-sm text-muted-foreground'}>
+                            {title}
+                          </ItemTitle>
+                          <ItemDescription className="line-clamp-none text-sm leading-6">{description}</ItemDescription>
+                        </ItemContent>
+                      </Item>
+                    );
+                  })}
+                </ItemGroup>
+                <Separator className="my-4" />
+                <p className="flex items-start gap-2 text-sm leading-6 text-muted-foreground">
+                  {ready ? <CheckCheck className="mt-1 size-4 shrink-0 text-primary" aria-hidden="true" />
+                    : <Clock3 className="mt-1 size-4 shrink-0" aria-hidden="true" />}
+                  {ready ? '模拟二维码已显示，可重新生成体验完整流程。'
+                    : isError ? '本次申请已结束，重新生成即可再次尝试。'
+                      : '准备时间可能稍有不同，无需手动刷新页面。'}
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card className="gap-2 shadow-sm">
+              <CardHeader>
+                <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base">
+                  <CircleHelp className="size-4 text-muted-foreground" aria-hidden="true" />
+                  常见问题
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Accordion type="single" collapsible>
+                  <AccordionItem value="simulation">
+                    <AccordionTrigger className="text-sm font-medium">现在可以登录游戏吗？</AccordionTrigger>
+                    <AccordionContent className="text-sm leading-6 text-muted-foreground">
+                      暂时不可以。当前提供模拟二维码，用于体验申请、等待和显示二维码的完整流程。
+                    </AccordionContent>
+                  </AccordionItem>
+                  <AccordionItem value="expires" className="border-b-0">
+                    <AccordionTrigger className="text-sm font-medium">二维码过期或生成失败怎么办？</AccordionTrigger>
+                    <AccordionContent className="text-sm leading-6 text-muted-foreground">
+                      点击「重新生成二维码」创建新的申请。如果持续失败，请确认本地登录服务已启动，再尝试生成。
+                    </AccordionContent>
+                  </AccordionItem>
+                </Accordion>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+
+        <footer className="mt-7 flex flex-wrap items-center justify-between gap-2 text-xs leading-5 text-muted-foreground sm:mt-8">
+          <span>忍者日常 · 登录中心</span>
+          <span>本地开发预览</span>
+        </footer>
       </main>
-
-      <footer className="site-footer"><span>忍者日常 · 每天一点，慢慢变强。</span><span className="footer-mode">当前为开发预览 · 登录流程模拟中</span></footer>
     </div>
   );
 }
