@@ -9,6 +9,7 @@ export interface Config {
   host: string;
   port: number;
   redisUrl?: string;
+  databaseUrl?: string;
   redisQueueKey: string;
   localObjectsDir: string;
   sessionTtlMs: number;
@@ -40,12 +41,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     } catch { throw new Error('REDIS_URL 必须为有效的 redis:// 或 rediss:// 连接地址'); }
   }
   const redisQueueKey = env.REDIS_QUEUE_KEY ?? 'naruto:login:tasks';
+  const databaseUrl = env.DATABASE_URL?.trim() || undefined;
+  if (databaseUrl) {
+    try {
+      const url = new URL(databaseUrl);
+      if (!['postgres:', 'postgresql:'].includes(url.protocol) || !url.hostname || !url.pathname.replace(/^\//, '') || url.hash) throw new Error();
+    } catch { throw new Error('DATABASE_URL 必须为有效的 postgres:// 或 postgresql:// 数据库连接地址'); }
+  }
   if (!/^[a-zA-Z0-9_:{}-]{1,128}$/.test(redisQueueKey)) throw new Error('REDIS_QUEUE_KEY 格式不正确');
   const ossPrefix = (env.OSS_KEY_PREFIX ?? 'login').replace(/^\/+|\/+$/g, '');
   if (!/^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(ossPrefix)) throw new Error('OSS_KEY_PREFIX 格式不正确');
   const config: Config = {
     host: env.HOST ?? '127.0.0.1', port: integer(env, 'PORT', 4300, 1, 65535),
-    redisUrl, redisQueueKey,
+    redisUrl, redisQueueKey, databaseUrl,
     localObjectsDir: resolve(env.LOCAL_OBJECTS_DIR ?? resolve(serverRoot, '../../.data/login-objects')),
     sessionTtlMs: integer(env, 'SESSION_TTL_MS', 120000, 5000, 600000),
     timeoutMs: integer(env, 'REQUEST_TIMEOUT_MS', 5000, 100, 30000),

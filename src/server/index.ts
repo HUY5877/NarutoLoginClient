@@ -5,6 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createApp } from './app.js';
+import { AuthService } from './auth.js';
 import { loadConfig } from './config.js';
 import { releasePort } from './port.js';
 import { createObjectReader } from './storage.js';
@@ -23,7 +24,8 @@ try {
   process.exit(1);
 }
 const tasks = new TaskService(config);
-const app = createApp(config, { tasks, storage: createObjectReader(config) });
+const auth = new AuthService(config);
+const app = createApp(config, { tasks, auth, storage: createObjectReader(config) });
 const server = createServer(app);
 let vite: import('vite').ViteDevServer | undefined;
 
@@ -64,6 +66,7 @@ async function shutdown() {
   server.closeIdleConnections();
   setTimeout(() => server.closeAllConnections(), 5000).unref();
   await vite?.close();
+  await auth.close();
 }
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => { void shutdown(); });

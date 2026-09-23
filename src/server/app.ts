@@ -1,22 +1,36 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import express, { type ErrorRequestHandler, type Request } from 'express';
+import express, { type CookieOptions, type ErrorRequestHandler, type Request } from 'express';
+import type { AuthService, User } from './auth.js';
 import type { Config } from './config.js';
 import type { ObjectReader } from './storage.js';
 import { ApiError } from './errors.js';
 import type { TaskService } from './queue.js';
 
-export interface Dependencies { tasks: Pick<TaskService, 'enqueue' | 'get'>; storage: ObjectReader; now?: () => number }
+export interface Dependencies {
+  tasks: Pick<TaskService, 'enqueue' | 'getForUser' | 'getActive'>;
+  auth: Pick<AuthService, 'register' | 'login' | 'getUser' | 'logout'>;
+  storage: ObjectReader;
+  now?: () => number;
+}
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const cookieName = 'naruto_session';
 
-function session(req: Request): { id: string; token: string } {
+function sessionId(req: Request): string {
   const id = req.params.id;
-  const match = /^Bearer ([0-9a-f]{64})$/.exec(req.get('Authorization') ?? '');
   if (typeof id !== 'string' || !uuid.test(id)) throw new ApiError(400, '无效的登录申请编号。');
-  if (!match) throw new ApiError(401, '缺少登录申请凭证，请重新生成二维码。');
-  return { id, token: match[1] };
+  return id;
 }
 
-export function createApp(config: Config, { tasks, storage, now = Date.now }: Dependencies) {
+function sessionToken(req: Request): string | undefined {
+  const value = req.get('Cookie')?.split(';').map(part => part.trim()).find(part => part.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
+  return value && /^[0-9a-f]{64}$/.test(value) ? value : undefined;
+}
+
+function cookieOptions(req: Request): CookieOptions {
+  return { httpOnly: true, sameSite: 'lax', secure: req.secure, path: '/' };
+}
+
+export function createApp(config: Config, { tasks, auth, storage, now = Date.now }: Dependencies) {
   const app = express();
   app.disable('x-powered-by');
   app.use('/api', (_req, res, next) => {
@@ -26,22 +40,55 @@ export function createApp(config: Config, { tasks, storage, now = Date.now }: De
   app.use(express.json({ limit: '2kb' }));
   app.get('/api/health', (_req, res) => res.json({ ok: true, storage: config.storageDriver, simulation: true }));
 
-  app.post('/api/login-sessions', async (req, res) => {
+  app.use('/api', (req, _res, next) => {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
     const origin = req.get('Origin');
     const ownOrigin = `${req.protocol}://${req.get('Host')}`;
     if (req.get('Sec-Fetch-Site') === 'cross-site' || origin && origin !== ownOrigin && !config.allowedOrigins.includes(origin)) {
       throw new ApiError(403, '请从登录页面发起申请。');
     }
-    const created = now();
-    const task = { id: randomUUID(), accessToken: randomBytes(32).toString('hex'),
-      createdAt: new Date(created).toISOString(), expiresAt: new Date(created + config.sessionTtlMs).toISOString() };
-    await tasks.enqueue(task);
-    res.status(202).json({ ...task, status: 'queued', pollAfterMs: 1000, simulation: true });
+    if (!req.is('application/json') && !/^application\/json(?:;|$)/i.test(req.get('Content-Type') ?? '')) {
+      throw new ApiError(415, '请使用 JSON 格式提交请求。');
+    }
+    next();
   });
 
+  app.get('/api/auth/me', async (req, res) => res.json({ user: await auth.getUser(sessionToken(req)) }));
+  for (const action of ['register', 'login'] as const) {
+    app.post(`/api/auth/${action}`, async (req, res) => {
+      const result = await auth[action](req.body);
+      res.cookie(cookieName, result.token, { ...cookieOptions(req), expires: result.expiresAt });
+      res.status(action === 'register' ? 201 : 200).json({ user: result.user });
+    });
+  }
+  app.post('/api/auth/logout', async (req, res) => {
+    await auth.logout(sessionToken(req));
+    res.clearCookie(cookieName, cookieOptions(req));
+    res.status(204).end();
+  });
+
+  app.use('/api/login-sessions', async (req, res, next) => {
+    const user = await auth.getUser(sessionToken(req));
+    if (!user) throw new ApiError(401, '请先登录账号，再获取二维码。', 'AUTH_REQUIRED');
+    res.locals.user = user;
+    next();
+  });
+  app.post('/api/login-sessions', async (_req, res) => {
+    const user = res.locals.user as User;
+    const created = now();
+    const task = { id: randomUUID(), userId: user.id, accessToken: randomBytes(32).toString('hex'),
+      createdAt: new Date(created).toISOString(), expiresAt: new Date(created + config.sessionTtlMs).toISOString() };
+    await tasks.enqueue(task);
+    res.status(202).json({ id: task.id, createdAt: task.createdAt, expiresAt: task.expiresAt, status: 'queued', pollAfterMs: 1000, simulation: true });
+  });
+
+  app.get('/api/login-sessions/active', async (_req, res) => {
+    const user = res.locals.user as User;
+    res.json({ session: await tasks.getActive(user.id) });
+  });
   app.get('/api/login-sessions/:id', async (req, res) => {
-    const { id, token } = session(req);
-    const task = await tasks.get(id, token);
+    const id = sessionId(req);
+    const task = await tasks.getForUser(id, (res.locals.user as User).id);
     if (now() >= Date.parse(task.expiresAt) || task.status === 'expired') return res.json({ ...task, status: 'expired' });
     if (task.status === 'failed') return res.json(task);
     // 对象是否存在决定二维码就绪；队列状态只用于显示当前步骤。
@@ -51,8 +98,8 @@ export function createApp(config: Config, { tasks, storage, now = Date.now }: De
   });
 
   app.get('/api/login-sessions/:id/qr', async (req, res) => {
-    const { id, token } = session(req);
-    const task = await tasks.get(id, token);
+    const id = sessionId(req);
+    const task = await tasks.getForUser(id, (res.locals.user as User).id);
     if (task.status === 'expired' || now() >= Date.parse(task.expiresAt)) throw new ApiError(410, '二维码已过期，请重新生成。');
     if (task.status === 'failed') throw new ApiError(409, '本次二维码生成失败，请重新申请。');
     const content = await storage.read(id);

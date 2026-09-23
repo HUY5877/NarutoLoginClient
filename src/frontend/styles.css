@@ -60,7 +60,7 @@
     --secondary: #edf2f4;
     --secondary-foreground: #435964;
     --muted: #eef3f5;
-    --muted-foreground: #586b76;
+    --muted-foreground: #3e535e;
     --accent: #e6edef;
     --accent-foreground: #253743;
     --destructive: oklch(0.577 0.245 27.325);
@@ -158,7 +158,7 @@
 .village-backdrop::after {
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, #eef3f51a 0%, #eef3f533 55%, #eef3f559 100%);
+  background: linear-gradient(180deg, #eef3f50d 0%, #eef3f514 55%, #eef3f529 100%);
   content: '';
 }
 
@@ -166,7 +166,28 @@
   padding: 0.75rem 1rem;
   border: 1px solid #ffffffb3;
   border-radius: 0.875rem;
-  background: #ffffffed;
+  background: #eef5f88f;
+  backdrop-filter: blur(1.5px);
+}
+
+.village-header {
+  background: #f3f7fa99;
+  backdrop-filter: blur(1.5px);
+}
+
+.village-glass {
+  background: #f5f9fb8f;
+  backdrop-filter: blur(1.5px);
+  border-color: #ffffffa6;
+}
+
+.login-card-footer {
+  background: #e8f1f51a;
+}
+
+.auth-dialog {
+  background: #f4f8fa99;
+  backdrop-filter: blur(2px);
 }
 
 .headband-mark {
@@ -188,7 +209,8 @@
   min-height: 14.5rem;
   border: 1px solid #ffffffb3;
   border-radius: 1.25rem;
-  background: linear-gradient(100deg, #f1f6f8f5 0%, #eef4f7ed 48%, #e5edf1a6 100%);
+  background: linear-gradient(100deg, #f1f6f894 0%, #eef4f766 48%, #e5edf11f 100%);
+  backdrop-filter: blur(1px);
 }
 
 .village-hero-copy {
@@ -237,8 +259,12 @@
   position: relative;
   padding: 0.5rem;
   border-radius: 1.25rem;
-  background: #fff;
+  background: #ffffff40;
   box-shadow: 0 0 0 1px #e0e7eb;
+}
+
+.qr-frame[data-ready='true'] {
+  background: #fff;
 }
 
 .qr-frame::before,

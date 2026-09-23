@@ -1,13 +1,15 @@
 import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
+import { ApiError } from '../src/server/errors.js';
 import { TaskService, type RedisDriver, type Submission } from '../src/server/queue.js';
 
 const now = Date.now();
 const config = { redisUrl: 'redis://localhost:6379', redisQueueKey: 'naruto:login:tasks', timeoutMs: 100, ossPrefix: 'login' };
-const task: Submission = { id: '123e4567-e89b-42d3-a456-426614174000', accessToken: 'a'.repeat(64),
+const task: Submission = { id: '123e4567-e89b-42d3-a456-426614174000',
+  userId: '456e7890-e89b-42d3-a456-426614174000', accessToken: 'a'.repeat(64),
   createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 120000).toISOString() };
-const stored = { id: task.id, status: 'queued', createdAt: task.createdAt, expiresAt: task.expiresAt,
+const stored = { id: task.id, userId: task.userId, status: 'queued', createdAt: task.createdAt, expiresAt: task.expiresAt,
   simulation: true, tokenHash: createHash('sha256').update(task.accessToken).digest('hex') };
 
 function driver(overrides: Partial<RedisDriver> = {}): RedisDriver {
@@ -17,18 +19,22 @@ function driver(overrides: Partial<RedisDriver> = {}): RedisDriver {
 
 test('未配置 Redis 时返回明确 503，不创建连接', async () => {
   const service = new TaskService({ ...config, redisUrl: undefined }, () => { assert.fail('must not connect'); }, () => now);
-  for (const request of [() => service.enqueue(task), () => service.get(task.id, task.accessToken)]) {
+  for (const request of [() => service.enqueue(task), () => service.get(task.id, task.accessToken),
+    () => service.getForUser(task.id, task.userId), () => service.getActive(task.userId)]) {
     await assert.rejects(request, { status: 503, code: 'REDIS_NOT_CONFIGURED', message: 'Redis 未配置，请先配置 REDIS_URL。' });
   }
 });
 
 test('原子提交会话与 LPUSH 任务，队列不含浏览器凭证，TTL 只保留剩余有效期', async () => {
   const service = new TaskService(config, () => driver({ eval: async (_script, options, signal) => {
-    assert.deepEqual(options.keys, [config.redisQueueKey, `${config.redisQueueKey}:sessions:${task.id}`]);
+    assert.deepEqual(options.keys, [config.redisQueueKey, `${config.redisQueueKey}:sessions:${task.id}`,
+      `${config.redisQueueKey}:users:${task.userId}:active`]);
     assert.deepEqual(JSON.parse(options.arguments[0]), stored);
     assert.equal(options.arguments[1], '119000');
     assert.deepEqual(JSON.parse(options.arguments[2]), { version: 1, id: task.id, createdAt: task.createdAt,
       expiresAt: task.expiresAt, objectKey: `login/${task.id}/qr.png` });
+    assert.equal(options.arguments[3], new Date(now + 1000).toISOString());
+    assert.ok(!options.arguments[2].includes(task.userId));
     assert.ok(!options.arguments.join('').includes(task.accessToken));
     assert.equal(signal.aborted, false);
     return 1;
@@ -46,6 +52,30 @@ test('Redis 返回既有会话时视为成功，重复提交保留原申请内�
   assert.deepEqual(calls[0], calls[1]);
   const invalid = new TaskService(config, () => driver({ eval: async () => 'unexpected' }), () => now);
   await assert.rejects(invalid.enqueue(task), { status: 502 });
+});
+
+test('账号已有有效申请返回明确 409，保持 Redis 连接可用', async () => {
+  let factories = 0;
+  let destroyed = 0;
+  let submissions = 0;
+  const service = new TaskService(config, () => {
+    factories++;
+    return driver({ eval: async () => ++submissions === 1 ? -1 : 1, destroy: () => { destroyed++; } });
+  }, () => now);
+  await assert.rejects(service.enqueue(task), {
+    status: 409, code: 'ACTIVE_LOGIN_SESSION',
+    message: '当前账号已有登录申请，请等待二维码过期或申请失败后重试。',
+  });
+  await service.enqueue({ ...task, id: '123e4567-e89b-42d3-a456-426614174001' });
+  assert.equal(factories, 1);
+  assert.equal(destroyed, 0);
+});
+
+test('业务错误不会被 Redis 通用 503 覆盖', async () => {
+  const error = new ApiError(409, '已有登录申请', 'ACTIVE_LOGIN_SESSION');
+  const service = new TaskService(config, () => driver({ eval: async () => { throw error; },
+    destroy: () => assert.fail('business errors must not destroy the connection') }), () => now);
+  await assert.rejects(service.enqueue(task), actual => actual === error);
 });
 
 test('并发请求复用一次 Redis 连接', async () => {
@@ -68,6 +98,55 @@ test('会话读取验证凭证，只返回客户端可见字段', async () => {
   await assert.rejects(service.get(task.id, 'wrong-token'), { status: 404 });
   const missing = new TaskService(config, () => driver({ get: async () => null }), () => now);
   await assert.rejects(missing.get(task.id, task.accessToken), { status: 404 });
+});
+
+test('Cookie 身份只可读取自己的申请，响应不暴露内部字段', async () => {
+  const service = new TaskService(config, () => driver({ get: async key => {
+    assert.equal(key, `${config.redisQueueKey}:sessions:${task.id}`);
+    return JSON.stringify({ ...stored, workerId: 'private-worker', privateInternalError: 'secret' });
+  } }), () => now);
+  assert.deepEqual(await service.getForUser(task.id, task.userId), { id: task.id, status: 'queued',
+    createdAt: task.createdAt, expiresAt: task.expiresAt, simulation: true });
+  await assert.rejects(service.getForUser(task.id, '456e7890-e89b-42d3-a456-426614174001'), { status: 404 });
+  const missing = new TaskService(config, () => driver({ get: async () => null }), () => now);
+  await assert.rejects(missing.getForUser(task.id, task.userId), { status: 404 });
+  const legacy = new TaskService(config, () => driver({ get: async () => JSON.stringify({ ...stored, userId: undefined }) }), () => now);
+  await assert.rejects(legacy.getForUser(task.id, task.userId), { status: 404 });
+  const damagedOtherOwner = new TaskService(config, () => driver({ get: async () => JSON.stringify({ ...stored, tokenHash: 'bad' }) }), () => now);
+  await assert.rejects(damagedOtherOwner.getForUser(task.id, 'other-user'), { status: 404 });
+});
+
+test('有效账号锁可恢复处理中及 qr_ready 申请，查询只读且不暴露内部信息', async () => {
+  for (const status of ['queued', 'starting_emulator', 'opening_game', 'preparing_qr', 'qr_ready']) {
+    const keys: string[] = [];
+    const service = new TaskService(config, () => driver({ get: async key => {
+      keys.push(key);
+      return keys.length === 1 ? task.id : JSON.stringify({ ...stored, status, workerId: 'secret' });
+    }, eval: async () => assert.fail('active lookup must not mutate locks') }), () => now);
+    assert.deepEqual(await service.getActive(task.userId), { id: task.id, status,
+      createdAt: task.createdAt, expiresAt: task.expiresAt, simulation: true });
+    assert.deepEqual(keys, [`${config.redisQueueKey}:users:${task.userId}:active`, `${config.redisQueueKey}:sessions:${task.id}`]);
+  }
+});
+
+test('失效、失败、丢失或不属于账号的 active 会话返回 null，不删除可能已更新的锁', async () => {
+  const cases = [
+    { lock: null, raw: null, at: now },
+    { lock: task.id, raw: null, at: now },
+    { lock: task.id, raw: JSON.stringify({ ...stored, status: 'failed' }), at: now },
+    { lock: task.id, raw: JSON.stringify({ ...stored, status: 'expired' }), at: now },
+    { lock: task.id, raw: JSON.stringify({ ...stored, status: 'qr_ready' }), at: now + 120000 },
+    { lock: task.id, raw: JSON.stringify({ ...stored, userId: 'other-user' }), at: now },
+  ];
+  for (const scenario of cases) {
+    let reads = 0;
+    const service = new TaskService(config, () => driver({
+      get: async () => ++reads === 1 ? scenario.lock : scenario.raw,
+      eval: async () => assert.fail('stale lock cleanup must be atomic during enqueue'),
+    }), () => scenario.at);
+    assert.equal(await service.getActive(task.userId), null);
+    assert.equal(reads, scenario.lock === null ? 1 : 2);
+  }
 });
 
 test('过期申请拒绝入队，读取时标记 expired', async () => {

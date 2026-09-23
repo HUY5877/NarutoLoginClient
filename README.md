@@ -2,7 +2,7 @@
 
 React / TSX 前端和 TypeScript 客户端后端放在同一个仓库。客户端后端生成唯一任务 ID，将任务直接投放到 Redis，Python 工作进程通过 Redis 取任务并上传二维码到阿里云 OSS；客户端后端检查 OSS，页面读取并显示二维码。
 
-**当前客户端已配置 Redis DB 0 与 OSS，Python 项目仍需适配新队列协议。** 网站可以独立启动和部署；其他环境未配置 `REDIS_URL` 时，申请接口明确返回 `503 / REDIS_NOT_CONFIGURED`，不会假装投递成功。完整的自动二维码流程尚未接通，也尚未实现雷电点击、真实扫码确认或登录成功回调。
+**用户先注册或登录网站账号，再申请游戏二维码。** 同一个账号同时只能有一条有效申请；不同标签页、刷新页面或重新登录会恢复已有申请。Python 工作进程已接入 Redis 与 OSS，当前生成模拟二维码，尚未实现雷电点击、真实扫码确认或登录成功回调。
 
 ## 本地启动
 
@@ -14,7 +14,7 @@ npm ci
 npm run dev
 ```
 
-打开 <http://127.0.0.1:4300>。页面、API 和开发热更新共用一个端口；不需要单独启动 Vite，也不需要 Python HTTP 服务。页面可在没有 `.env` 的情况下打开，投递登录任务仍需可连接的 Redis。
+打开 <http://127.0.0.1:4300>。页面、API 和开发热更新共用一个端口；不需要单独启动 Vite，也不需要 Python HTTP 服务。页面可在没有 `.env` 的情况下打开，注册登录需要 PostgreSQL，投递登录任务需要 Redis。
 
 需要配置时，将根目录 `.env.example` 复制为 `.env` 并填写已有服务的信息，不要覆盖原有配置或提交密钥。客户端和 Python 工作进程必须连接同一个 Redis，并使用一致的队列键、OSS Bucket 和对象前缀。
 
@@ -32,21 +32,28 @@ npm start
 ## 执行路径
 
 ```text
+TSX 页面注册 / 登录 → PostgreSQL 账户与会话 → HttpOnly Cookie
 TSX 页面 POST /api/login-sessions
-  → TS 后端生成 UUID、随机访问凭证、过期时间
-  → Redis 原子保存会话及凭证哈希，并 LPUSH 登录任务
+  → TS 后端校验网站账号，生成 UUID 和过期时间
+  → Redis 原子检查账号当前任务、保存会话，并 LPUSH 登录任务
   → Python 工作进程 BRPOP 同一个队列
-  → Python 启动模拟器、获取二维码（待适配实现）
+  → Python 启动独立模拟进程、生成演示二维码
   → Python 上传 login/{id}/qr.png 到 OSS
 
 TSX 页面每秒 GET /api/login-sessions/{id}
-  → TS 后端从 Redis 读取会话并校验访问凭证
+  → TS 后端校验网站账号与 Redis 任务归属
   → HEAD OSS 对象，存在即返回 qr_ready
   → 页面 GET /api/login-sessions/{id}/qr
   → TS 后端 GET OSS 对象并转发 PNG
 ```
 
-浏览器只访问客户端 API。Redis 连接信息和 OSS 密钥由 TS 后端读取；访问凭证只保存在页面内存，刷新页面需重新申请。申请默认有效期为 120 秒。
+浏览器只访问客户端 API。数据库、Redis 连接信息和 OSS 密钥由 TS 后端读取；登录凭证通过 HttpOnly Cookie 保存，有效期为 7 天。二维码申请默认有效期为 120 秒，获取成功后仍占用该账号名额，失败或过期才允许重新申请。
+
+## 网站账号
+
+只需新增一个 `DATABASE_URL`，例如 `postgresql://username:password@host:5432/naruto_login`。本项目使用独立数据库 `naruto_login`，不使用 `hackathon`。首次访问认证功能时自动在目标库创建 `naruto_login.users` 和 `naruto_login.sessions`，不会改动其他业务表。用户名为 3–24 个汉字、英文字母、数字、下划线或短横线，英文字母不区分大小写，数据库唯一约束防止并发重复注册；密码为 8–128 个字符，按当前项目要求以明文保存在 `users.password` 中，API 不返回该字段。会话表仅保存随机登录凭证的 SHA-256 摘要。
+
+未配置数据库时，注册登录返回 `503 / DATABASE_NOT_CONFIGURED`；未登录申请二维码返回 `401 / AUTH_REQUIRED`。同账号并发申请由 Redis Lua 原子拦截，返回 `409 / ACTIVE_LOGIN_SESSION`，页面自动读取该账号当前任务；不能通过修改请求中的用户 ID 访问其他账号的二维码。
 
 ## Redis 与 Python 接入协议
 
@@ -66,11 +73,11 @@ TSX 页面每秒 GET /api/login-sessions/{id}
 
 Python 消费端需要校验消息版本、UUID 和过期时间，直接丢弃已过期任务，再按 `objectKey` 上传 PNG。开始处理和上传前都应检查过期时间，避免继续处理已失效申请。Redis 会话有 TTL，但列表中的过期任务不会自动消失，必须由消费端丢弃。
 
-会话保存在 `<REDIS_QUEUE_KEY>:sessions:<id>`，默认例如 `naruto:login:tasks:sessions:123e4567-e89b-42d3-a456-426614174000`。值为 JSON，包含 `id`、`status`、`createdAt`、`expiresAt`、`simulation: true` 和 `tokenHash`。队列消息不含浏览器原始访问凭证。
+会话保存在 `<REDIS_QUEUE_KEY>:sessions:<id>`，默认例如 `naruto:login:tasks:sessions:123e4567-e89b-42d3-a456-426614174000`。值为 JSON，包含 `id`、`userId`、`status`、`createdAt`、`expiresAt`、`simulation: true` 和协议兼容字段 `tokenHash`。账号当前申请保存在 `<REDIS_QUEUE_KEY>:users:<userId>:active`，与申请同时过期。队列消息不含账号密码或网站登录凭证。
 
 工作进程可以选择回写 `starting_emulator`、`opening_game`、`preparing_qr` 或 `failed` 等状态。回写时必须保留 `tokenHash`、时间字段和其他会话字段，并保留原 TTL；例如更新既有 JSON 后使用 `SET ... XX KEEPTTL`，不要新建已过期会话或延长申请有效期。不回写中间状态也可以，客户端会继续检查 OSS，文件到达后显示二维码。
 
-现有 Python 项目位于 `E:\code\NarutoDailyADB` 的 `naruto_daily/login_service/`。其中旧的模拟 HTTP 队列尚未改为消费上述 Redis 消息，不能直接当作新协议工作进程使用；接入需在该项目中另行实现。客户端已不再调用它的 HTTP 接口。
+Python 项目位于 `E:\code\NarutoDailyADB` 的 `naruto_daily/login_service/`，通过 Redis 消费上述协议。客户端不调用 Python HTTP 接口；本次账户功能不改变队列消息格式，工作进程回写状态时需继续保留 `userId` 等额外字段。
 
 ## 对象存储
 
@@ -104,6 +111,7 @@ Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run 
 
 | 变量 | 内容 |
 | --- | --- |
+| `DATABASE_URL` | PostgreSQL 连接地址，用于网站账号与登录会话 |
 | `REDIS_URL` | 云端和 Python 均可访问的 Redis 地址；暂缺时可不填，申请接口会返回明确的 503 |
 | `STORAGE_DRIVER` | `oss` |
 | `OSS_REGION` | `oss-cn-shanghai` |
@@ -131,9 +139,14 @@ Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run 
 
 | 接口 | 结果 |
 | --- | --- |
-| `POST /api/login-sessions` | 成功投递后返回 `202`，包含 `id`、`accessToken`、状态和有效时间；未配置 Redis 返回 `503` |
-| `GET /api/login-sessions/:id` | 申请进度，必须携带 `Authorization: Bearer <accessToken>` |
-| `GET /api/login-sessions/:id/qr` | `image/png`，同样需要申请凭证；过期或 Redis 会话失效后不可读取 |
+| `GET /api/auth/me` | 当前网站账号，未登录返回 `{ user: null }` |
+| `POST /api/auth/register` | 用户名、密码注册，返回 `201` 并自动登录 |
+| `POST /api/auth/login` | 用户名、密码登录，设置 HttpOnly Cookie |
+| `POST /api/auth/logout` | 撤销当前登录会话并清除 Cookie |
+| `POST /api/login-sessions` | 登录后成功投递返回 `202`，包含 `id`、状态和有效时间；已有申请返回 `409` |
+| `GET /api/login-sessions/active` | 当前账号未过期申请，供其他标签页与刷新后恢复 |
+| `GET /api/login-sessions/:id` | 当前账号的申请进度，使用登录 Cookie |
+| `GET /api/login-sessions/:id/qr` | 当前账号的二维码 `image/png`；过期或 Redis 会话失效后不可读取 |
 | `GET /api/health` | 客户端后端状态与配置情况，不保证 Redis 或 OSS 实时连通 |
 
 状态包括 `queued`、`starting_emulator`、`opening_game`、`preparing_qr`、`qr_ready`、`failed` 和 `expired`。`qr_ready` 仅表示二维码可读取，不表示账号已登录。OSS 404 表示尚未上传；其他存储错误返回可重试错误。
@@ -165,4 +178,6 @@ npm test
 npm run build
 ```
 
-测试使用模拟 Redis 驱动、模拟 OSS 方法和临时目录，不需要真实云端凭据。覆盖投递与凭证隔离、失败处理、存储就绪判定、过期与 PNG 响应，并检查单端口开发启动。测试通过不代表尚未接入的 Redis 实例和 Python 工作进程已完成联调。
+所有写接口使用 `Content-Type: application/json`，并校验请求来源。
+
+测试使用模拟数据库、Redis 驱动、OSS 方法和临时目录，不需要真实云端凭据。覆盖注册唯一性、登录与会话撤销、任务归属、同账号互斥、失败处理、存储就绪判定、过期与 PNG 响应，并检查单端口开发启动。

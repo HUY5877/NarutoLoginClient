@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   ArrowRight,
   Check,
@@ -5,6 +6,8 @@ import {
   CircleAlert,
   CircleHelp,
   Clock3,
+  LogIn,
+  LogOut,
   QrCode,
   RefreshCw,
   ScanLine,
@@ -12,6 +15,7 @@ import {
   Smartphone,
   TimerOff,
 } from 'lucide-react';
+import { AuthDialog } from '@/components/auth-dialog';
 import {
   Accordion,
   AccordionContent,
@@ -58,6 +62,7 @@ import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { useLoginSession } from '@/hooks/use-login-session';
+import { useAuth } from '@/hooks/use-auth';
 
 function LoginHelp() {
   return (
@@ -71,11 +76,11 @@ function LoginHelp() {
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>如何准备登录二维码</DialogTitle>
-          <DialogDescription>每次生成都会创建一份独立的登录申请。</DialogDescription>
+          <DialogDescription>先登录忍者日常账户，再准备游戏登录二维码。</DialogDescription>
         </DialogHeader>
         <ItemGroup className="py-1">
           {[
-            ['生成二维码', '点击「生成登录二维码」，提交本次登录申请。'],
+            ['登录并获取二维码', '注册或登录账户后，点击「生成登录二维码」。同账户的多个页面共用一份有效申请。'],
             ['等待准备完成', '保持页面打开，页面会自动更新准备进度和二维码。'],
             ['查看本次二维码', '当前是模拟环境，只能预览流程，扫描后不能登录真实账号。'],
           ].map(([title, description], index) => (
@@ -101,6 +106,8 @@ function LoginHelp() {
 }
 
 export default function App() {
+  const auth = useAuth();
+  const [authOpen, setAuthOpen] = useState(false);
   const {
     phase,
     session,
@@ -114,7 +121,12 @@ export default function App() {
     statusLabel,
     startLogin,
     handleQrError,
-  } = useLoginSession();
+  } = useLoginSession(auth.user?.id ?? null, auth.handleUnauthorized);
+
+  function openLogin() {
+    auth.clearError();
+    setAuthOpen(true);
+  }
 
   const ready = phase === 'qr_ready' && Boolean(qrUrl);
   const submitted = Boolean(session);
@@ -124,10 +136,11 @@ export default function App() {
       title: '提交登录申请',
       description: submitted ? '登录申请已提交'
         : phase === 'submitting' ? '正在提交本次登录申请'
-          : isError ? '申请提交失败，请重新生成二维码' : '为本次登录创建独立申请',
+          : phase === 'restoring' ? '正在检查本账户的有效申请'
+            : isError ? '申请提交失败，请重试' : '登录账户后提交本次申请',
       icon: ArrowRight,
       complete: submitted,
-      active: phase === 'submitting',
+      active: phase === 'submitting' || phase === 'restoring',
       failed: isError && !submitted,
     },
     {
@@ -152,8 +165,8 @@ export default function App() {
           <img src="/images/konoha-background.webp" alt="" width="1536" height="1024" fetchPriority="high" />
         </picture>
       </div>
-      <header className="border-b border-border/70 bg-white/85">
-        <div className="mx-auto flex h-18 max-w-5xl items-center justify-between gap-3 px-5 sm:px-8">
+      <header className="village-header border-b border-white/50">
+        <div className="mx-auto flex min-h-18 max-w-5xl flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 py-3 sm:px-8">
           <div className="flex items-center gap-3" aria-label="忍者日常">
             <span className="headband-mark" aria-hidden="true">
               <img src="/icons/leaf-village.svg" alt="" width="32" height="32" />
@@ -162,11 +175,36 @@ export default function App() {
             <Separator orientation="vertical" className="mx-1 hidden h-5! sm:block" />
             <span className="hidden text-xs tracking-widest text-muted-foreground sm:block">木叶登录中心</span>
           </div>
-          <LoginHelp />
+          <div className="flex items-center gap-1.5 sm:gap-3">
+            {auth.loading ? <Spinner aria-label="正在读取账户状态" className="size-4" /> : auth.user ? (
+              <>
+                <span className="max-w-24 truncate text-sm font-medium sm:max-w-40" title={auth.user.username}>{auth.user.username}</span>
+                <Button variant="ghost" size="sm" disabled={auth.busy} onClick={() => { void auth.logout(); }} className="gap-1.5">
+                  <LogOut aria-hidden="true" />退出
+                </Button>
+              </>
+            ) : (
+              <Button variant="outline" size="sm" disabled={auth.busy} onClick={openLogin} className="gap-1.5 bg-white/50">
+                <LogIn aria-hidden="true" />登录 / 注册
+              </Button>
+            )}
+            <span className="hidden sm:block"><LoginHelp /></span>
+          </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-5xl px-5 py-6 sm:px-8 sm:py-8">
+        {auth.error && !authOpen && (
+          <Alert variant="destructive" className="village-glass mb-5" role="alert">
+            <CircleAlert aria-hidden="true" />
+            <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+              <span>{auth.error}</span>
+              <Button variant="outline" size="sm" disabled={auth.busy} onClick={() => {
+                if (auth.logoutFailed) void auth.logout(); else void auth.refresh();
+              }}>{auth.logoutFailed ? '重试退出' : '重试'}</Button>
+            </AlertDescription>
+          </Alert>
+        )}
         <section className="village-hero mb-6" aria-labelledby="welcome-title">
           <div className="village-hero-copy">
             <Badge variant="outline" className="mb-4 gap-1.5 border-primary/20 bg-white/75 px-2.5 py-1 text-xs font-medium text-primary">
@@ -183,7 +221,7 @@ export default function App() {
         </section>
 
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6">
-          <Card className="login-card gap-0 overflow-hidden shadow-sm">
+          <Card className="village-glass login-card gap-0 overflow-hidden shadow-sm">
             <CardHeader className="gap-2 px-6 pb-6 sm:px-8">
               <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-lg font-semibold">
                 <ScanLine className="size-5 text-primary" aria-hidden="true" />
@@ -200,8 +238,8 @@ export default function App() {
             <Separator />
 
             <CardContent className="flex flex-col items-center px-6 py-8 sm:px-8 sm:py-9">
-              <div className="qr-frame w-full max-w-64" aria-busy={pending}>
-                <AspectRatio ratio={1} className="overflow-hidden rounded-xl border border-dashed border-border bg-muted/35">
+              <div className="qr-frame w-full max-w-64" data-ready={ready ? 'true' : undefined} aria-busy={pending}>
+                <AspectRatio ratio={1} className="overflow-hidden rounded-xl border border-dashed border-foreground/20 bg-transparent">
                   {ready && qrUrl ? (
                     <img
                       className="size-full object-contain"
@@ -211,10 +249,10 @@ export default function App() {
                     />
                   ) : (
                     <>
-                      {pending && <Skeleton className="absolute inset-0 size-full rounded-none motion-reduce:animate-none" />}
+                      {pending && <Skeleton className="absolute inset-0 size-full rounded-none bg-white/20 motion-reduce:animate-none" />}
                       <Empty className="relative h-full gap-4 border-0 p-5 md:p-5">
                         <EmptyHeader className="gap-2.5">
-                          <EmptyMedia variant="icon" className={`mb-1 size-16 rounded-2xl ${isError ? 'bg-destructive/10 text-destructive' : 'bg-white text-muted-foreground shadow-sm'}`}>
+                          <EmptyMedia variant="icon" className={`mb-1 size-16 rounded-2xl ${isError ? 'bg-destructive/10 text-destructive' : 'bg-white/45 text-muted-foreground shadow-sm'}`}>
                             {pending ? <Spinner aria-hidden="true" className="size-6 motion-reduce:animate-none" />
                               : phase === 'expired' ? <TimerOff aria-hidden="true" />
                                 : isError ? <CircleAlert aria-hidden="true" />
@@ -228,7 +266,7 @@ export default function App() {
                           <EmptyDescription className="text-sm leading-6">
                             {isError ? '点击下方按钮重新生成'
                               : pending ? '请保持页面打开，准备好后会自动显示'
-                                : '点击下方按钮，生成本次登录二维码'}
+                                : auth.user ? '点击下方按钮，生成本次登录二维码' : '先登录忍者日常账户，再获取二维码'}
                           </EmptyDescription>
                         </EmptyHeader>
                       </Empty>
@@ -242,7 +280,7 @@ export default function App() {
                   {pending ? <Spinner aria-hidden="true" className="size-3.5 motion-reduce:animate-none" />
                     : ready ? <Check className="size-4 text-primary" aria-hidden="true" />
                       : <Clock3 className="size-3.5" aria-hidden="true" />}
-                  {retrying ? '连接暂时中断，正在重试…' : statusLabel}
+                  {auth.loading ? '正在读取账户状态' : !auth.user ? '登录后即可获取二维码' : retrying ? '连接暂时中断，正在重试…' : statusLabel}
                 </span>
                 {ready && (
                   <Badge variant="secondary" className="gap-1.5 font-mono tabular-nums" aria-label={`剩余 ${remainingSeconds} 秒`}>
@@ -264,22 +302,24 @@ export default function App() {
                 type="button"
                 size="lg"
                 className="mt-6 h-12 w-full max-w-sm gap-2 text-sm font-semibold shadow-sm"
-                onClick={() => { void startLogin(); }}
-                disabled={pending}
+                onClick={() => { if (auth.user) void startLogin(); else openLogin(); }}
+                disabled={auth.loading || auth.busy || pending || ready}
               >
-                {pending ? <Spinner aria-hidden="true" className="motion-reduce:animate-none" />
-                  : phase === 'idle' ? <QrCode aria-hidden="true" />
+                {pending || auth.loading ? <Spinner aria-hidden="true" className="motion-reduce:animate-none" />
+                  : !auth.user ? <LogIn aria-hidden="true" /> : ready ? <Check aria-hidden="true" /> : phase === 'idle' ? <QrCode aria-hidden="true" />
                     : <RefreshCw aria-hidden="true" />}
-                {pending ? '正在生成二维码…' : phase === 'idle' ? '生成登录二维码' : '重新生成二维码'}
-                {phase === 'idle' && <ArrowRight className="ml-1" aria-hidden="true" />}
+                {auth.loading ? '正在读取账户…' : !auth.user ? '登录后获取二维码'
+                  : phase === 'restoring' ? '正在恢复登录申请…' : pending ? '正在生成二维码…'
+                    : ready ? '二维码有效，请扫码' : phase === 'idle' ? '生成登录二维码' : '重新生成二维码'}
+                {phase === 'idle' && !auth.loading && <ArrowRight className="ml-1" aria-hidden="true" />}
               </Button>
-              <p className="mt-3 flex items-center gap-1.5 text-sm text-muted-foreground">
-                <ShieldCheck className="size-3.5" aria-hidden="true" />
-                无需在此输入账号密码
+              <p className="mt-3 flex items-start gap-1.5 text-center text-xs leading-5 text-muted-foreground">
+                <ShieldCheck className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+                同一账户的多个页面共用一个有效二维码
               </p>
             </CardContent>
 
-            <CardFooter className="flex-col items-stretch gap-4 border-t bg-muted/20 px-6 py-5 sm:px-8">
+            <CardFooter className="login-card-footer flex-col items-stretch gap-4 border-t px-6 py-5 sm:px-8">
               <Alert className="border-0 bg-transparent p-0 text-muted-foreground">
                 <CircleAlert aria-hidden="true" />
                 <AlertTitle className="text-sm font-medium text-foreground">当前为模拟登录演示</AlertTitle>
@@ -296,7 +336,7 @@ export default function App() {
                         <p className="text-muted-foreground">申请编号</p>
                         <code className="block break-all rounded-md border bg-background px-3 py-2 font-mono text-xs leading-5">{session.id}</code>
                       </div>
-                      <p className="leading-6 text-muted-foreground">关闭页面后，可以重新生成新的登录二维码。</p>
+                      <p className="leading-6 text-muted-foreground">刷新或重新打开页面会继续本次申请；二维码过期后可重新生成。</p>
                     </AccordionContent>
                   </AccordionItem>
                 </Accordion>
@@ -305,7 +345,7 @@ export default function App() {
           </Card>
 
           <div className="space-y-5 lg:space-y-6">
-            <Card className="gap-4 shadow-sm">
+            <Card className="village-glass gap-4 shadow-sm">
               <CardHeader className="gap-2">
                 <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base">
                   <img src="/icons/shuriken.svg" alt="" width="19" height="19" aria-hidden="true" />
@@ -350,7 +390,7 @@ export default function App() {
               </CardContent>
             </Card>
 
-            <Card className="gap-2 shadow-sm">
+            <Card className="village-glass gap-2 shadow-sm">
               <CardHeader>
                 <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base">
                   <CircleHelp className="size-4 text-muted-foreground" aria-hidden="true" />
@@ -365,10 +405,16 @@ export default function App() {
                       暂时不可以。当前提供模拟二维码，用于体验申请、等待和显示二维码的完整流程。
                     </AccordionContent>
                   </AccordionItem>
+                  <AccordionItem value="account">
+                    <AccordionTrigger className="text-sm font-medium">多个页面能同时获取二维码吗？</AccordionTrigger>
+                    <AccordionContent className="text-sm leading-6 text-muted-foreground">
+                      同一账户同时只有一个有效申请。刷新、重新登录或打开新页面都会恢复已有二维码，过期或准备失败后才能重新申请。
+                    </AccordionContent>
+                  </AccordionItem>
                   <AccordionItem value="expires" className="border-b-0">
                     <AccordionTrigger className="text-sm font-medium">二维码过期或生成失败怎么办？</AccordionTrigger>
                     <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                      点击「重新生成二维码」创建新的申请。如果持续失败，请确认本地登录服务已启动，再尝试生成。
+                      点击「重新生成二维码」重试。如果已有有效申请，页面会继续获取同一个二维码；如果持续失败，请稍后再试。
                     </AccordionContent>
                   </AccordionItem>
                 </Accordion>
@@ -382,6 +428,8 @@ export default function App() {
           <span>模拟体验 · 非官方项目</span>
         </footer>
       </main>
+      <AuthDialog open={authOpen} onOpenChange={setAuthOpen} busy={auth.busy}
+        error={auth.error} clearError={auth.clearError} authenticate={auth.authenticate} />
     </div>
   );
 }
