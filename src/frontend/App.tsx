@@ -5,7 +5,6 @@ import {
   CircleAlert,
   CircleHelp,
   Clock3,
-  Gamepad2,
   QrCode,
   RefreshCw,
   ScanLine,
@@ -59,12 +58,6 @@ import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { useLoginSession } from '@/hooks/use-login-session';
-
-const preparationSteps = [
-  { title: '提交登录申请', description: '为本次登录创建独立申请', icon: ArrowRight },
-  { title: '准备游戏环境', description: '等待游戏进入二维码登录页', icon: Gamepad2 },
-  { title: '获取登录二维码', description: '二维码准备好后会自动显示', icon: QrCode },
-];
 
 function LoginHelp() {
   return (
@@ -124,10 +117,32 @@ export default function App() {
   } = useLoginSession();
 
   const ready = phase === 'qr_ready' && Boolean(qrUrl);
-  const activeStage = phase === 'submitting' ? 0
-    : ['queued', 'starting_emulator', 'opening_game'].includes(phase) ? 1
-      : phase === 'preparing_qr' ? 2
-        : ready ? 3 : -1;
+  const submitted = Boolean(session);
+  const preparationSteps = [
+    {
+      id: 'submission',
+      title: '提交登录申请',
+      description: submitted ? '登录申请已提交'
+        : phase === 'submitting' ? '正在提交本次登录申请'
+          : isError ? '申请提交失败，请重新生成二维码' : '为本次登录创建独立申请',
+      icon: ArrowRight,
+      complete: submitted,
+      active: phase === 'submitting',
+      failed: isError && !submitted,
+    },
+    {
+      id: 'qr',
+      title: ready ? '获取成功'
+        : isError && submitted ? '获取失败' : '正在唤醒服务器进程并获取二维码',
+      description: ready ? '二维码已显示，请在有效期内扫码'
+        : isError && submitted ? phase === 'expired' ? '二维码已过期，请重新生成' : '二维码获取失败，请重新生成'
+          : submitted ? '请稍候，获取成功后会自动显示' : '提交申请后开始获取二维码',
+      icon: QrCode,
+      complete: ready,
+      active: submitted && !ready && !isError,
+      failed: isError && submitted,
+    },
+  ];
 
   return (
     <div className="login-shell min-h-svh text-foreground">
@@ -290,27 +305,26 @@ export default function App() {
                   <img src="/icons/shuriken.svg" alt="" width="19" height="19" aria-hidden="true" />
                   登录准备
                 </CardTitle>
-                <CardDescription className="text-sm">出发前，只需这三步。</CardDescription>
+                <CardDescription className="text-sm">提交申请，等待二维码。</CardDescription>
                 <CardAction>
                   <Badge variant="outline" className="font-normal text-muted-foreground">
-                    {ready ? '已就绪' : isError ? '已结束' : pending ? '准备中' : '待开始'}
+                    {ready ? '获取成功' : isError ? '获取失败' : phase !== 'idle' ? '获取中' : '待开始'}
                   </Badge>
                 </CardAction>
               </CardHeader>
               <CardContent>
                 <ItemGroup aria-label="二维码准备进度" className="gap-1">
-                  {preparationSteps.map(({ title, description, icon: StepIcon }, index) => {
-                    const complete = activeStage > index;
-                    const active = pending && activeStage === index;
+                  {preparationSteps.map(({ id, title, description, icon: StepIcon, complete, active, failed }) => {
                     return (
-                      <Item key={title} role="listitem" size="sm" variant={active ? 'muted' : 'default'} className="items-start gap-3 px-2.5 py-3" aria-current={active ? 'step' : undefined}>
-                        <ItemMedia variant="icon" className={`size-8 rounded-lg ${active || complete ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
-                          {complete ? <Check aria-hidden="true" />
+                      <Item key={id} role="listitem" size="sm" variant={active ? 'muted' : 'default'} className="items-start gap-3 px-2.5 py-3" aria-current={active ? 'step' : undefined}>
+                        <ItemMedia variant="icon" className={`size-8 rounded-lg ${failed ? 'bg-destructive/10 text-destructive' : active || complete ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
+                          {failed ? <CircleAlert aria-hidden="true" />
+                            : complete ? <Check aria-hidden="true" />
                             : active ? <Spinner aria-hidden="true" className="motion-reduce:animate-none" />
                               : <StepIcon aria-hidden="true" />}
                         </ItemMedia>
-                        <ItemContent className="gap-1">
-                          <ItemTitle className={active || complete ? 'text-sm' : 'text-sm text-muted-foreground'}>
+                        <ItemContent className="min-w-0 gap-1">
+                          <ItemTitle className={`line-clamp-none text-sm leading-6 ${failed ? 'text-destructive' : active || complete ? '' : 'text-muted-foreground'}`}>
                             {title}
                           </ItemTitle>
                           <ItemDescription className="line-clamp-none text-sm leading-6">{description}</ItemDescription>
@@ -323,9 +337,9 @@ export default function App() {
                 <p className="flex items-start gap-2 text-sm leading-6 text-muted-foreground">
                   {ready ? <CheckCheck className="mt-1 size-4 shrink-0 text-primary" aria-hidden="true" />
                     : <Clock3 className="mt-1 size-4 shrink-0" aria-hidden="true" />}
-                  {ready ? '模拟二维码已显示，可重新生成体验完整流程。'
-                    : isError ? '本次申请已结束，重新生成即可再次尝试。'
-                      : '准备时间可能稍有不同，无需手动刷新页面。'}
+                  {ready ? '获取成功，二维码已自动显示。'
+                    : isError ? '获取失败，请点击「重新生成二维码」重试。'
+                      : '唤醒服务器可能需要一点时间，无需手动刷新页面。'}
                 </p>
               </CardContent>
             </Card>
