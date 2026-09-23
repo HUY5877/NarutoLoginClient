@@ -1,20 +1,22 @@
 # NarutoLoginClient · 忍者日常登录中心
 
-React / TSX 前端与 TypeScript 客户端后端放在同一个仓库。用户申请登录后，由客户端后端生成唯一任务 ID 和独立访问凭证，将任务投到 `NarutoDailyADB/login-service` 的模拟 Redis 队列。任务服务为每个申请启动独立的模拟器工作进程，生成模拟二维码并上传对象存储；客户端后端轮询存储，前端拿到 PNG 后显示。
+React / TSX 前端与 TypeScript 客户端后端放在同一个仓库。用户申请登录后，由客户端后端生成唯一任务 ID 和独立访问凭证，将任务投到 `NarutoDailyADB/naruto_daily/login_service` 的模拟 Redis 队列。任务服务使用 Python，为每个申请启动独立 Python 工作进程，生成模拟二维码并上传对象存储；客户端后端轮询存储，前端拿到 PNG 后显示。
 
 **当前是可运行的本地模拟流程。** 二维码包含模拟会话数据，无法登录真实游戏；雷电进程启动、游戏打开、选择“与安卓好友玩”、切换账号及进入二维码页面均为模拟步骤。没有实现扫码确认、登录成功回调或游戏会话接管。
 
 ## 本地启动
 
-需要 Node.js 22.12+（推荐 Node.js 24）和 npm。两个仓库分别安装依赖；无需 Redis、雷电模拟器或阿里云账号。
+客户端需要 Node.js 22.12+（推荐 Node.js 24）和 npm；当前项目中的任务服务需要 Python 3.11+。两个仓库分别安装依赖；无需 Redis、雷电模拟器或阿里云账号。
 
-终端一，启动任务服务：
+终端一，在现有 Python 项目根目录安装并启动任务服务：
 
 ```powershell
-cd E:\code\NarutoDailyADB\login-service
-npm ci
-npm run dev
+cd E:\code\NarutoDailyADB
+python -m pip install -e ".[login-service]"
+python -m naruto_daily.login_service
 ```
+
+本机也已准备独立 Python 环境，可直接在该目录执行 `.\.venv-login-service\Scripts\python.exe -m naruto_daily.login_service`。
 
 终端二，启动本仓库的客户端后端和前端：
 
@@ -26,13 +28,13 @@ npm run dev
 
 打开 <http://127.0.0.1:5173>，点击“生成登录二维码”。默认约几秒后可见二维码，申请有效期为 120 秒，过期后可以重新生成。
 
-默认配置可直接运行，不必创建 `.env`。需要修改时，分别将两个项目各自的 `.env.example` 复制为 `.env`，在各自项目根目录启动。不要覆盖已有配置。
+默认配置可直接运行，不必创建 `.env`。需要修改时，客户端将项目根目录 `.env.example` 复制为 `.env`；Python 任务服务将 `naruto_daily/login_service/.env.example` 复制为同目录的 `.env`。不要覆盖已有配置。
 
 | 进程 | 默认地址 | 职责 |
 | --- | --- | --- |
 | Vite 前端 | `127.0.0.1:5173` | TSX 页面，将 `/api` 代理到客户端后端 |
 | 客户端后端 | `127.0.0.1:4300` | 生成 ID、投递任务、验证申请凭证、轮询对象存储、传送二维码 |
-| 任务服务 | `127.0.0.1:4320` | 模拟 Redis 队列、进程调度、二维码生成、存储写入与清理 |
+| Python 任务服务 | `127.0.0.1:4320` | 模拟 Redis 队列、进程调度、二维码生成、存储写入与清理 |
 
 生产构建预览（仍需单独启动任务服务）：
 
@@ -51,7 +53,7 @@ TSX 页面
     → TS 客户端后端生成 UUID + 随机凭证 + expiresAt
     → POST 任务服务 /internal/tasks
     → 模拟 Redis LPUSH / BRPOP 队列
-    → 独立 Node 子进程模拟雷电和游戏登录步骤
+    → 独立 Python 子进程模拟雷电和游戏登录步骤
     → 写入 login/{id}/qr.png
 
 TSX 页面每秒 GET /api/login-sessions/{id}
@@ -61,7 +63,7 @@ TSX 页面每秒 GET /api/login-sessions/{id}
     → TSX 显示 PNG，停止轮询，保留过期倒计时
 ```
 
-默认 `STORAGE_DRIVER=local` 时，任务服务把对象写到自己的 `.data/objects/login/{id}/qr.png`，提供受保护的模拟 OSS HEAD/GET 接口；客户端后端通过 HTTP 读取，不要求两个仓库共用文件路径。
+默认 `STORAGE_DRIVER=local` 时，任务服务把对象写到 Python 项目根目录的 `.data/login-service/objects/login/{id}/qr.png`，提供受保护的模拟 OSS HEAD/GET 接口；客户端后端通过 HTTP 读取，不要求两个仓库共用文件路径。
 
 队列是任务服务进程内的 Redis 列表语义模拟，通过内部 HTTP 接口访问，并不连接真实 Redis。服务重启会丢失队列和会话，页面会提示重新申请。每次申请对应独立子进程，并发数和队列容量在任务服务配置；模拟进程生成二维码后退出。真实雷电未来需要保留进程直到扫码完成或会话过期。
 
@@ -113,4 +115,4 @@ npm run build
 
 测试覆盖 ID 隔离、队列失败、跨站申请拒绝、存储就绪判定、凭证拦截、过期竞态、PNG 返回、上游超时及相同 ID 重试。后端凭证仅在服务器环境变量中读取；浏览器申请凭证只保存在内存，关闭或刷新页面需重新申请。
 
-任务服务代码位于独立的现有仓库 [NarutoDailyADB](https://github.com/HUY5877/NarutoDailyADB) 的 `login-service/`；详细队列、并发和模拟器扩展说明见该目录 README。
+Python 任务服务代码位于独立的现有仓库 [NarutoDailyADB](https://github.com/HUY5877/NarutoDailyADB) 的 `naruto_daily/login_service/`；详细队列、并发和模拟器扩展说明见该目录 README。客户端业务代码不依赖任务服务的实现语言，HTTP 协议保持一致。
