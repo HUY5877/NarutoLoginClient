@@ -133,7 +133,7 @@ test('事件表保留请求幂等约束和每账号唯一有效事件约束，�
   assert.match(setup[0].sql, /UNIQUE \(user_id, request_id\)/);
   assert.match(setup[0].sql, /CREATE UNIQUE INDEX IF NOT EXISTS \S+ ON naruto_login.login_events \(user_id\) WHERE finished_at IS NULL/);
   assert.match(setup[0].sql, /user_id uuid NOT NULL REFERENCES naruto_login.users\(id\) ON DELETE CASCADE/);
-  assert.doesNotMatch(setup[0].sql, /DROP |TRUNCATE |ALTER /);
+  assert.doesNotMatch(setup[0].sql, /DROP |TRUNCATE /);
 });
 
 test('同账号的八个并发预留在用户行锁后只创建一条事件，返回同一任务和凭据', async t => {

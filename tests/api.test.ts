@@ -12,12 +12,18 @@ const id = '123e4567-e89b-42d3-a456-426614174000';
 const requestId = '123e4567-e89b-42d3-a456-426614174111';
 const token = 'a'.repeat(64);
 const otherToken = 'b'.repeat(64);
-const user: User = { id: '456e7890-e89b-42d3-a456-426614174000', username: 'naruto' };
-const otherUser: User = { id: '456e7890-e89b-42d3-a456-426614174001', username: 'sasuke' };
+const user: User = { id: '456e7890-e89b-42d3-a456-426614174000', username: 'naruto', isAdmin: false };
+const otherUser: User = { id: '456e7890-e89b-42d3-a456-426614174001', username: 'sasuke', isAdmin: false };
+const admin: User = { id: '456e7890-e89b-42d3-a456-426614174002', username: 'admin-fixture', isAdmin: true };
+const adminToken = 'c'.repeat(64);
+const adminHeaders = { Cookie: `naruto_session=${adminToken}` };
 const start = Date.now();
 const baseTask: Task = { id, status: 'opening_game', createdAt: new Date(start).toISOString(),
   expiresAt: new Date(start + 120000).toISOString(), simulation: true };
 const authSession: AuthSession = { user, token, expiresAt: new Date(start + 604800000) };
+const application = { id, userId: user.id, username: user.username, status: 'pending' as const,
+  createdAt: new Date(start).toISOString(), reviewedAt: null, reviewedBy: null, reason: null };
+const registration = { application, message: '注册申请已提交，请等待管理员审核。' };
 const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
 const headers = { Cookie: `naruto_session=${token}` };
 const otherHeaders = { Cookie: `naruto_session=${otherToken}` };
@@ -29,8 +35,9 @@ function events(overrides: Partial<Dependencies['events']> = {}): Dependencies['
     getActive: async () => null, recordStatus: async () => {}, ...overrides };
 }
 function auth(overrides: Partial<Dependencies['auth']> = {}): Dependencies['auth'] {
-  return { register: async () => authSession, login: async () => authSession, logout: async () => {},
-    getUser: async value => value === token ? user : value === otherToken ? otherUser : null, ...overrides };
+  return { register: async () => registration, login: async () => authSession, logout: async () => {},
+    listApplications: async () => ({ applications: [application] }), reviewApplication: async () => ({ application }),
+    getUser: async value => value === token ? user : value === otherToken ? otherUser : value === adminToken ? admin : null, ...overrides };
 }
 async function withApi(deps: Partial<Dependencies>, run: (base: string) => Promise<void>, trustProxy = false) {
   const app = createApp(config, { events: events(), auth: auth(),
@@ -141,14 +148,17 @@ test('全部写接口要求 JSON 内容类型，拒绝表单、文本和缺失�
   });
 });
 
-test('注册和登录设置 HttpOnly/Lax Cookie，响应只返回公开用户信息', async () => {
+test('注册只提交待审批申请，不设置登录Cookie；获准登录后才设置HttpOnly/Lax Cookie', async () => {
   const input = { username: user.username, password: 'correct-password' };
   const seen: unknown[] = [];
-  const accept = async (body: unknown) => { seen.push(body); return authSession; };
-  await withApi({ auth: auth({ register: accept, login: accept }) }, async base => {
-    for (const [path, status] of [['register', 201], ['login', 200]] as const) {
-      const response = await fetch(`${base}/api/auth/${path}`, { method: 'POST', headers: jsonHeaders, body: JSON.stringify(input) });
-      assert.equal(response.status, status);
+  await withApi({ auth: auth({ register: async body => { seen.push(body); return registration; },
+    login: async body => { seen.push(body); return authSession; } }) }, async base => {
+      const registered = await fetch(`${base}/api/auth/register`, { method: 'POST', headers: jsonHeaders, body: JSON.stringify(input) });
+      assert.equal(registered.status, 201);
+      assert.equal(registered.headers.get('set-cookie'), null);
+      assert.deepEqual(await registered.json(), registration);
+      const response = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: jsonHeaders, body: JSON.stringify(input) });
+      assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), { user });
       assert.equal(response.headers.get('cache-control'), 'no-store');
       const cookie = response.headers.get('set-cookie') ?? '';
@@ -157,9 +167,59 @@ test('注册和登录设置 HttpOnly/Lax Cookie，响应只返回公开用户信
       assert.match(cookie, /; SameSite=Lax(?:;|$)/);
       assert.match(cookie, /; Path=\/(?:;|$)/);
       assert.doesNotMatch(cookie, /; Secure(?:;|$)/);
-    }
     assert.deepEqual(seen, [input, input]);
   });
+});
+
+test('管理员申请列表和审核接口均拒绝匿名与普通账号，不调用审核服务', async () => {
+  const forbidden = async (): Promise<never> => assert.fail('must not enter administrator service');
+  await withApi({ auth: auth({ listApplications: forbidden, reviewApplication: forbidden }) }, async base => {
+    for (const [cookie, expected] of [['', 401], [token, 403], [otherToken, 403]] as const) {
+      const list = await fetch(`${base}/api/admin/registration-applications`, { headers: { Cookie: `naruto_session=${cookie}` } });
+      assert.equal(list.status, expected);
+      const review = await fetch(`${base}/api/admin/registration-applications/${id}/review`, {
+        ...post, headers: { ...jsonHeaders, Cookie: `naruto_session=${cookie}` },
+        body: JSON.stringify({ decision: 'approved', isAdmin: true }),
+      });
+      assert.equal(review.status, expected);
+    }
+  });
+});
+
+test('管理员筛选与审核操作使用真实Cookie身份，跨站审核和权限撤销都立即拒绝', async () => {
+  let enabled = true;
+  const reviewed = { ...application, status: 'approved' as const, reviewedAt: new Date(start).toISOString(), reviewedBy: admin.id };
+  await withApi({ auth: auth({
+    getUser: async value => value === adminToken ? { ...admin, isAdmin: enabled } : null,
+    listApplications: async (actor, status) => { assert.deepEqual(actor, admin); assert.equal(status, 'pending'); return { applications: [application] }; },
+    reviewApplication: async (actor, applicationId, input) => {
+      assert.deepEqual(actor, admin); assert.equal(applicationId, id);
+      assert.deepEqual(input, { decision: 'approved', reviewedBy: user.id });
+      return { application: reviewed };
+    },
+  }) }, async base => {
+    const list = await fetch(`${base}/api/admin/registration-applications?status=pending`, { headers: adminHeaders });
+    assert.equal(list.status, 200); assert.deepEqual(await list.json(), { applications: [application] });
+    const options = { ...post, headers: { ...jsonHeaders, ...adminHeaders }, body: JSON.stringify({ decision: 'approved', reviewedBy: user.id }) };
+    const response = await fetch(`${base}/api/admin/registration-applications/${id}/review`, options);
+    assert.equal(response.status, 200); assert.deepEqual(await response.json(), { application: reviewed });
+    assert.equal((await fetch(`${base}/api/admin/registration-applications/${id}/review`, {
+      ...options, headers: { ...options.headers, Origin: 'https://unrelated.example' },
+    })).status, 403);
+    enabled = false;
+    assert.equal((await fetch(`${base}/api/admin/registration-applications`, { headers: adminHeaders })).status, 403);
+    assert.equal((await fetch(`${base}/api/admin/registration-applications/${id}/review`, options)).status, 403);
+  });
+});
+
+test('待审核和被拒绝的登录返回受控403，不发放Cookie', async () => {
+  for (const code of ['REGISTRATION_PENDING', 'REGISTRATION_REJECTED']) {
+    await withApi({ auth: auth({ login: async () => { throw new ApiError(403, '注册申请尚未通过审核。', code); } }) }, async base => {
+      const response = await fetch(`${base}/api/auth/login`, { ...post, body: JSON.stringify({ username: user.username, password: 'fixture-password' }) });
+      assert.equal(response.status, 403); assert.equal(response.headers.get('set-cookie'), null);
+      assert.equal((await response.json() as { code: string }).code, code);
+    });
+  }
 });
 
 test('受信代理转发 HTTPS 时账户 Cookie 带 Secure', async () => {
@@ -194,7 +254,7 @@ test('退出撤销服务端会话并清除 Cookie，原 Cookie 无法继续申�
 test('缺失或无效 Cookie 及仅 Bearer 不能访问二维码接口，且不访问 Redis/OSS', async () => {
   const unexpected = async (): Promise<never> => assert.fail('unauthenticated requests must not touch events or storage');
   const attempts: Record<string, string>[] = [{}, { Authorization: `Bearer ${token}` },
-    { Cookie: 'naruto_session=invalid' }, { Cookie: `naruto_session=${'c'.repeat(64)}` }];
+    { Cookie: 'naruto_session=invalid' }, { Cookie: `naruto_session=${'d'.repeat(64)}` }];
   await withApi({ events: { create: unexpected, getForUser: unexpected, getActive: unexpected, recordStatus: unexpected }, storage: { exists: unexpected, read: unexpected } }, async base => {
     for (const requestHeaders of attempts) {
       for (const path of ['/api/login-sessions/active', `/api/login-sessions/${id}`, `/api/login-sessions/${id}/qr`]) {

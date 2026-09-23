@@ -16,6 +16,7 @@ import {
   TimerOff,
 } from 'lucide-react';
 import { AuthDialog } from '@/components/auth-dialog';
+import { AdminMenu } from '@/components/admin-menu';
 import {
   Accordion,
   AccordionContent,
@@ -80,7 +81,7 @@ function LoginHelp() {
         </DialogHeader>
         <ItemGroup className="py-1">
           {[
-            ['登录并获取二维码', '注册或登录账户后，点击「生成登录二维码」。同账户的多个页面共用一份有效申请。'],
+            ['登录并获取二维码', '注册申请审批通过后，登录账户并点击「生成登录二维码」。同账户的多个页面共用一份有效申请。'],
             ['等待准备完成', '保持页面打开，页面会自动更新准备进度和二维码。'],
             ['查看本次二维码', '当前是模拟环境，只能预览流程，扫描后不能登录真实账号。'],
           ].map(([title, description], index) => (
@@ -181,9 +182,10 @@ export default function App() {
             <Separator orientation="vertical" className="mx-1 hidden h-5! sm:block" />
             <span className="hidden text-xs tracking-widest text-muted-foreground sm:block">木叶登录中心</span>
           </div>
-          <div className="flex items-center gap-1.5 sm:gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-3">
             {auth.loading ? <Spinner aria-label="正在读取账户状态" className="size-4" /> : auth.user ? (
               <>
+                {auth.user.isAdmin === true && <AdminMenu key={auth.user.id} userId={auth.user.id} refreshAuth={auth.refresh} />}
                 <span className="max-w-24 truncate text-sm font-medium sm:max-w-40" title={auth.user.username}>{auth.user.username}</span>
                 <Button variant="ghost" size="sm" disabled={auth.busy} onClick={() => { void auth.logout(); }} className="gap-1.5">
                   <LogOut aria-hidden="true" />退出

@@ -9,7 +9,7 @@ import type { LoginEventService } from './login-events.js';
 
 export interface Dependencies {
   events: Pick<LoginEventService, 'create' | 'getForUser' | 'getActive' | 'recordStatus'>;
-  auth: Pick<AuthService, 'register' | 'login' | 'getUser' | 'logout'>;
+  auth: Pick<AuthService, 'register' | 'login' | 'getUser' | 'logout' | 'listApplications' | 'reviewApplication'>;
   storage: ObjectReader;
   now?: () => number;
 }
@@ -55,17 +55,33 @@ export function createApp(config: Config, { events, auth, storage, now = Date.no
   });
 
   app.get('/api/auth/me', async (req, res) => res.json({ user: await auth.getUser(sessionToken(req)) }));
-  for (const action of ['register', 'login'] as const) {
-    app.post(`/api/auth/${action}`, async (req, res) => {
-      const result = await auth[action](req.body);
-      res.cookie(cookieName, result.token, { ...cookieOptions(req), expires: result.expiresAt });
-      res.status(action === 'register' ? 201 : 200).json({ user: result.user });
-    });
-  }
+  app.post('/api/auth/register', async (req, res) => {
+    res.status(201).json(await auth.register(req.body));
+  });
+  app.post('/api/auth/login', async (req, res) => {
+    const result = await auth.login(req.body);
+    res.cookie(cookieName, result.token, { ...cookieOptions(req), expires: result.expiresAt });
+    res.json({ user: result.user });
+  });
   app.post('/api/auth/logout', async (req, res) => {
     await auth.logout(sessionToken(req));
     res.clearCookie(cookieName, cookieOptions(req));
     res.status(204).end();
+  });
+
+  app.use('/api/admin', async (req, res, next) => {
+    const user = await auth.getUser(sessionToken(req));
+    if (!user) throw new ApiError(401, '请先登录管理员账号。', 'AUTH_REQUIRED');
+    if (!user.isAdmin) throw new ApiError(403, '仅管理员可以处理注册申请。', 'ADMIN_REQUIRED');
+    res.locals.user = user;
+    next();
+  });
+  app.get('/api/admin/registration-applications', async (req, res) => {
+    res.json(await auth.listApplications(res.locals.user as User, req.query.status));
+  });
+  app.post('/api/admin/registration-applications/:id/review', async (req, res) => {
+    const id = sessionId(req);
+    res.json(await auth.reviewApplication(res.locals.user as User, id, req.body));
   });
 
   app.use('/api/login-sessions', async (req, res, next) => {

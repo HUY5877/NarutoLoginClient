@@ -1,11 +1,26 @@
 import { Pool, type PoolClient } from 'pg';
 import type { Status, Submission } from './queue.js';
 
+export interface PublicUser { id: string; username: string; isAdmin: boolean }
+export type ApplicationStatus = 'pending' | 'approved' | 'rejected';
+export interface RegistrationApplication {
+  id: string;
+  userId: string;
+  username: string;
+  status: ApplicationStatus;
+  createdAt: string;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+  reason: string | null;
+}
+
 export interface StoredUser {
   id: string;
   username: string;
   usernameKey: string;
   password: string;
+  isInvalid: boolean;
+  isAdmin: boolean;
 }
 
 export interface StoredSession {
@@ -16,11 +31,13 @@ export interface StoredSession {
 
 export interface AuthStore {
   initialize(): Promise<void>;
-  createUserAndSession(user: StoredUser, session: StoredSession): Promise<void>;
-  findUser(usernameKey: string): Promise<StoredUser | null>;
+  createRegistration(user: StoredUser, applicationId: string, now: Date): Promise<RegistrationApplication>;
+  findUser(usernameKey: string): Promise<(StoredUser & { applicationStatus?: ApplicationStatus | null }) | null>;
   createSession(session: StoredSession): Promise<void>;
-  findSessionUser(tokenHash: string, now: Date): Promise<Pick<StoredUser, 'id' | 'username'> | null>;
+  findSessionUser(tokenHash: string, now: Date): Promise<PublicUser | null>;
   deleteSession(tokenHash: string): Promise<void>;
+  listRegistrationApplications(status: ApplicationStatus | 'all', limit: number): Promise<RegistrationApplication[]>;
+  reviewRegistration(applicationId: string, adminId: string, decision: 'approved' | 'rejected', reason: string | null, now: Date): Promise<RegistrationApplication>;
   close(): Promise<void>;
 }
 
@@ -41,6 +58,22 @@ export interface LoginEventStore {
 }
 
 type Timestamp = Date | string;
+type ApplicationRow = Omit<RegistrationApplication, 'createdAt' | 'reviewedAt'> & {
+  createdAt: Timestamp;
+  reviewedAt: Timestamp | null;
+};
+const applicationColumns = `a.id, a.user_id AS "userId", u.username, a.status,
+  a.created_at AS "createdAt", a.reviewed_at AS "reviewedAt", a.reviewed_by AS "reviewedBy", a.reason`;
+
+function registrationApplication(row: ApplicationRow): RegistrationApplication {
+  return {
+    id: row.id, userId: row.userId, username: row.username, status: row.status,
+    createdAt: new Date(row.createdAt).toISOString(),
+    reviewedAt: row.reviewedAt === null ? null : new Date(row.reviewedAt).toISOString(),
+    reviewedBy: row.reviewedBy, reason: row.reason,
+  };
+}
+
 type LoginEventRow = Omit<LoginEvent, 'createdAt' | 'expiresAt' | 'dispatchedAt' | 'finishedAt'> & {
   createdAt: Timestamp;
   expiresAt: Timestamp;
@@ -68,6 +101,12 @@ export class UsernameTakenError extends Error {
   constructor() { super('Username already exists'); }
 }
 
+export class ApplicationReviewError extends Error {
+  constructor(public code: 'NOT_FOUND' | 'ALREADY_REVIEWED' | 'ADMIN_REQUIRED') {
+    super('Registration application review could not be completed');
+  }
+}
+
 const schema = `
 CREATE SCHEMA IF NOT EXISTS naruto_login;
 CREATE TABLE IF NOT EXISTS naruto_login.users (
@@ -78,6 +117,22 @@ CREATE TABLE IF NOT EXISTS naruto_login.users (
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT naruto_login_users_username_key_key UNIQUE (username_key)
 );
+ALTER TABLE naruto_login.users ADD COLUMN IF NOT EXISTS is_invalid boolean NOT NULL DEFAULT false;
+ALTER TABLE naruto_login.users ALTER COLUMN is_invalid SET DEFAULT true;
+ALTER TABLE naruto_login.users ADD COLUMN IF NOT EXISTS is_admin boolean NOT NULL DEFAULT false;
+CREATE TABLE IF NOT EXISTS naruto_login.registration_applications (
+  id uuid PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES naruto_login.users(id) ON DELETE CASCADE,
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  reviewed_at timestamptz,
+  reviewed_by uuid REFERENCES naruto_login.users(id) ON DELETE SET NULL,
+  reason text
+);
+CREATE UNIQUE INDEX IF NOT EXISTS naruto_login_registration_applications_pending_user_idx
+  ON naruto_login.registration_applications (user_id) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS naruto_login_registration_applications_status_created_idx
+  ON naruto_login.registration_applications (status, created_at DESC);
 CREATE TABLE IF NOT EXISTS naruto_login.sessions (
   token_hash text PRIMARY KEY CHECK (token_hash ~ '^[a-f0-9]{64}$'),
   user_id uuid NOT NULL REFERENCES naruto_login.users(id) ON DELETE CASCADE,
@@ -161,17 +216,25 @@ export class PgAuthStore implements AuthStore, LoginEventStore {
     await this.initialization;
   }
 
-  async createUserAndSession(user: StoredUser, session: StoredSession): Promise<void> {
+  async createRegistration(user: StoredUser, applicationId: string, now: Date): Promise<RegistrationApplication> {
+    await this.initialize();
     try {
-      await this.transaction(async client => {
+      return await this.transaction(async client => {
         await client.query(
-          'INSERT INTO naruto_login.users (id, username, username_key, password) VALUES ($1, $2, $3, $4)',
-          [user.id, user.username, user.usernameKey, user.password],
+          `INSERT INTO naruto_login.users (id, username, username_key, password, is_invalid, is_admin, created_at)
+           VALUES ($1, $2, $3, $4, true, false, $5)`,
+          [user.id, user.username, user.usernameKey, user.password, now],
         );
         await client.query(
-          'INSERT INTO naruto_login.sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)',
-          [session.tokenHash, session.userId, session.expiresAt],
+          `INSERT INTO naruto_login.registration_applications (id, user_id, status, created_at)
+           VALUES ($1, $2, 'pending', $3)`,
+          [applicationId, user.id, now],
         );
+        const result = await client.query<ApplicationRow>(
+          `SELECT ${applicationColumns} FROM naruto_login.registration_applications a
+           JOIN naruto_login.users u ON u.id = a.user_id WHERE a.id = $1`, [applicationId],
+        );
+        return registrationApplication(result.rows[0]);
       });
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === '23505'
@@ -182,9 +245,13 @@ export class PgAuthStore implements AuthStore, LoginEventStore {
     }
   }
 
-  async findUser(usernameKey: string): Promise<StoredUser | null> {
-    const result = await this.pool.query<StoredUser>(
-      'SELECT id, username, username_key AS "usernameKey", password FROM naruto_login.users WHERE username_key = $1',
+  async findUser(usernameKey: string): Promise<(StoredUser & { applicationStatus?: ApplicationStatus | null }) | null> {
+    const result = await this.pool.query<StoredUser & { applicationStatus: ApplicationStatus | null }>(
+      `SELECT u.id, u.username, u.username_key AS "usernameKey", u.password,
+         u.is_invalid AS "isInvalid", u.is_admin AS "isAdmin",
+         (SELECT a.status FROM naruto_login.registration_applications a WHERE a.user_id = u.id
+          ORDER BY a.created_at DESC, a.id DESC LIMIT 1) AS "applicationStatus"
+       FROM naruto_login.users u WHERE u.username_key = $1`,
       [usernameKey],
     );
     return result.rows[0] ?? null;
@@ -197,11 +264,11 @@ export class PgAuthStore implements AuthStore, LoginEventStore {
     );
   }
 
-  async findSessionUser(tokenHash: string, now: Date): Promise<Pick<StoredUser, 'id' | 'username'> | null> {
-    const result = await this.pool.query<Pick<StoredUser, 'id' | 'username'>>(
-      `SELECT u.id, u.username FROM naruto_login.sessions s
+  async findSessionUser(tokenHash: string, now: Date): Promise<PublicUser | null> {
+    const result = await this.pool.query<PublicUser>(
+      `SELECT u.id, u.username, u.is_admin AS "isAdmin" FROM naruto_login.sessions s
        JOIN naruto_login.users u ON u.id = s.user_id
-       WHERE s.token_hash = $1 AND s.expires_at > $2`,
+       WHERE s.token_hash = $1 AND s.expires_at > $2 AND u.is_invalid = false`,
       [tokenHash, now],
     );
     return result.rows[0] ?? null;
@@ -209,6 +276,44 @@ export class PgAuthStore implements AuthStore, LoginEventStore {
 
   async deleteSession(tokenHash: string): Promise<void> {
     await this.pool.query('DELETE FROM naruto_login.sessions WHERE token_hash = $1', [tokenHash]);
+  }
+
+  async listRegistrationApplications(status: ApplicationStatus | 'all', limit: number): Promise<RegistrationApplication[]> {
+    await this.initialize();
+    const result = await this.pool.query<ApplicationRow>(
+      `SELECT ${applicationColumns} FROM naruto_login.registration_applications a
+       JOIN naruto_login.users u ON u.id = a.user_id
+       WHERE ($1 = 'all' OR a.status = $1) ORDER BY a.created_at DESC, a.id DESC LIMIT $2`,
+      [status, limit],
+    );
+    return result.rows.map(registrationApplication);
+  }
+
+  async reviewRegistration(applicationId: string, adminId: string, decision: 'approved' | 'rejected', reason: string | null, now: Date): Promise<RegistrationApplication> {
+    await this.initialize();
+    return await this.transaction(async client => {
+      // Hold the actor's privileges stable until the decision commits.
+      const actor = await client.query(
+        'SELECT id FROM naruto_login.users WHERE id = $1 AND is_admin = true AND is_invalid = false FOR SHARE', [adminId],
+      );
+      if (!actor.rows.length) throw new ApplicationReviewError('ADMIN_REQUIRED');
+      const selected = await client.query<ApplicationRow>(
+        `SELECT ${applicationColumns} FROM naruto_login.registration_applications a
+         JOIN naruto_login.users u ON u.id = a.user_id WHERE a.id = $1 FOR UPDATE OF a`, [applicationId],
+      );
+      const application = selected.rows[0];
+      if (!application) throw new ApplicationReviewError('NOT_FOUND');
+      if (application.status !== 'pending') throw new ApplicationReviewError('ALREADY_REVIEWED');
+      await client.query('UPDATE naruto_login.users SET is_invalid = $2 WHERE id = $1', [application.userId, decision === 'rejected']);
+      if (decision === 'rejected') {
+        await client.query('DELETE FROM naruto_login.sessions WHERE user_id = $1', [application.userId]);
+      }
+      await client.query(
+        `UPDATE naruto_login.registration_applications SET status = $2, reviewed_at = $3, reviewed_by = $4, reason = $5
+         WHERE id = $1 AND status = 'pending'`, [applicationId, decision, now, adminId, reason],
+      );
+      return registrationApplication({ ...application, status: decision, reviewedAt: now, reviewedBy: adminId, reason });
+    });
   }
 
   async reserve(candidate: LoginEvent, now: Date): Promise<LoginEvent> {

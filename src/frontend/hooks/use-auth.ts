@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-export interface User { id: string; username: string }
+export interface User { id: string; username: string; isAdmin: boolean }
 export type AuthMode = 'login' | 'register';
+export type AuthResult = { kind: 'authenticated' } | { kind: 'application_submitted'; message: string } | null;
 const authChangedKey = 'naruto-login:auth-changed';
 
 function notifyOtherPages() {
@@ -35,7 +36,7 @@ export function useAuth() {
       });
       if (!response.ok) throw new Error('账户状态暂时无法读取，请稍后重试。');
       const body = await response.json() as { user: User | null };
-      if (body.user !== null && (!body.user?.id || !body.user?.username)) {
+      if (body.user !== null && (!body.user?.id || !body.user?.username || typeof body.user.isAdmin !== 'boolean')) {
         throw new Error('账户状态暂时无法读取，请稍后重试。');
       }
       if (requestRef.current !== controller) return;
@@ -70,8 +71,8 @@ export function useAuth() {
     };
   }, [refresh]);
 
-  async function authenticate(mode: AuthMode, username: string, password: string) {
-    if (busyRef.current) return false;
+  async function authenticate(mode: AuthMode, username: string, password: string): Promise<AuthResult> {
+    if (busyRef.current) return null;
     busyRef.current = true;
     setBusy(true);
     setError('');
@@ -86,17 +87,21 @@ export function useAuth() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: username.trim(), password }), signal: controller.signal,
       });
-      const body = await response.json() as { user?: User; error?: string };
+      const body = await response.json() as { user?: User; application?: { id: string }; message?: string; error?: string };
       if (!response.ok) throw new Error(body.error || '账户操作未完成，请重试。');
-      if (!body.user?.id || !body.user.username) throw new Error('账户服务返回了无效信息，请重试。');
+      if (mode === 'register') {
+        if (!body.application?.id) throw new Error('注册申请返回信息异常，请稍后查询申请状态。');
+        return { kind: 'application_submitted', message: body.message || '注册申请已提交，等待管理员审批。' };
+      }
+      if (!body.user?.id || !body.user.username || typeof body.user.isAdmin !== 'boolean') throw new Error('账户服务返回了无效信息，请重试。');
       setUser(body.user);
       setLoading(false);
       notifyOtherPages();
-      return true;
+      return { kind: 'authenticated' };
     } catch (caught) {
       setError(caught instanceof Error && caught.name !== 'AbortError'
         ? caught.message : '账户服务连接超时，请稍后重试。');
-      return false;
+      return null;
     } finally {
       clearTimeout(timeout);
       busyRef.current = false;

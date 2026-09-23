@@ -1,12 +1,12 @@
 import { useState, type FormEvent } from 'react';
-import { CircleAlert, LogIn, UserPlus } from 'lucide-react';
+import { CheckCheck, CircleAlert, LogIn, UserPlus } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
-import type { AuthMode } from '@/hooks/use-auth';
+import type { AuthMode, AuthResult } from '@/hooks/use-auth';
 
 interface AuthDialogProps {
   open: boolean;
@@ -14,7 +14,7 @@ interface AuthDialogProps {
   busy: boolean;
   error: string;
   clearError: () => void;
-  authenticate: (mode: AuthMode, username: string, password: string) => Promise<boolean>;
+  authenticate: (mode: AuthMode, username: string, password: string) => Promise<AuthResult>;
 }
 
 export function AuthDialog({ open, onOpenChange, busy, error, clearError, authenticate }: AuthDialogProps) {
@@ -22,12 +22,15 @@ export function AuthDialog({ open, onOpenChange, busy, error, clearError, authen
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [validationError, setValidationError] = useState('');
+  const [submittedMessage, setSubmittedMessage] = useState('');
   const registering = mode === 'register';
 
   function changeOpen(next: boolean) {
     if (busy) return;
     setPassword('');
     setValidationError('');
+    setSubmittedMessage('');
+    if (!next) setMode('login');
     clearError();
     onOpenChange(next);
   }
@@ -36,6 +39,7 @@ export function AuthDialog({ open, onOpenChange, busy, error, clearError, authen
     setMode(registering ? 'login' : 'register');
     setPassword('');
     setValidationError('');
+    setSubmittedMessage('');
     clearError();
   }
 
@@ -49,13 +53,15 @@ export function AuthDialog({ open, onOpenChange, busy, error, clearError, authen
       return;
     }
     const passwordLength = [...password].length;
-    if (passwordLength < 8 || passwordLength > 128) {
-      setValidationError('密码需为 8–128 个字符。');
+    if (passwordLength < 6 || passwordLength > 128) {
+      setValidationError('密码需为 6–128 个字符。');
       return;
     }
-    if (await authenticate(mode, username, password)) {
+    const result = await authenticate(mode, username, password);
+    if (result) {
       setPassword('');
-      onOpenChange(false);
+      if (result.kind === 'application_submitted') setSubmittedMessage(result.message);
+      else onOpenChange(false);
     }
   }
 
@@ -65,13 +71,25 @@ export function AuthDialog({ open, onOpenChange, busy, error, clearError, authen
         <DialogHeader className="gap-3 pr-6">
           <DialogTitle className="flex items-center gap-2 text-xl font-semibold">
             <img src="/icons/leaf-village.svg" alt="" width="25" height="25" aria-hidden="true" />
-            {registering ? '注册忍者日常账户' : '登录忍者日常'}
+            {submittedMessage ? '注册申请已提交' : registering ? '注册忍者日常账户' : '登录忍者日常'}
           </DialogTitle>
           <DialogDescription className="leading-6">
-            {registering ? '创建你的专属用户名，注册成功后自动登录。' : '登录后即可获取二维码，重新打开页面也能继续本次申请。'}
+            {submittedMessage ? '等待管理员审批，通过后即可使用用户名和密码登录。'
+              : registering ? '提交注册申请，管理员审批通过后即可登录。' : '登录后即可获取二维码，重新打开页面也能继续本次申请。'}
           </DialogDescription>
         </DialogHeader>
-        <form className="space-y-5" onSubmit={(event) => { void submit(event); }}>
+        {submittedMessage ? (
+          <div className="space-y-5">
+            <Alert className="border-primary/20 bg-white/40" role="status">
+              <CheckCheck className="text-primary" aria-hidden="true" />
+              <AlertDescription className="space-y-2 leading-6 text-foreground">
+                <p>{submittedMessage}</p>
+                <p className="break-all text-sm text-muted-foreground">申请账户：{username.trim()}</p>
+              </AlertDescription>
+            </Alert>
+            <Button type="button" size="lg" className="w-full" onClick={switchMode}><LogIn aria-hidden="true" />去登录</Button>
+          </div>
+        ) : <form className="space-y-5" onSubmit={(event) => { void submit(event); }}>
           <div className="space-y-2">
             <Label htmlFor="account-username">用户名</Label>
             <Input id="account-username" name="username" value={username}
@@ -88,7 +106,7 @@ export function AuthDialog({ open, onOpenChange, busy, error, clearError, authen
               autoComplete={registering ? 'new-password' : 'current-password'}
               required disabled={busy}
               placeholder="输入密码" aria-describedby="password-hint" className="h-11 bg-white/70" />
-            <p id="password-hint" className="text-xs leading-5 text-muted-foreground">8–128 个字符，请勿使用游戏账号密码</p>
+            <p id="password-hint" className="text-xs leading-5 text-muted-foreground">6–128 个字符，请勿使用游戏账号密码</p>
           </div>
           {(validationError || error) && (
             <Alert variant="destructive" role="alert" className="bg-white/60">
@@ -98,15 +116,15 @@ export function AuthDialog({ open, onOpenChange, busy, error, clearError, authen
           )}
           <Button type="submit" size="lg" disabled={busy} className="h-11 w-full">
             {busy ? <Spinner aria-hidden="true" /> : registering ? <UserPlus aria-hidden="true" /> : <LogIn aria-hidden="true" />}
-            {busy ? '正在处理…' : registering ? '注册并登录' : '登录'}
+            {busy ? '正在处理…' : registering ? '提交注册申请' : '登录'}
           </Button>
-        </form>
-        <div className="flex items-center justify-center gap-1 text-sm text-muted-foreground">
+        </form>}
+        {!submittedMessage && <div className="flex items-center justify-center gap-1 text-sm text-muted-foreground">
           <span>{registering ? '已有账户？' : '还没有账户？'}</span>
           <Button type="button" variant="link" size="sm" className="px-1" disabled={busy} onClick={switchMode}>
             {registering ? '去登录' : '注册账户'}
           </Button>
-        </div>
+        </div>}
       </DialogContent>
     </Dialog>
   );

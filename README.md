@@ -2,7 +2,7 @@
 
 React / TSX 前端和 TypeScript 客户端后端放在同一个仓库。客户端后端生成唯一任务 ID，将任务直接投放到 Redis，Python 工作进程通过 Redis 取任务并上传二维码到阿里云 OSS；客户端后端检查 OSS，页面读取并显示二维码。
 
-**用户先注册或登录网站账号，再申请游戏二维码。** 同一个账号同时只能有一条有效申请；不同标签页、刷新页面或重新登录会恢复已有申请。Python 工作进程已接入 Redis 与 OSS，当前生成模拟二维码，尚未实现雷电点击、真实扫码确认或登录成功回调。
+**用户注册后需等待管理员审批，通过后才能登录并申请游戏二维码。** 同一个账号同时只能有一条有效申请；不同标签页、刷新页面或重新登录会恢复已有申请。Python 工作进程已接入 Redis 与 OSS，当前生成模拟二维码，尚未实现雷电点击、真实扫码确认或登录成功回调。
 
 ## 本地启动
 
@@ -32,7 +32,8 @@ npm start
 ## 执行路径
 
 ```text
-TSX 页面注册 / 登录 → PostgreSQL 账户与会话 → HttpOnly Cookie
+TSX 页面注册 → PostgreSQL 待审核账号与申请 → 管理员审批
+TSX 页面登录 → 校验账号启用状态 → PostgreSQL 会话 → HttpOnly Cookie
 TSX 页面 POST /api/login-sessions
   → 页面先保存本次 requestId，刷新时复用同一个编号
   → TS 后端校验网站账号，在 PostgreSQL 事件表保存 UUID、状态和过期时间
@@ -52,7 +53,11 @@ TSX 页面每秒 GET /api/login-sessions/{id}
 
 ## 网站账号
 
-只需新增一个 `DATABASE_URL`，例如 `postgresql://username:password@host:5432/naruto_login`。本项目使用独立数据库 `naruto_login`，不使用 `hackathon`。首次访问认证功能时自动在目标库创建 `naruto_login.users`、`naruto_login.sessions` 和 `naruto_login.login_events`，不会改动其他业务表。用户名为 3–24 个汉字、英文字母、数字、下划线或短横线，英文字母不区分大小写，数据库唯一约束防止并发重复注册；密码为 8–128 个字符，按当前项目要求以明文保存在 `users.password` 中，API 不返回该字段。会话表仅保存随机登录凭证的 SHA-256 摘要。
+只需新增一个 `DATABASE_URL`，例如 `postgresql://username:password@host:5432/naruto_login`。本项目使用独立数据库 `naruto_login`，不使用 `hackathon`。首次访问认证功能时自动在目标库创建或迁移 `naruto_login.users`、`naruto_login.sessions`、`naruto_login.login_events` 和 `naruto_login.registration_applications`，不会改动其他业务表。用户名为 3–24 个汉字、英文字母、数字、下划线或短横线，英文字母不区分大小写，数据库唯一约束防止并发重复注册；密码为 6–128 个字符，按当前项目要求以明文保存在 `users.password` 中，API 不返回该字段。会话表仅保存随机登录凭证的 SHA-256 摘要。
+
+新注册的用户固定为 `is_invalid=true`、`is_admin=false`，同时创建一条待审批申请，不签发登录 Cookie。`is_invalid=true` 表示账号尚未获准登录或已停用；审批通过后改为 `false`。`is_admin=true` 表示管理员，页面右上角显示「管理员」菜单，可打开注册申请审核面板，按状态筛选申请并批准或拒绝。审批表保存状态、申请时间、审核人、审核时间和可选备注；同一申请只能审核一次，重复审核返回 `409`。
+
+数据库迁移保留旧用户原有登录资格，旧账号不会自动变成管理员。初始管理员必须由数据库管理员显式指定；公开注册及审核接口都不能设置 `is_admin`。现有数据库已按用户要求设置首个管理员 `HUY1`，密码不写入仓库。每次接口请求都重新检查账号启用状态与角色，禁用账号或撤销管理员角色后，已有 Cookie 也不能绕过权限检查。
 
 未配置数据库时，注册登录返回 `503 / DATABASE_NOT_CONFIGURED`；未登录申请二维码返回 `401 / AUTH_REQUIRED`。同账号并发申请通过数据库账号行锁和唯一约束复用当前事件；Redis Lua 负责同任务重试不重复入队。不能通过修改请求中的用户 ID 访问其他账号的二维码。
 
@@ -149,9 +154,11 @@ Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run 
 | 接口 | 结果 |
 | --- | --- |
 | `GET /api/auth/me` | 当前网站账号，未登录返回 `{ user: null }` |
-| `POST /api/auth/register` | 用户名、密码注册，返回 `201` 并自动登录 |
-| `POST /api/auth/login` | 用户名、密码登录，设置 HttpOnly Cookie |
+| `POST /api/auth/register` | 提交用户名、密码，返回 `201` 和待审批申请，不自动登录 |
+| `POST /api/auth/login` | 审批通过且启用的账号可登录，设置 HttpOnly Cookie；待审核/拒绝/禁用返回 `403` |
 | `POST /api/auth/logout` | 撤销当前登录会话并清除 Cookie |
+| `GET /api/admin/registration-applications?status=pending` | 管理员查看最近 100 条申请，支持 `pending`、`approved`、`rejected`、`all` |
+| `POST /api/admin/registration-applications/:id/review` | 管理员提交 `{decision: "approved" 或 "rejected", reason?: string}`，审核人与时间由后端确定 |
 | `POST /api/login-sessions` | `{requestId}` 创建或恢复同一事件，返回 `202` 和 `id`、状态、有效时间、`showGetButton` |
 | `GET /api/login-sessions/active` | `{session, showGetButton}`，当前账号未过期事件，供其他标签页与刷新后恢复 |
 | `GET /api/login-sessions/:id` | 当前账号的事件进度及 `showGetButton`，使用登录 Cookie |
