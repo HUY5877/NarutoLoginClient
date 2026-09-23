@@ -28,6 +28,8 @@ npm run dev
 
 打开 <http://127.0.0.1:4300>，点击“生成登录二维码”。默认约几秒后可见二维码，申请有效期为 120 秒，过期后可以重新生成。
 
+`npm run dev` 和 `npm start` 启动时会自动清理占用客户端 `PORT` 的进程，再使用原端口启动。在 Windows 上，同项目旧的 `tsx watch` 进程会一起停止，避免旧实例在修改代码后重新占用端口。无需增加配置；Linux/macOS 在端口占用时需要系统提供 `lsof` 命令。
+
 默认配置可直接运行，不必创建 `.env`。需要修改时，客户端将项目根目录 `.env.example` 复制为 `.env`；Python 任务服务将 `naruto_daily/login_service/.env.example` 复制为同目录的 `.env`。不要覆盖已有配置。
 
 | 进程 | 默认地址 | 职责 |

@@ -5,10 +5,17 @@ import { resolve } from 'node:path';
 import express from 'express';
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
+import { releasePort } from './port.js';
 import { createObjectReader } from './storage.js';
 import { TaskService } from './upstream.js';
 
 const config = loadConfig();
+try {
+  await releasePort(config.host, config.port);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : `无法清理端口 ${config.port}。`);
+  process.exit(1);
+}
 const app = createApp(config, { tasks: new TaskService(config), storage: createObjectReader(config) });
 const server = createServer(app);
 let vite: import('vite').ViteDevServer | undefined;
