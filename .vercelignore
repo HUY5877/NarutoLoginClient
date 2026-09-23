@@ -1,0 +1,6 @@
+.env*
+.data/
+.idea/
+**/node_modules/
+**/dist/
+*.log

@@ -436,11 +436,6 @@ export default function App() {
             </Card>
           </div>
         </div>
-
-        <footer className="village-footer mt-6 flex flex-wrap items-center justify-between gap-2 text-xs leading-5 text-muted-foreground">
-          <span className="flex items-center gap-2"><img src="/icons/leaf-village.svg" alt="" width="16" height="16" aria-hidden="true" />忍者日常 · 木叶相见</span>
-          <span>模拟体验 · 非官方项目</span>
-        </footer>
       </main>
       <AuthDialog open={authOpen} onOpenChange={setAuthOpen} busy={auth.busy}
         error={auth.error} clearError={auth.clearError} authenticate={auth.authenticate} />
