@@ -84,7 +84,7 @@ test('开发页面、模块、HMR 和 API 共用一个端口，未知 API 保持
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...env, DOTENV_CONFIG_PATH: devNull, NODE_ENV: 'test', NO_COLOR: '1',
       HOST: '127.0.0.1', PORT: String(port), STORAGE_DRIVER: 'local',
-      LOGIN_SERVICE_URL: 'http://127.0.0.1:1', SERVICE_TOKEN: 'single-port-test-token' },
+      REDIS_URL: '' },
   });
   let output = '';
   let spawnError: Error | undefined;

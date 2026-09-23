@@ -14,5 +14,5 @@
     "types": ["node"],
     "typeRoots": ["./src/server/node_modules/@types", "./src/frontend/node_modules/@types"]
   },
-  "include": ["src", "tests"]
+  "include": ["src", "api", "tests"]
 }

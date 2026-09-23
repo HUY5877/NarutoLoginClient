@@ -8,3 +8,5 @@ coverage/
 test-results/
 .DS_Store
 .idea/
+.vercel/
+.data/

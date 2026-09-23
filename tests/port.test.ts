@@ -173,7 +173,7 @@ test('Windows 重启开发服务释放配置端口，并退出旧 tsx watch 父�
   const cli = createRequire(resolve(serverRoot, 'package.json')).resolve('tsx/cli');
   const env = { ...isolatedEnv(), DOTENV_CONFIG_PATH: devNull, NODE_ENV: 'test', NO_COLOR: '1',
     HOST: host, PORT: String(port), STORAGE_DRIVER: 'local',
-    LOGIN_SERVICE_URL: 'http://127.0.0.1:1', SERVICE_TOKEN: 'port-release-regression-test-token' };
+    REDIS_URL: '' };
   const child = spawn(process.execPath, [cli, 'watch', 'index.ts', '--dev'], {
     cwd: serverRoot, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env,
   });

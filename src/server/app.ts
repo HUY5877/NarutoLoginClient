@@ -2,7 +2,8 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import express, { type ErrorRequestHandler, type Request } from 'express';
 import type { Config } from './config.js';
 import type { ObjectReader } from './storage.js';
-import { ApiError, type TaskService } from './upstream.js';
+import { ApiError } from './errors.js';
+import type { TaskService } from './queue.js';
 
 export interface Dependencies { tasks: Pick<TaskService, 'enqueue' | 'get'>; storage: ObjectReader; now?: () => number }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -64,7 +65,7 @@ export function createApp(config: Config, { tasks, storage, now = Date.now }: De
   });
   app.use('/api', (_req, res) => res.status(404).json({ error: '接口不存在。' }));
   const onError: ErrorRequestHandler = (error: unknown, _req, res, _next) => {
-    if (error instanceof ApiError) res.status(error.status).json({ error: error.message });
+    if (error instanceof ApiError) res.status(error.status).json({ error: error.message, ...(error.code ? { code: error.code } : {}) });
     else if (error && typeof error === 'object' && 'type' in error && ['entity.parse.failed', 'entity.too.large'].includes(String(error.type))) {
       res.status(400).json({ error: '请求格式无效。' });
     } else res.status(500).json({ error: '登录服务处理失败，请稍后重试。' });

@@ -1,6 +1,8 @@
 import OSS from 'ali-oss';
+import { readFile, realpath, stat } from 'node:fs/promises';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { Config } from './config.js';
-import { ApiError } from './upstream.js';
+import { ApiError } from './errors.js';
 
 export interface ObjectReader {
   exists(id: string): Promise<boolean>;
@@ -8,31 +10,43 @@ export interface ObjectReader {
 }
 
 export function objectKey(config: Pick<Config, 'ossPrefix'>, id: string): string {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+    throw new ApiError(400, '无效的登录申请编号。');
+  }
+  if (!/^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(config.ossPrefix)) throw unavailable();
   return `${config.ossPrefix}/${id}/qr.png`;
 }
 
 function isMissing(error: unknown): boolean {
-  return !!error && typeof error === 'object' && ('status' in error && error.status === 404 || 'code' in error && error.code === 'NoSuchKey');
+  return !!error && typeof error === 'object' && (
+    'status' in error && error.status === 404 ||
+    'code' in error && (error.code === 'NoSuchKey' || error.code === 'ENOENT')
+  );
 }
+
+function unavailable(): ApiError { return new ApiError(503, '二维码存储暂时不可用，请稍后重试。'); }
 
 export function createObjectReader(config: Config): ObjectReader {
   if (config.storageDriver === 'local') {
-    const request = async (id: string, method: string): Promise<Response> => {
-      try {
-        const response = await fetch(`${config.serviceUrl}/internal/objects/${id}/qr.png`, {
-          method, headers: { 'X-Service-Token': config.serviceToken }, signal: AbortSignal.timeout(config.timeoutMs),
-        });
-        if (response.status !== 404 && !response.ok) throw new Error('storage read failed');
-        return response;
-      } catch { throw new ApiError(503, '二维码存储暂时不可用，请稍后重试。'); }
+    const localPath = async (key: string): Promise<string> => {
+      const root = await realpath(config.localObjectsDir);
+      const file = await realpath(resolve(root, ...key.split('/')));
+      const child = relative(root, file);
+      // Reject directory junctions and symlinks that point outside the object store.
+      if (child === '..' || child.startsWith(`..${sep}`) || isAbsolute(child)) throw unavailable();
+      if (!(await stat(file)).isFile()) throw unavailable();
+      return file;
     };
     return {
-      async exists(id) { return (await request(id, 'HEAD')).ok; },
+      async exists(id) {
+        const key = objectKey(config, id);
+        try { await localPath(key); return true; }
+        catch (error) { if (isMissing(error)) return false; throw unavailable(); }
+      },
       async read(id) {
-        const response = await request(id, 'GET');
-        if (!response.ok) return null;
-        try { return Buffer.from(await response.arrayBuffer()); }
-        catch { throw new ApiError(503, '二维码存储暂时不可用，请稍后重试。'); }
+        const key = objectKey(config, id);
+        try { return await readFile(await localPath(key)); }
+        catch (error) { if (isMissing(error)) return null; throw unavailable(); }
       },
     };
   }
@@ -42,12 +56,14 @@ export function createObjectReader(config: Config): ObjectReader {
   });
   return {
     async exists(id) {
-      try { await client.head(objectKey(config, id)); return true; }
-      catch (error) { if (isMissing(error)) return false; throw new ApiError(503, '二维码存储暂时不可用，请稍后重试。'); }
+      const key = objectKey(config, id);
+      try { await client.head(key); return true; }
+      catch (error) { if (isMissing(error)) return false; throw unavailable(); }
     },
     async read(id) {
-      try { return (await client.get(objectKey(config, id))).content; }
-      catch (error) { if (isMissing(error)) return null; throw new ApiError(503, '二维码存储暂时不可用，请稍后重试。'); }
+      const key = objectKey(config, id);
+      try { return (await client.get(key)).content; }
+      catch (error) { if (isMissing(error)) return null; throw unavailable(); }
     },
   };
 }

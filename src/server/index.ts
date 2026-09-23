@@ -8,7 +8,7 @@ import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { releasePort } from './port.js';
 import { createObjectReader } from './storage.js';
-import { TaskService } from './upstream.js';
+import { TaskService } from './queue.js';
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const serverRoot = existsSync(resolve(moduleDir, 'package.json')) ? moduleDir : resolve(moduleDir, '..');
@@ -22,7 +22,8 @@ try {
   console.error(error instanceof Error ? error.message : `无法清理端口 ${config.port}。`);
   process.exit(1);
 }
-const app = createApp(config, { tasks: new TaskService(config), storage: createObjectReader(config) });
+const tasks = new TaskService(config);
+const app = createApp(config, { tasks, storage: createObjectReader(config) });
 const server = createServer(app);
 let vite: import('vite').ViteDevServer | undefined;
 
@@ -58,6 +59,7 @@ let closing = false;
 async function shutdown() {
   if (closing) return;
   closing = true;
+  tasks.close();
   server.close();
   server.closeIdleConnections();
   setTimeout(() => server.closeAllConnections(), 5000).unref();

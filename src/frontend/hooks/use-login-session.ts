@@ -70,6 +70,10 @@ async function request(path: string, signal: AbortSignal, init?: RequestInit) {
       signal: timeoutController.signal,
     });
     if (!response.ok) {
+      const body = await response.json().catch(() => null) as { code?: string } | null;
+      if (response.status === 503 && body?.code === 'REDIS_NOT_CONFIGURED') {
+        throw new RequestError('Redis 尚未配置，暂时无法申请登录。', response.status);
+      }
       const message = response.status === 429
         ? '申请较多，请稍后重新生成。'
         : response.status === 401 || response.status === 403

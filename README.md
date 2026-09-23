@@ -1,24 +1,12 @@
 # NarutoLoginClient · 忍者日常登录中心
 
-React / TSX 前端与 TypeScript 客户端后端放在同一个仓库。用户申请登录后，由客户端后端生成唯一任务 ID 和独立访问凭证，将任务投到 `NarutoDailyADB/naruto_daily/login_service` 的模拟 Redis 队列。任务服务使用 Python，为每个申请启动独立 Python 工作进程，生成模拟二维码并上传对象存储；客户端后端轮询存储，前端拿到 PNG 后显示。
+React / TSX 前端和 TypeScript 客户端后端放在同一个仓库。客户端后端生成唯一任务 ID，将任务直接投放到 Redis，Python 工作进程通过 Redis 取任务并上传二维码到阿里云 OSS；客户端后端检查 OSS，页面读取并显示二维码。
 
-**当前是可运行的本地模拟流程。** 二维码包含模拟会话数据，无法登录真实游戏；雷电进程启动、游戏打开、选择“与安卓好友玩”、切换账号及进入二维码页面均为模拟步骤。没有实现扫码确认、登录成功回调或游戏会话接管。
+**当前已接入 Redis 与 OSS 的客户端协议，Redis 实例尚未配置，Python 项目仍需适配新队列协议。** 网站可以独立启动和部署；未配置 `REDIS_URL` 时，申请接口明确返回 `503 / REDIS_NOT_CONFIGURED`，不会假装投递成功。当前无法运行完整二维码流程，也尚未实现雷电点击、真实扫码确认或登录成功回调。
 
 ## 本地启动
 
-客户端需要 Node.js 22.12+（推荐 Node.js 24）和 npm；当前项目中的任务服务需要 Python 3.11+。两个仓库分别安装依赖；无需 Redis、雷电模拟器或阿里云账号。
-
-终端一，在现有 Python 项目根目录安装并启动任务服务：
-
-```powershell
-cd E:\code\NarutoDailyADB
-python -m pip install -e ".[login-service]"
-python -m naruto_daily.login_service
-```
-
-本机也已准备独立 Python 环境，可直接在该目录执行 `.\.venv-login-service\Scripts\python.exe -m naruto_daily.login_service`。
-
-终端二，在本仓库根目录安装并启动客户端。根目录的 `npm ci` 会自动安装前端和后端各自的依赖：
+需要 Node.js 22.12+（推荐 Node.js 24）和 npm。在仓库根目录执行，`npm ci` 会自动安装前后端各自的依赖：
 
 ```powershell
 cd E:\code\NarutoLoginClient
@@ -26,53 +14,69 @@ npm ci
 npm run dev
 ```
 
-打开 <http://127.0.0.1:4300>，点击“生成登录二维码”。默认约几秒后可见二维码，申请有效期为 120 秒，过期后可以重新生成。
+打开 <http://127.0.0.1:4300>。页面、API 和开发热更新共用一个端口；不需要单独启动 Vite，也不需要 Python HTTP 服务。页面可在没有 `.env` 的情况下打开，投递登录任务仍需可连接的 Redis。
 
-`npm run dev` 和 `npm start` 启动时会自动清理占用客户端 `PORT` 的进程，再使用原端口启动。在 Windows 上，同项目旧的 `tsx watch` 进程会一起停止，避免旧实例在修改代码后重新占用端口。无需增加配置；Linux/macOS 在端口占用时需要系统提供 `lsof` 命令。
+需要配置时，将根目录 `.env.example` 复制为 `.env` 并填写已有服务的信息，不要覆盖原有配置或提交密钥。客户端和 Python 工作进程必须连接同一个 Redis，并使用一致的队列键、OSS Bucket 和对象前缀。
 
-默认配置可直接运行，不必创建 `.env`。需要修改时，客户端将项目根目录 `.env.example` 复制为 `.env`；Python 任务服务将 `naruto_daily/login_service/.env.example` 复制为同目录的 `.env`。不要覆盖已有配置。
+`npm run dev` 和 `npm start` 会自动清理占用客户端 `PORT` 的进程，再使用原端口启动。在 Windows 上，同项目旧的 `tsx watch` 进程会一起停止，避免旧实例重新占用端口。Linux/macOS 在端口占用时需要系统提供 `lsof` 命令。
 
-| 进程 | 默认地址 | 职责 |
-| --- | --- | --- |
-| TS 客户端 | `127.0.0.1:4300` | 提供页面与 API，生成 ID、投递任务、验证申请凭证、轮询对象存储、传送二维码 |
-| Python 任务服务 | `127.0.0.1:4320` | 模拟 Redis 队列、进程调度、二维码生成、存储写入与清理 |
-
-开发时 Vite 作为客户端后端的中间件运行，页面、API 和热更新共用一个端口。只需修改 `PORT` 即可一起调整，无需配置前端代理或单独启动 Vite。
-
-生产构建预览（仍需单独启动任务服务）：
+本地生产构建预览：
 
 ```powershell
 npm run build
 npm start
 ```
 
-同样打开 <http://127.0.0.1:4300>，由 TS 后端提供构建后的页面和 API。前端产物位于 `src/frontend/dist/`，后端产物位于 `src/server/dist/`；这些目录由构建命令生成，不提交到 Git。
+仍打开 <http://127.0.0.1:4300>。前端产物在 `src/frontend/dist/`，后端产物在 `src/server/dist/`；这些目录自动生成，不提交到 Git。
 
 ## 执行路径
 
 ```text
-TSX 页面
-  POST /api/login-sessions
-    → TS 客户端后端生成 UUID + 随机凭证 + expiresAt
-    → POST 任务服务 /internal/tasks
-    → 模拟 Redis LPUSH / BRPOP 队列
-    → 独立 Python 子进程模拟雷电和游戏登录步骤
-    → 写入 login/{id}/qr.png
+TSX 页面 POST /api/login-sessions
+  → TS 后端生成 UUID、随机访问凭证、过期时间
+  → Redis 原子保存会话及凭证哈希，并 LPUSH 登录任务
+  → Python 工作进程 BRPOP 同一个队列
+  → Python 启动模拟器、获取二维码（待适配实现）
+  → Python 上传 login/{id}/qr.png 到 OSS
 
 TSX 页面每秒 GET /api/login-sessions/{id}
-    → TS 客户端后端验证申请凭证并读取进度
-    → HEAD 对象存储，确认 PNG 是否存在
-    → 返回 qr_ready 后 GET /api/login-sessions/{id}/qr
-    → TSX 显示 PNG，停止轮询，保留过期倒计时
+  → TS 后端从 Redis 读取会话并校验访问凭证
+  → HEAD OSS 对象，存在即返回 qr_ready
+  → 页面 GET /api/login-sessions/{id}/qr
+  → TS 后端 GET OSS 对象并转发 PNG
 ```
 
-默认 `STORAGE_DRIVER=local` 时，任务服务把对象写到 Python 项目根目录的 `.data/login-service/objects/login/{id}/qr.png`，提供受保护的模拟 OSS HEAD/GET 接口；客户端后端通过 HTTP 读取，不要求两个仓库共用文件路径。
+浏览器只访问客户端 API。Redis 连接信息和 OSS 密钥由 TS 后端读取；访问凭证只保存在页面内存，刷新页面需重新申请。申请默认有效期为 120 秒。
 
-队列是任务服务进程内的 Redis 列表语义模拟，通过内部 HTTP 接口访问，并不连接真实 Redis。服务重启会丢失队列和会话，页面会提示重新申请。每次申请对应独立子进程，并发数和队列容量在任务服务配置；模拟进程生成二维码后退出。真实雷电未来需要保留进程直到扫码完成或会话过期。
+## Redis 与 Python 接入协议
 
-## 配置真实阿里云 OSS
+设置 `REDIS_URL` 为已有 Redis 的连接地址，支持 `redis://` 和 `rediss://`。云端和 Python 所在机器都必须能访问该实例；暂时没有 Redis 时保持未配置，不要填写伪地址。
 
-两个项目都设置以下环境变量，使用相同地域和 Bucket：
+默认队列键为 `naruto:login:tasks`。TS 后端使用 `LPUSH` 投递 JSON 字符串，Python 使用 `BRPOP` 按先后顺序消费。消息示例：
+
+```json
+{
+  "version": 1,
+  "id": "123e4567-e89b-42d3-a456-426614174000",
+  "createdAt": "2026-09-23T06:00:00.000Z",
+  "expiresAt": "2026-09-23T06:02:00.000Z",
+  "objectKey": "login/123e4567-e89b-42d3-a456-426614174000/qr.png"
+}
+```
+
+Python 消费端需要校验消息版本、UUID 和过期时间，直接丢弃已过期任务，再按 `objectKey` 上传 PNG。开始处理和上传前都应检查过期时间，避免继续处理已失效申请。Redis 会话有 TTL，但列表中的过期任务不会自动消失，必须由消费端丢弃。
+
+会话保存在 `<REDIS_QUEUE_KEY>:sessions:<id>`，默认例如 `naruto:login:tasks:sessions:123e4567-e89b-42d3-a456-426614174000`。值为 JSON，包含 `id`、`status`、`createdAt`、`expiresAt`、`simulation: true` 和 `tokenHash`。队列消息不含浏览器原始访问凭证。
+
+工作进程可以选择回写 `starting_emulator`、`opening_game`、`preparing_qr` 或 `failed` 等状态。回写时必须保留 `tokenHash`、时间字段和其他会话字段，并保留原 TTL；例如更新既有 JSON 后使用 `SET ... XX KEEPTTL`，不要新建已过期会话或延长申请有效期。不回写中间状态也可以，客户端会继续检查 OSS，文件到达后显示二维码。
+
+现有 Python 项目位于 `E:\code\NarutoDailyADB` 的 `naruto_daily/login_service/`。其中旧的模拟 HTTP 队列尚未改为消费上述 Redis 消息，不能直接当作新协议工作进程使用；接入需在该项目中另行实现。客户端已不再调用它的 HTTP 接口。
+
+## 对象存储
+
+本地 `STORAGE_DRIVER=local` 时，TS 后端直接读取仓库 `.data/login-objects/<OSS_KEY_PREFIX>/<id>/qr.png`。这是文件系统模拟存储，无独立 HTTP 服务；以后本地工作进程需把文件写到同一目录。可通过 `LOCAL_OBJECTS_DIR` 指定共享目录。
+
+部署 Vercel 时使用 OSS：
 
 ```dotenv
 STORAGE_DRIVER=oss
@@ -80,68 +84,76 @@ OSS_REGION=oss-cn-shanghai
 OSS_BUCKET=your-private-bucket
 OSS_ACCESS_KEY_ID=your-access-key-id
 OSS_ACCESS_KEY_SECRET=your-access-key-secret
-# 临时凭证可选
-# OSS_STS_TOKEN=your-temporary-token
 ```
 
-`OSS_KEY_PREFIX` 默认是 `login`，表示 Bucket 内对象键的目录前缀，例如 `login/{id}/qr.png`，无需重复配置；自定义时两边必须一致。
+`OSS_KEY_PREFIX` 默认 `login`，通常不需要配置。使用临时凭证时另外设置 `OSS_STS_TOKEN`。Python 写入端使用相同地域、Bucket 和对象前缀；它的凭据可以与客户端读取凭据不同。
 
-任务服务写入并删除二维码；客户端后端使用 `head` / `get` 检查并读取。可以为双方配置不同的最小权限 RAM 凭证：任务服务需要该前缀的 PutObject/GetObject/DeleteObject，客户端仅需 GetObject。二维码对象保持私有，浏览器不会拿到 OSS 密钥；图片由客户端后端转发，因此无需为浏览器配置 OSS CORS。
+客户端后端只用 OSS `HEAD` / `GET` 检查和读取二维码；对象保持私有，浏览器不接触 OSS 密钥，也不需要配置浏览器 OSS CORS。对象过期清理由工作进程或 Bucket 生命周期负责，客户端不会删除对象。
 
-任务服务会按会话过期时间清理对象。真实 OSS 还应为此前缀配置合适的 Bucket 生命周期，以兜底进程异常退出后遗留的对象。设置 OSS 不会自动启用真实雷电，游戏步骤依旧模拟。已完成真实 OSS 上传、客户端读取和页面显示的在线联调。
+## Vercel 部署与自动更新
+
+Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run build`，静态输出目录为 `src/frontend/dist`；`api` 下的函数承接 `/api` 请求。网页和接口共用一个域名，不需要对外开放本地的 `4300` 端口。
+
+将 Vercel 项目关联此 Git 仓库，生产分支设为 `main`。关联完成后，每次推送 `main` 都会自动构建并更新生产网站，无需 `.github` 工作流。
+
+在 Vercel 项目的 Environment Variables 中设置：
+
+| 变量 | 内容 |
+| --- | --- |
+| `REDIS_URL` | 云端和 Python 均可访问的 Redis 地址；暂缺时可不填，申请接口会返回明确的 503 |
+| `STORAGE_DRIVER` | `oss` |
+| `OSS_REGION` | `oss-cn-shanghai` |
+| `OSS_BUCKET` | 私有 Bucket 名称 |
+| `OSS_ACCESS_KEY_ID` | 后端读取 OSS 的 AccessKey ID |
+| `OSS_ACCESS_KEY_SECRET` | 对应密钥 |
+
+本地 `.env` 不随 Git 上传；环境变量应在 Vercel 单独配置，修改后重新部署生效。若需要预览部署也能调用接口，为 Preview 环境配置相应变量。Vercel 的本地文件系统不用于共享二维码，云端应使用 OSS。
 
 ## 可选配置
 
-这些设置都有默认值，仅在需要调整时加入客户端 `.env`：
+除实际服务连接和凭据外，其余设置通常保持默认即可：
 
 | 变量 | 默认值与用途 |
 | --- | --- |
-| `HOST` / `PORT` | `127.0.0.1` / `4300`，客户端页面、API 和开发热更新的监听地址 |
-| `LOGIN_SERVICE_URL` | `http://127.0.0.1:4320`，独立 Python 任务服务地址 |
+| `HOST` / `PORT` | `127.0.0.1` / `4300`，本地页面、API 和开发热更新地址 |
+| `REDIS_QUEUE_KEY` | `naruto:login:tasks`，客户端与 Python 共用的队列键 |
 | `SESSION_TTL_MS` | `120000`，申请有效期，支持 5 秒至 10 分钟 |
-| `UPSTREAM_TIMEOUT_MS` | `5000`，访问任务服务的超时 |
-| `ALLOWED_ORIGINS` | 默认空，额外允许的跨域来源，逗号分隔；同源使用无需设置 |
-
-`SERVICE_TOKEN` 是客户端后端访问任务服务的共享凭证，与每次申请的独立访问凭证不同。两边默认使用 `local-development-token`，只允许回环地址本地开发，无需写入 `.env`；改为非回环监听时，必须为两边配置相同的强随机值。
+| `REQUEST_TIMEOUT_MS` | `5000`，Redis 和 OSS 请求超时 |
+| `OSS_KEY_PREFIX` | `login`，二维码对象路径前缀 |
+| `LOCAL_OBJECTS_DIR` | 本仓库 `.data/login-objects`，本地模拟对象目录 |
+| `ALLOWED_ORIGINS` | 空，额外允许的跨域来源，逗号分隔；同源使用无需设置 |
 
 ## HTTP 接口
 
 | 接口 | 结果 |
 | --- | --- |
-| `POST /api/login-sessions` | `202`，包含 `id`、`accessToken`、`status`、`createdAt`、`expiresAt`、`pollAfterMs`、`simulation` |
+| `POST /api/login-sessions` | 成功投递后返回 `202`，包含 `id`、`accessToken`、状态和有效时间；未配置 Redis 返回 `503` |
 | `GET /api/login-sessions/:id` | 申请进度，必须携带 `Authorization: Bearer <accessToken>` |
-| `GET /api/login-sessions/:id/qr` | `image/png`，同样需要申请凭证；过期返回 `410` |
-| `GET /api/health` | 客户端后端自身状态，不代表任务服务或 OSS 已连接 |
+| `GET /api/login-sessions/:id/qr` | `image/png`，同样需要申请凭证；过期或 Redis 会话失效后不可读取 |
+| `GET /api/health` | 客户端后端状态与配置情况，不保证 Redis 或 OSS 实时连通 |
 
-状态：`queued → starting_emulator → opening_game → preparing_qr → qr_ready`；失败为 `failed`，过期为 `expired`。`qr_ready` 仅表示二维码可读取，不表示账号已登录。OSS 404 视为尚未生成；其他存储错误返回可重试错误，不伪装为“等待”。
+状态包括 `queued`、`starting_emulator`、`opening_game`、`preparing_qr`、`qr_ready`、`failed` 和 `expired`。`qr_ready` 仅表示二维码可读取，不表示账号已登录。OSS 404 表示尚未上传；其他存储错误返回可重试错误。
 
 ## 目录与验证
 
-前端采用 **shadcn/ui（Radix Nova）+ Tailwind CSS v4**，按钮、卡片、提示、进度、帮助弹窗、折叠面板和空状态均由官方 CLI 安装的组件组成；图标使用 Lucide，Geist 字体本地打包。主题通过 `src/frontend/styles.css` 的 shadcn CSS 变量配置，不再维护手写基础控件和装饰插画。
+前端采用 **shadcn/ui（Radix Nova）+ Tailwind CSS v4**，基础控件由官方 CLI 安装；图标使用 Lucide，Geist 字体本地打包。主题位于 `src/frontend/styles.css`，组件配置位于 `src/frontend/components.json`。
 
-组件配置位于 `src/frontend/components.json`，在项目根目录新增组件可执行 `npm run ui -- <组件名>`，支持一次传入多个组件名。这会在前端包中运行官方 `shadcn add`，组件和新增依赖都归前端包管理。`@/` 指向 `src/frontend/`。扫码申请、轮询、过期与取消逻辑独立在 `hooks/use-login-session.ts`，更换界面不改变 API 协议。
+在根目录执行 `npm run ui -- <组件名>` 可通过官方 `shadcn add` 新增组件，组件及依赖归前端包管理。`@/` 指向 `src/frontend/`；登录申请、轮询和过期逻辑位于 `hooks/use-login-session.ts`。
 
-前端和后端是两个独立 npm 包，各自维护 `package.json`、`package-lock.json`、`node_modules/` 和 `dist/`。根目录的 `package.json` 只编排安装、启动、构建和测试命令，不安装业务依赖。前端、后端和测试共用根目录的一份 `tsconfig.json`，路径别名也只在这里定义。前端的入口、Vite 配置和 shadcn 配置都放在 `src/frontend/`；后端通过 Vite 默认配置构建，无需额外构建配置文件。
+前后端各自维护 `package.json`、`package-lock.json`、`node_modules/` 和 `dist/`。根目录 `package.json` 只编排统一命令；前端、后端和测试共用一份 `tsconfig.json`。
 
 ```text
-src/frontend/       TSX 登录页、shadcn 主题
-  package.json      前端依赖与命令
-  package-lock.json 前端依赖版本锁
-  node_modules/     前端依赖（自动生成）
-  dist/             前端构建产物（自动生成）
-  index.html        页面入口
-  vite.config.ts    前端构建与开发中间件配置
-  components.json   shadcn CLI 配置
+src/frontend/       TSX 登录页、前端依赖、Vite 和 shadcn 配置
   components/ui/    官方 shadcn/ui 组件
   hooks/            登录申请与二维码轮询
-src/server/         TypeScript HTTP 后端、任务网关、OSS 读适配器
-  package.json      后端依赖与命令
-  package-lock.json 后端依赖版本锁
-  node_modules/     后端依赖（自动生成）
+  dist/             前端构建产物（自动生成）
+src/server/         TypeScript API、Redis 队列、OSS 读适配器
   dist/             后端构建产物（自动生成）
-tests/              HTTP 接口、请求失败及存储轮询测试
-package.json        统一执行命令
-tsconfig.json       前端、后端和测试共用的 TypeScript 配置
+api/                Vercel 函数入口
+tests/              API、Redis 协议、存储与单端口测试
+package.json        统一安装、开发、构建和测试命令
+tsconfig.json       共用 TypeScript 配置
+vercel.json         Vercel 构建、输出和 API 路由
 ```
 
 ```powershell
@@ -149,6 +161,4 @@ npm test
 npm run build
 ```
 
-测试覆盖 ID 隔离、队列失败、跨站申请拒绝、存储就绪判定、凭证拦截、过期竞态、PNG 返回、上游超时及相同 ID 重试。后端凭证仅在服务器环境变量中读取；浏览器申请凭证只保存在内存，关闭或刷新页面需重新申请。
-
-Python 任务服务代码位于独立的现有仓库 [NarutoDailyADB](https://github.com/HUY5877/NarutoDailyADB) 的 `naruto_daily/login_service/`；详细队列、并发和模拟器扩展说明见该目录 README。客户端业务代码不依赖任务服务的实现语言，HTTP 协议保持一致。
+测试使用模拟 Redis 驱动、模拟 OSS 方法和临时目录，不需要真实云端凭据。覆盖投递与凭证隔离、失败处理、存储就绪判定、过期与 PNG 响应，并检查单端口开发启动。测试通过不代表尚未接入的 Redis 实例和 Python 工作进程已完成联调。

@@ -3,7 +3,8 @@ import { once } from 'node:events';
 import { test } from 'node:test';
 import { createApp, type Dependencies } from '../src/server/app.js';
 import { loadConfig } from '../src/server/config.js';
-import { ApiError, type Submission, type Task } from '../src/server/upstream.js';
+import { ApiError } from '../src/server/errors.js';
+import { TaskService, type Submission, type Task } from '../src/server/queue.js';
 
 const config = loadConfig({});
 const id = '123e4567-e89b-42d3-a456-426614174000';
@@ -131,11 +132,23 @@ test('非法 JSON 使用统一 JSON 错误响应', async () => {
   });
 });
 
-test('OSS 必需配置、TTL 和网络监听配置在启动时校验', () => {
+test('OSS 必需配置、TTL 和 Redis 配置在启动时校验', () => {
   assert.throws(() => loadConfig({ STORAGE_DRIVER: 'oops' }), /STORAGE_DRIVER/);
   assert.throws(() => loadConfig({ STORAGE_DRIVER: 'oss' }), /OSS_REGION/);
   assert.throws(() => loadConfig({ SESSION_TTL_MS: 'NaN' }), /SESSION_TTL_MS/);
-  assert.throws(() => loadConfig({ HOST: '0.0.0.0' }), /SERVICE_TOKEN/);
-  assert.throws(() => loadConfig({ LOGIN_SERVICE_URL: 'file:///secret' }), /LOGIN_SERVICE_URL/);
+  assert.throws(() => loadConfig({ REDIS_URL: 'https://example.com' }), /REDIS_URL/);
+  assert.throws(() => loadConfig({ REDIS_URL: 'not-a-url' }), /REDIS_URL/);
+  assert.throws(() => loadConfig({ REDIS_QUEUE_KEY: 'invalid key' }), /REDIS_QUEUE_KEY/);
+  assert.equal(loadConfig({ REDIS_URL: 'rediss://user:password@redis.example:6379/0' }).redisQueueKey, 'naruto:login:tasks');
+  assert.equal(loadConfig({}).redisUrl, undefined);
   assert.throws(() => loadConfig({ OSS_KEY_PREFIX: '../escape' }), /OSS_KEY_PREFIX/);
+});
+
+test('未配置 Redis 时仍提供健康检查，申请明确返回 503', async () => {
+  await withApi({ tasks: new TaskService(config) }, async base => {
+    assert.equal((await fetch(`${base}/api/health`)).status, 200);
+    const response = await fetch(`${base}/api/login-sessions`, { method: 'POST' });
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: 'Redis 未配置，请先配置 REDIS_URL。', code: 'REDIS_NOT_CONFIGURED' });
+  });
 });
