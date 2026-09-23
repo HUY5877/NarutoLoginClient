@@ -215,7 +215,7 @@ export default function App() {
         )}
         <section className="village-hero mb-6" aria-labelledby="welcome-title">
           <div className="village-hero-copy">
-            <Badge variant="outline" className="mb-4 gap-1.5 border-primary/20 bg-white/75 px-2.5 py-1 text-xs font-medium text-primary">
+            <Badge variant="outline" className="mb-4 gap-1.5 border-primary/20 bg-card/80 px-2.5 py-1 text-xs font-medium text-primary">
               <img src="/icons/shuriken.svg" alt="" width="12" height="12" aria-hidden="true" />
               木叶集合 · 安卓 QQ 区
             </Badge>
@@ -260,7 +260,7 @@ export default function App() {
                       {pending && <Skeleton className="absolute inset-0 size-full rounded-none bg-white/20 motion-reduce:animate-none" />}
                       <Empty className="relative h-full gap-4 border-0 p-5 md:p-5">
                         <EmptyHeader className="gap-2.5">
-                          <EmptyMedia variant="icon" className={`mb-1 size-16 rounded-2xl ${isError ? 'bg-destructive/10 text-destructive' : 'bg-white/45 text-muted-foreground shadow-sm'}`}>
+                          <EmptyMedia variant="icon" className={`mb-1 size-16 rounded-2xl ${isError ? 'bg-destructive/10 text-destructive' : 'qr-emblem text-muted-foreground'}`}>
                             {pending ? <Spinner aria-hidden="true" className="size-6 motion-reduce:animate-none" />
                               : phase === 'expired' ? <TimerOff aria-hidden="true" />
                                 : isError ? <CircleAlert aria-hidden="true" />
@@ -310,7 +310,7 @@ export default function App() {
               {!auth.loading && (!auth.user || showGetButton) && <Button
                 type="button"
                 size="lg"
-                className="mt-6 h-12 w-full max-w-sm gap-2 text-sm font-semibold shadow-sm"
+                className="login-action mt-6 h-12 w-full max-w-sm gap-2 text-sm font-semibold"
                 onClick={() => { if (auth.user) void startLogin(); else openLogin(); }}
                 disabled={auth.busy || pending}
               >
@@ -358,7 +358,7 @@ export default function App() {
           </Card>
 
           <div className="space-y-5 lg:space-y-6">
-            <Card className="village-glass gap-4 shadow-sm">
+            <Card className="village-glass preparation-card gap-4">
               <CardHeader className="gap-2">
                 <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base">
                   <img src="/icons/shuriken.svg" alt="" width="19" height="19" aria-hidden="true" />
@@ -404,7 +404,7 @@ export default function App() {
               </CardContent>
             </Card>
 
-            <Card className="village-glass gap-2 shadow-sm">
+            <Card className="village-glass faq-card gap-2">
               <CardHeader>
                 <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base">
                   <CircleHelp className="size-4 text-muted-foreground" aria-hidden="true" />
