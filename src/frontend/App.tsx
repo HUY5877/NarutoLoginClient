@@ -5,7 +5,6 @@ import {
   CircleAlert,
   CircleHelp,
   Clock3,
-  Flame,
   Gamepad2,
   QrCode,
   RefreshCw,
@@ -131,37 +130,39 @@ export default function App() {
         : ready ? 3 : -1;
 
   return (
-    <div className="min-h-svh bg-muted/35 text-foreground">
-      <header className="border-b bg-background">
+    <div className="login-shell min-h-svh text-foreground">
+      <header className="border-b border-border/70 bg-white/85">
         <div className="mx-auto flex h-18 max-w-5xl items-center justify-between gap-3 px-5 sm:px-8">
           <div className="flex items-center gap-3" aria-label="忍者日常">
-            <Badge className="size-9 rounded-xl p-0 [&>svg]:size-5!">
-              <Flame aria-hidden="true" />
-            </Badge>
-            <span className="text-base font-semibold tracking-tight">忍者日常</span>
+            <span className="headband-mark" aria-hidden="true">
+              <img src="/icons/leaf-village.svg" alt="" width="32" height="32" />
+            </span>
+            <span className="text-base font-bold tracking-wide">忍者日常</span>
             <Separator orientation="vertical" className="mx-1 hidden h-5! sm:block" />
-            <span className="hidden text-sm text-muted-foreground sm:block">登录中心</span>
+            <span className="hidden text-xs tracking-widest text-muted-foreground sm:block">木叶登录中心</span>
           </div>
           <LoginHelp />
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl px-5 py-9 sm:px-8 sm:py-12 lg:py-14">
-        <div className="mb-7 flex flex-wrap items-end justify-between gap-4 sm:mb-8">
-          <div>
-            <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">登录你的忍者日常</h1>
-            <p className="mt-3 text-sm leading-6 text-muted-foreground sm:text-base">
-              生成专属二维码，准备进入熟悉的忍者世界。
+      <main className="mx-auto max-w-5xl px-5 py-6 sm:px-8 sm:py-8">
+        <section className="village-hero mb-6" aria-labelledby="welcome-title">
+          <div className="village-hero-copy">
+            <Badge variant="outline" className="mb-4 gap-1.5 border-primary/20 bg-white/75 px-2.5 py-1 text-xs font-medium text-primary">
+              <img src="/icons/shuriken.svg" alt="" width="12" height="12" aria-hidden="true" />
+              木叶集合 · 安卓 QQ 区
+            </Badge>
+            <h1 id="welcome-title" className="village-title">准备好，<br className="sm:hidden" />回到木叶。</h1>
+            <p className="mt-3 max-w-70 text-sm leading-6 text-muted-foreground sm:max-w-none">
+              生成登录二维码，<span className="inline-block">和安卓好友一起出发。</span>
             </p>
           </div>
-          <Badge variant="outline" className="gap-1.5 bg-background px-2.5 py-1 text-muted-foreground">
-            <Gamepad2 aria-hidden="true" />
-            模拟环境
-          </Badge>
-        </div>
+          <img className="hero-seal" src="/icons/leaf-village.svg" alt="" width="240" height="240" aria-hidden="true" />
+          <img className="village-portrait" src="/images/naruto-welcome.webp" alt="鸣人戴着木叶护额，握拳微笑" width="600" height="832" fetchPriority="high" />
+        </section>
 
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6">
-          <Card className="gap-0 overflow-hidden shadow-sm">
+          <Card className="login-card gap-0 overflow-hidden shadow-sm">
             <CardHeader className="gap-2 px-6 pb-6 sm:px-8">
               <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-lg font-semibold">
                 <ScanLine className="size-5 text-primary" aria-hidden="true" />
@@ -178,8 +179,8 @@ export default function App() {
             <Separator />
 
             <CardContent className="flex flex-col items-center px-6 py-8 sm:px-8 sm:py-9">
-              <div className="w-full max-w-64" aria-busy={pending}>
-                <AspectRatio ratio={1} className="overflow-hidden rounded-xl border bg-background">
+              <div className="qr-frame w-full max-w-64" aria-busy={pending}>
+                <AspectRatio ratio={1} className="overflow-hidden rounded-xl border border-dashed border-border bg-muted/35">
                   {ready && qrUrl ? (
                     <img
                       className="size-full object-contain"
@@ -192,16 +193,16 @@ export default function App() {
                       {pending && <Skeleton className="absolute inset-0 size-full rounded-none motion-reduce:animate-none" />}
                       <Empty className="relative h-full gap-4 border-0 p-5 md:p-5">
                         <EmptyHeader className="gap-2.5">
-                          <EmptyMedia variant="icon" className={isError ? 'mb-1 text-destructive' : 'mb-1 text-muted-foreground'}>
+                          <EmptyMedia variant="icon" className={`mb-1 size-16 rounded-2xl ${isError ? 'bg-destructive/10 text-destructive' : 'bg-white text-muted-foreground shadow-sm'}`}>
                             {pending ? <Spinner aria-hidden="true" className="size-6 motion-reduce:animate-none" />
                               : phase === 'expired' ? <TimerOff aria-hidden="true" />
                                 : isError ? <CircleAlert aria-hidden="true" />
-                                  : <QrCode aria-hidden="true" />}
+                                  : <img src="/icons/leaf-village.svg" alt="" width="42" height="42" aria-hidden="true" />}
                           </EmptyMedia>
                           <EmptyTitle className="text-base">
                             {phase === 'expired' ? '二维码已过期'
                               : isError ? '二维码准备失败'
-                                : pending ? '正在准备二维码' : '准备开始登录'}
+                                : pending ? '正在准备二维码' : '你的木叶通行证'}
                           </EmptyTitle>
                           <EmptyDescription className="text-sm leading-6">
                             {isError ? '点击下方按钮重新生成'
@@ -241,7 +242,7 @@ export default function App() {
               <Button
                 type="button"
                 size="lg"
-                className="mt-6 h-11 w-full max-w-sm gap-2 text-sm"
+                className="mt-6 h-12 w-full max-w-sm gap-2 text-sm font-semibold shadow-sm"
                 onClick={() => { void startLogin(); }}
                 disabled={pending}
               >
@@ -285,8 +286,11 @@ export default function App() {
           <div className="space-y-5 lg:space-y-6">
             <Card className="gap-4 shadow-sm">
               <CardHeader className="gap-2">
-                <CardTitle role="heading" aria-level={2} className="text-base">登录准备</CardTitle>
-                <CardDescription className="text-sm">每次申请，独立准备。</CardDescription>
+                <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base">
+                  <img src="/icons/shuriken.svg" alt="" width="19" height="19" aria-hidden="true" />
+                  登录准备
+                </CardTitle>
+                <CardDescription className="text-sm">出发前，只需这三步。</CardDescription>
                 <CardAction>
                   <Badge variant="outline" className="font-normal text-muted-foreground">
                     {ready ? '已就绪' : isError ? '已结束' : pending ? '准备中' : '待开始'}
@@ -353,9 +357,9 @@ export default function App() {
           </div>
         </div>
 
-        <footer className="mt-7 flex flex-wrap items-center justify-between gap-2 text-xs leading-5 text-muted-foreground sm:mt-8">
-          <span>忍者日常 · 登录中心</span>
-          <span>本地开发预览</span>
+        <footer className="mt-6 flex flex-wrap items-center justify-between gap-2 text-xs leading-5 text-muted-foreground">
+          <span className="flex items-center gap-2"><img src="/icons/leaf-village.svg" alt="" width="16" height="16" aria-hidden="true" />忍者日常 · 木叶相见</span>
+          <span>模拟体验 · 非官方项目</span>
         </footer>
       </main>
     </div>
