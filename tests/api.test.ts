@@ -56,11 +56,13 @@ test('队列投递失败不返回成功，不泄露内部错误', async () => {
   });
 });
 
-test('跨站请求被拒绝，允许配置的开发前端源', async () => {
+test('跨站请求被拒绝，同端口页面可以直接申请登录', async () => {
   await withApi({}, async base => {
     const denied = await fetch(`${base}/api/login-sessions`, { method: 'POST', headers: { Origin: 'https://unrelated.example' } });
     assert.equal(denied.status, 403);
-    const allowed = await fetch(`${base}/api/login-sessions`, { method: 'POST', headers: { Origin: 'http://127.0.0.1:5173' } });
+    const oldDevelopmentOrigin = await fetch(`${base}/api/login-sessions`, { method: 'POST', headers: { Origin: 'http://127.0.0.1:5173' } });
+    assert.equal(oldDevelopmentOrigin.status, 403);
+    const allowed = await fetch(`${base}/api/login-sessions`, { method: 'POST', headers: { Origin: base } });
     assert.equal(allowed.status, 202);
   });
 });

@@ -18,7 +18,7 @@ python -m naruto_daily.login_service
 
 本机也已准备独立 Python 环境，可直接在该目录执行 `.\.venv-login-service\Scripts\python.exe -m naruto_daily.login_service`。
 
-终端二，启动本仓库的客户端后端和前端：
+终端二，启动本仓库的客户端：
 
 ```powershell
 cd E:\code\NarutoLoginClient
@@ -26,15 +26,16 @@ npm ci
 npm run dev
 ```
 
-打开 <http://127.0.0.1:5173>，点击“生成登录二维码”。默认约几秒后可见二维码，申请有效期为 120 秒，过期后可以重新生成。
+打开 <http://127.0.0.1:4300>，点击“生成登录二维码”。默认约几秒后可见二维码，申请有效期为 120 秒，过期后可以重新生成。
 
 默认配置可直接运行，不必创建 `.env`。需要修改时，客户端将项目根目录 `.env.example` 复制为 `.env`；Python 任务服务将 `naruto_daily/login_service/.env.example` 复制为同目录的 `.env`。不要覆盖已有配置。
 
 | 进程 | 默认地址 | 职责 |
 | --- | --- | --- |
-| Vite 前端 | `127.0.0.1:5173` | TSX 页面，将 `/api` 代理到客户端后端 |
-| 客户端后端 | `127.0.0.1:4300` | 生成 ID、投递任务、验证申请凭证、轮询对象存储、传送二维码 |
+| TS 客户端 | `127.0.0.1:4300` | 提供页面与 API，生成 ID、投递任务、验证申请凭证、轮询对象存储、传送二维码 |
 | Python 任务服务 | `127.0.0.1:4320` | 模拟 Redis 队列、进程调度、二维码生成、存储写入与清理 |
+
+开发时 Vite 作为客户端后端的中间件运行，页面、API 和热更新共用一个端口。只需修改 `PORT` 即可一起调整，无需配置前端代理或单独启动 Vite。
 
 生产构建预览（仍需单独启动任务服务）：
 
@@ -43,7 +44,7 @@ npm run build
 npm start
 ```
 
-打开 <http://127.0.0.1:4300>。前后端此时由同一个 TS 后端提供，无需 Vite。
+同样打开 <http://127.0.0.1:4300>，由 TS 后端提供构建后的页面和 API。
 
 ## 执行路径
 
@@ -69,24 +70,37 @@ TSX 页面每秒 GET /api/login-sessions/{id}
 
 ## 配置真实阿里云 OSS
 
-两个项目都设置以下环境变量，使用相同地域、Bucket 和前缀：
+两个项目都设置以下环境变量，使用相同地域和 Bucket：
 
 ```dotenv
 STORAGE_DRIVER=oss
-OSS_REGION=oss-cn-hangzhou
+OSS_REGION=oss-cn-shanghai
 OSS_BUCKET=your-private-bucket
-OSS_KEY_PREFIX=login
-OSS_ACCESS_KEY_ID=...
-OSS_ACCESS_KEY_SECRET=...
+OSS_ACCESS_KEY_ID=your-access-key-id
+OSS_ACCESS_KEY_SECRET=your-access-key-secret
 # 临时凭证可选
-OSS_STS_TOKEN=...
+# OSS_STS_TOKEN=your-temporary-token
 ```
+
+`OSS_KEY_PREFIX` 默认是 `login`，表示 Bucket 内对象键的目录前缀，例如 `login/{id}/qr.png`，无需重复配置；自定义时两边必须一致。
 
 任务服务写入并删除二维码；客户端后端使用 `head` / `get` 检查并读取。可以为双方配置不同的最小权限 RAM 凭证：任务服务需要该前缀的 PutObject/GetObject/DeleteObject，客户端仅需 GetObject。二维码对象保持私有，浏览器不会拿到 OSS 密钥；图片由客户端后端转发，因此无需为浏览器配置 OSS CORS。
 
-任务服务会按会话过期时间清理对象。真实 OSS 还应为此前缀配置合适的 Bucket 生命周期，以兜底进程异常退出后遗留的对象。设置 OSS 不会自动启用真实雷电，游戏步骤依旧模拟。当前没有使用真实 Bucket 做在线验证。
+任务服务会按会话过期时间清理对象。真实 OSS 还应为此前缀配置合适的 Bucket 生命周期，以兜底进程异常退出后遗留的对象。设置 OSS 不会自动启用真实雷电，游戏步骤依旧模拟。已完成真实 OSS 上传、客户端读取和页面显示的在线联调。
 
-两边 `SERVICE_TOKEN` 必须一致，默认值仅供回环地址本地开发。`SESSION_TTL_MS` 控制申请有效期，支持 5 秒至 10 分钟。`LOGIN_SERVICE_URL` 和 `UPSTREAM_TIMEOUT_MS` 控制任务服务地址与超时。前端开发代理默认固定为 4300；改后端端口时也需修改 `vite.config.ts`。
+## 可选配置
+
+这些设置都有默认值，仅在需要调整时加入客户端 `.env`：
+
+| 变量 | 默认值与用途 |
+| --- | --- |
+| `HOST` / `PORT` | `127.0.0.1` / `4300`，客户端页面、API 和开发热更新的监听地址 |
+| `LOGIN_SERVICE_URL` | `http://127.0.0.1:4320`，独立 Python 任务服务地址 |
+| `SESSION_TTL_MS` | `120000`，申请有效期，支持 5 秒至 10 分钟 |
+| `UPSTREAM_TIMEOUT_MS` | `5000`，访问任务服务的超时 |
+| `ALLOWED_ORIGINS` | 默认空，额外允许的跨域来源，逗号分隔；同源使用无需设置 |
+
+`SERVICE_TOKEN` 是客户端后端访问任务服务的共享凭证，与每次申请的独立访问凭证不同。两边默认使用 `local-development-token`，只允许回环地址本地开发，无需写入 `.env`；改为非回环监听时，必须为两边配置相同的强随机值。
 
 ## HTTP 接口
 
@@ -111,7 +125,7 @@ src/frontend/      TSX 登录页、shadcn 主题
   hooks/           登录申请与二维码轮询
 src/server/        TypeScript HTTP 后端、任务网关、OSS 读适配器
 tests/             HTTP 接口、请求失败及存储轮询测试
-vite.config.ts     前端构建与开发代理
+vite.config.ts     前端构建与开发中间件配置
 ```
 
 ```powershell

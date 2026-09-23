@@ -7,9 +7,7 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "dev": "concurrently -k -n api,web \"npm:dev:server\" \"npm:dev:web\"",
-    "dev:server": "tsx watch src/server/index.ts",
-    "dev:web": "vite",
+    "dev": "tsx watch src/server/index.ts --dev",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
     "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
     "start": "node dist-server/index.js",
@@ -38,7 +36,6 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.1.1",
-    "concurrently": "^10.0.5",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"

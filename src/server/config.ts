@@ -38,7 +38,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     storageDriver, ossPrefix, ossRegion: env.OSS_REGION, ossBucket: env.OSS_BUCKET,
     ossAccessKeyId: env.OSS_ACCESS_KEY_ID, ossAccessKeySecret: env.OSS_ACCESS_KEY_SECRET,
     ossStsToken: env.OSS_STS_TOKEN || undefined,
-    allowedOrigins: (env.ALLOWED_ORIGINS ?? 'http://127.0.0.1:5173,http://localhost:5173').split(',').map(s => s.trim()).filter(Boolean),
+    allowedOrigins: (env.ALLOWED_ORIGINS ?? '').split(',').map(s => s.trim()).filter(Boolean),
   };
   if (config.serviceToken.trim().length < 16) throw new Error('SERVICE_TOKEN 至少需要 16 个字符');
   if (!['127.0.0.1', 'localhost', '::1'].includes(config.host) && config.serviceToken === 'local-development-token') {
