@@ -18,7 +18,7 @@ python -m naruto_daily.login_service
 
 本机也已准备独立 Python 环境，可直接在该目录执行 `.\.venv-login-service\Scripts\python.exe -m naruto_daily.login_service`。
 
-终端二，启动本仓库的客户端：
+终端二，在本仓库根目录安装并启动客户端。根目录的 `npm ci` 会自动安装前端和后端各自的依赖：
 
 ```powershell
 cd E:\code\NarutoLoginClient
@@ -46,7 +46,7 @@ npm run build
 npm start
 ```
 
-同样打开 <http://127.0.0.1:4300>，由 TS 后端提供构建后的页面和 API。
+同样打开 <http://127.0.0.1:4300>，由 TS 后端提供构建后的页面和 API。前端产物位于 `src/frontend/dist/`，后端产物位于 `src/server/dist/`；这些目录由构建命令生成，不提交到 Git。
 
 ## 执行路径
 
@@ -119,19 +119,29 @@ OSS_ACCESS_KEY_SECRET=your-access-key-secret
 
 前端采用 **shadcn/ui（Radix Nova）+ Tailwind CSS v4**，按钮、卡片、提示、进度、帮助弹窗、折叠面板和空状态均由官方 CLI 安装的组件组成；图标使用 Lucide，Geist 字体本地打包。主题通过 `src/frontend/styles.css` 的 shadcn CSS 变量配置，不再维护手写基础控件和装饰插画。
 
-组件配置位于 `components.json`，新增组件可执行 `npm exec -- shadcn add <组件名>`。`@/` 指向 `src/frontend/`。扫码申请、轮询、过期与取消逻辑独立在 `hooks/use-login-session.ts`，更换界面不改变 API 协议。
+组件配置位于 `src/frontend/components.json`，在项目根目录新增组件可执行 `npm run ui -- <组件名>`，支持一次传入多个组件名。这会在前端包中运行官方 `shadcn add`，组件和新增依赖都归前端包管理。`@/` 指向 `src/frontend/`。扫码申请、轮询、过期与取消逻辑独立在 `hooks/use-login-session.ts`，更换界面不改变 API 协议。
 
-前端、后端和测试共用一份 `tsconfig.json`，路径别名也只在这里定义。Vite 共用一份配置，以 `src/frontend/` 为前端根目录，入口为其中的 `index.html`；分别构建前端到项目根目录的 `dist/`、后端到 `dist-server/`。根目录仅保留四个 JSON 文件：`package.json` 管理命令与依赖，`package-lock.json` 锁定依赖版本，`tsconfig.json` 检查 TypeScript，`components.json` 配置 shadcn CLI。
+前端和后端是两个独立 npm 包，各自维护 `package.json`、`package-lock.json`、`node_modules/` 和 `dist/`。根目录的 `package.json` 只编排安装、启动、构建和测试命令，不安装业务依赖。前端、后端和测试共用根目录的一份 `tsconfig.json`，路径别名也只在这里定义。前端的入口、Vite 配置和 shadcn 配置都放在 `src/frontend/`；后端通过 Vite 默认配置构建，无需额外构建配置文件。
 
 ```text
-src/frontend/      TSX 登录页、shadcn 主题
-  index.html       页面入口
-  components/ui/   官方 shadcn/ui 组件
-  hooks/           登录申请与二维码轮询
-src/server/        TypeScript HTTP 后端、任务网关、OSS 读适配器
-tests/             HTTP 接口、请求失败及存储轮询测试
-tsconfig.json      前端、后端和测试共用的 TypeScript 配置
-vite.config.ts     前后端构建与开发中间件配置
+src/frontend/       TSX 登录页、shadcn 主题
+  package.json      前端依赖与命令
+  package-lock.json 前端依赖版本锁
+  node_modules/     前端依赖（自动生成）
+  dist/             前端构建产物（自动生成）
+  index.html        页面入口
+  vite.config.ts    前端构建与开发中间件配置
+  components.json   shadcn CLI 配置
+  components/ui/    官方 shadcn/ui 组件
+  hooks/            登录申请与二维码轮询
+src/server/         TypeScript HTTP 后端、任务网关、OSS 读适配器
+  package.json      后端依赖与命令
+  package-lock.json 后端依赖版本锁
+  node_modules/     后端依赖（自动生成）
+  dist/             后端构建产物（自动生成）
+tests/              HTTP 接口、请求失败及存储轮询测试
+package.json        统一执行命令
+tsconfig.json       前端、后端和测试共用的 TypeScript 配置
 ```
 
 ```powershell

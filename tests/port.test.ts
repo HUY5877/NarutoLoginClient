@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { rm } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { devNull } from 'node:os';
 import { dirname, resolve } from 'node:path';
@@ -14,6 +15,7 @@ import { releasePort } from '../src/server/port.js';
 const execFileAsync = promisify(execFile);
 const host = '127.0.0.1';
 const root = fileURLToPath(new URL('../', import.meta.url));
+const serverRoot = resolve(root, 'src/server');
 
 function isolatedEnv(): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries(process.env).filter(([key]) =>
@@ -61,9 +63,9 @@ function trackChild(t: TestContext, child: ChildProcess, afterClose?: () => Prom
 async function removeViteCache(pid: number | undefined) {
   if (pid === undefined) return;
   assert(Number.isSafeInteger(pid) && pid > 0);
-  const cacheRoot = resolve(root, 'node_modules/.vite-test');
+  const cacheRoot = resolve(root, 'src/frontend/node_modules/.vite-test');
   const cache = resolve(cacheRoot, String(pid));
-  assert.equal(dirname(cacheRoot), resolve(root, 'node_modules'));
+  assert.equal(dirname(cacheRoot), resolve(root, 'src/frontend/node_modules'));
   assert.equal(dirname(cache), cacheRoot);
   await rm(cache, { recursive: true, force: true });
 }
@@ -168,22 +170,26 @@ test('Windows 重启开发服务释放配置端口，并退出旧 tsx watch 父�
 }, async t => {
   const port = await assertBindable(0);
   assert.notEqual(port, 4300);
-  const cli = fileURLToPath(import.meta.resolve('tsx/cli'));
+  const cli = createRequire(resolve(serverRoot, 'package.json')).resolve('tsx/cli');
   const env = { ...isolatedEnv(), DOTENV_CONFIG_PATH: devNull, NODE_ENV: 'test', NO_COLOR: '1',
     HOST: host, PORT: String(port), STORAGE_DRIVER: 'local',
     LOGIN_SERVICE_URL: 'http://127.0.0.1:1', SERVICE_TOKEN: 'port-release-regression-test-token' };
-  const child = spawn(process.execPath, [cli, 'watch', 'src/server/index.ts', '--dev'], {
-    cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env,
+  const child = spawn(process.execPath, [cli, 'watch', 'index.ts', '--dev'], {
+    cwd: serverRoot, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env,
   });
   let listenerPid: number | undefined;
   const watcher = trackChild(t, child, () => removeViteCache(listenerPid));
   await waitForHealth(watcher, port);
   // Record this listener only; other tests can create their own caches concurrently.
-  listenerPid = await windowsListenerPid(port);
+  try {
+    listenerPid = await windowsListenerPid(port);
+  } catch (error) {
+    throw new Error(`无法读取测试开发服务的监听进程：\n${watcher.output}`, { cause: error });
+  }
 
   // Exercise the real startup path so forgetting the releasePort call also fails.
-  const replacementChild = spawn(process.execPath, ['--import', 'tsx', 'src/server/index.ts', '--dev'], {
-    cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env,
+  const replacementChild = spawn(process.execPath, ['--import', 'tsx', 'index.ts', '--dev'], {
+    cwd: serverRoot, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env,
   });
   const replacement = trackChild(t, replacementChild, () => removeViteCache(replacementChild.pid));
   await bounded(watcher.closed, 15000,

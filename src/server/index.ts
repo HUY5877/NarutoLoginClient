@@ -1,7 +1,8 @@
-import 'dotenv/config';
+import { config as loadEnv } from 'dotenv';
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
@@ -9,6 +10,11 @@ import { releasePort } from './port.js';
 import { createObjectReader } from './storage.js';
 import { TaskService } from './upstream.js';
 
+const moduleDir = dirname(fileURLToPath(import.meta.url));
+const serverRoot = existsSync(resolve(moduleDir, 'package.json')) ? moduleDir : resolve(moduleDir, '..');
+const projectRoot = resolve(serverRoot, '../..');
+const frontendRoot = resolve(serverRoot, '../frontend');
+loadEnv({ path: process.env.DOTENV_CONFIG_PATH ?? resolve(projectRoot, '.env') });
 const config = loadConfig();
 try {
   await releasePort(config.host, config.port);
@@ -23,9 +29,12 @@ let vite: import('vite').ViteDevServer | undefined;
 if (process.argv.includes('--dev')) {
   const { createServer: createViteServer } = await import('vite');
   vite = await createViteServer({
+    root: frontendRoot,
+    // Bundled config temp files in the sibling package would restart tsx watch.
+    configLoader: 'runner',
     envDir: false,
     // Regression tests must not replace the running developer's dependency cache.
-    cacheDir: process.env.NODE_ENV === 'test' ? resolve('node_modules/.vite-test', String(process.pid)) : undefined,
+    cacheDir: process.env.NODE_ENV === 'test' ? resolve(frontendRoot, 'node_modules/.vite-test', String(process.pid)) : undefined,
     appType: 'spa',
     server: {
       host: config.host,
@@ -37,7 +46,7 @@ if (process.argv.includes('--dev')) {
   });
   app.use(vite.middlewares);
 } else {
-  const dist = resolve('dist');
+  const dist = resolve(frontendRoot, 'dist');
   if (!existsSync(resolve(dist, 'index.html'))) {
     throw new Error('请先运行 npm run build，或使用 npm run dev 启动开发模式。');
   }

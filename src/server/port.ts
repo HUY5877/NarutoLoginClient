@@ -58,8 +58,8 @@ function isClientWatcher(info: ProcessInfo | undefined, cli: string | undefined)
   const index = args.findIndex(arg => normalize(arg).toLowerCase() === cli);
   if (index < 1 || args[index + 1] !== 'watch' || args[index + 3] !== '--dev' || args.length !== index + 4) return false;
   const entry = args[index + 2].replaceAll('\\', '/').replace(/^\.\//, '');
-  const absoluteEntry = resolve(dirname(cli), '../../..', 'src/server/index.ts').toLowerCase();
-  return entry === 'src/server/index.ts' || normalize(entry).toLowerCase() === absoluteEntry;
+  const absoluteEntry = resolve(dirname(cli), '../../..', 'index.ts').toLowerCase();
+  return entry === 'index.ts' || normalize(entry).toLowerCase() === absoluteEntry;
 }
 
 async function stopWindowsOwners(port: number): Promise<void> {
