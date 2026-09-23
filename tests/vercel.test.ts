@@ -23,6 +23,11 @@ test('Vercel 入口无需本地监听配置，识别 HTTPS 同源请求并保留
     const response = await fetch(`${base}/api/login-sessions`, { method: 'POST', headers, body: '{}' });
     assert.equal(response.status, 401);
     assert.equal((await response.json() as { code: string }).code, 'AUTH_REQUIRED');
+    for (const route of ['/api/login-sessions/active', '/api/login-sessions/123e4567-e89b-42d3-a456-426614174000']) {
+      const unauthenticated = await fetch(`${base}${route}`);
+      assert.equal(unauthenticated.status, 401);
+      assert.equal((await unauthenticated.json() as { code: string }).code, 'AUTH_REQUIRED');
+    }
     const crossSite = await fetch(`${base}/api/login-sessions`, { method: 'POST', headers: { ...headers, Origin: 'https://unrelated.example' }, body: '{}' });
     assert.equal(crossSite.status, 403);
     const missing = await fetch(`${base}/api/unknown`);

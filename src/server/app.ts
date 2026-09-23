@@ -1,13 +1,14 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import express, { type CookieOptions, type ErrorRequestHandler, type Request } from 'express';
 import type { AuthService, User } from './auth.js';
 import type { Config } from './config.js';
 import type { ObjectReader } from './storage.js';
 import { ApiError } from './errors.js';
-import type { TaskService } from './queue.js';
+import type { Task } from './queue.js';
+import type { LoginEventService } from './login-events.js';
 
 export interface Dependencies {
-  tasks: Pick<TaskService, 'enqueue' | 'getForUser' | 'getActive'>;
+  events: Pick<LoginEventService, 'create' | 'getForUser' | 'getActive' | 'recordStatus'>;
   auth: Pick<AuthService, 'register' | 'login' | 'getUser' | 'logout'>;
   storage: ObjectReader;
   now?: () => number;
@@ -30,7 +31,7 @@ function cookieOptions(req: Request): CookieOptions {
   return { httpOnly: true, sameSite: 'lax', secure: req.secure, path: '/' };
 }
 
-export function createApp(config: Config, { tasks, auth, storage, now = Date.now }: Dependencies) {
+export function createApp(config: Config, { events, auth, storage, now = Date.now }: Dependencies) {
   const app = express();
   app.disable('x-powered-by');
   app.use('/api', (_req, res, next) => {
@@ -73,33 +74,37 @@ export function createApp(config: Config, { tasks, auth, storage, now = Date.now
     res.locals.user = user;
     next();
   });
-  app.post('/api/login-sessions', async (_req, res) => {
+  const publicTask = (task: Task) => ({ ...task, showGetButton: task.status === 'failed' || task.status === 'expired' || now() >= Date.parse(task.expiresAt) });
+  app.post('/api/login-sessions', async (req, res) => {
     const user = res.locals.user as User;
-    const created = now();
-    const task = { id: randomUUID(), userId: user.id, accessToken: randomBytes(32).toString('hex'),
-      createdAt: new Date(created).toISOString(), expiresAt: new Date(created + config.sessionTtlMs).toISOString() };
-    await tasks.enqueue(task);
-    res.status(202).json({ id: task.id, createdAt: task.createdAt, expiresAt: task.expiresAt, status: 'queued', pollAfterMs: 1000, simulation: true });
+    const requestId: unknown = req.body?.requestId === undefined ? randomUUID() : req.body.requestId;
+    if (typeof requestId !== 'string' || !uuid.test(requestId)) throw new ApiError(400, '无效的申请标识，请重新操作。');
+    const task = await events.create(user.id, requestId);
+    res.status(202).json({ ...publicTask(task), pollAfterMs: 1000 });
   });
 
   app.get('/api/login-sessions/active', async (_req, res) => {
     const user = res.locals.user as User;
-    res.json({ session: await tasks.getActive(user.id) });
+    const session = await events.getActive(user.id);
+    res.json({ session, showGetButton: session === null });
   });
   app.get('/api/login-sessions/:id', async (req, res) => {
     const id = sessionId(req);
-    const task = await tasks.getForUser(id, (res.locals.user as User).id);
-    if (now() >= Date.parse(task.expiresAt) || task.status === 'expired') return res.json({ ...task, status: 'expired' });
-    if (task.status === 'failed') return res.json(task);
+    const userId = (res.locals.user as User).id;
+    const task = await events.getForUser(id, userId);
+    if (now() >= Date.parse(task.expiresAt) || task.status === 'expired') return res.json(publicTask({ ...task, status: 'expired' }));
+    if (task.status === 'failed') return res.json(publicTask(task));
     // 对象是否存在决定二维码就绪；队列状态只用于显示当前步骤。
     const exists = await storage.exists(id);
-    if (now() >= Date.parse(task.expiresAt)) return res.json({ ...task, status: 'expired' });
-    return res.json({ ...task, status: exists ? 'qr_ready' : task.status === 'qr_ready' ? 'preparing_qr' : task.status });
+    if (now() >= Date.parse(task.expiresAt)) return res.json(publicTask({ ...task, status: 'expired' }));
+    const status = exists ? 'qr_ready' : task.status === 'qr_ready' ? 'preparing_qr' : task.status;
+    if (status !== task.status) await events.recordStatus(id, userId, status);
+    return res.json(publicTask({ ...task, status }));
   });
 
   app.get('/api/login-sessions/:id/qr', async (req, res) => {
     const id = sessionId(req);
-    const task = await tasks.getForUser(id, (res.locals.user as User).id);
+    const task = await events.getForUser(id, (res.locals.user as User).id);
     if (task.status === 'expired' || now() >= Date.parse(task.expiresAt)) throw new ApiError(410, '二维码已过期，请重新生成。');
     if (task.status === 'failed') throw new ApiError(409, '本次二维码生成失败，请重新申请。');
     const content = await storage.read(id);

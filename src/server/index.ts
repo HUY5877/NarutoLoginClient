@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createApp } from './app.js';
 import { AuthService } from './auth.js';
+import { PgAuthStore } from './database.js';
+import { LoginEventService } from './login-events.js';
 import { loadConfig } from './config.js';
 import { releasePort } from './port.js';
 import { createObjectReader } from './storage.js';
@@ -24,8 +26,10 @@ try {
   process.exit(1);
 }
 const tasks = new TaskService(config);
-const auth = new AuthService(config);
-const app = createApp(config, { tasks, auth, storage: createObjectReader(config) });
+const store = config.databaseUrl ? new PgAuthStore(config.databaseUrl, config.timeoutMs) : undefined;
+const auth = new AuthService(config, { store });
+const events = new LoginEventService(config, { store, tasks });
+const app = createApp(config, { events, auth, storage: createObjectReader(config) });
 const server = createServer(app);
 let vite: import('vite').ViteDevServer | undefined;
 

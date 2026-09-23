@@ -28,11 +28,23 @@ export interface RedisDriver {
 // Check the account lock and all key types before writing. A failed LPUSH must
 // restore the previous lock as well as remove the newly created session.
 const enqueueScript = `
+local submitted = cjson.decode(ARGV[1])
+local existing = redis.call('GET', KEYS[2])
+if existing then
+  local decoded, persisted = pcall(cjson.decode, existing)
+  if decoded and type(persisted) == 'table' and persisted.id == submitted.id
+      and persisted.userId == submitted.userId and persisted.tokenHash == submitted.tokenHash
+      and persisted.createdAt == submitted.createdAt and persisted.expiresAt == submitted.expiresAt then
+    -- Outbox delivery may retry after a worker has already advanced this session.
+    -- Acknowledge the same submission without renewing TTLs or touching its lock.
+    return 0
+  end
+  return redis.error_reply('Login session already exists')
+end
 local queueType = redis.call('TYPE', KEYS[1]).ok
 if queueType ~= 'none' and queueType ~= 'list' then
   return redis.error_reply('Login queue must be a list')
 end
-local submitted = cjson.decode(ARGV[1])
 local activeId = redis.call('GET', KEYS[3])
 local previousLockTtl = redis.call('PTTL', KEYS[3])
 if activeId then
@@ -45,14 +57,9 @@ if activeId then
       return redis.error_reply('Invalid active login session')
     end
     if active.status ~= 'failed' and active.status ~= 'expired' and active.expiresAt > ARGV[4] then
-      if activeId == submitted.id and activeRaw == ARGV[1] then return 0 end
       return -1
     end
   end
-end
-local existing = redis.call('GET', KEYS[2])
-if existing then
-  return redis.error_reply('Login session already exists')
 end
 redis.call('SET', KEYS[2], ARGV[1], 'PX', ARGV[2])
 local locked = redis.pcall('SET', KEYS[3], submitted.id, 'PX', ARGV[2])

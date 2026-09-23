@@ -54,6 +54,31 @@ test('Redis 返回既有会话时视为成功，重复提交保留原申请内�
   await assert.rejects(invalid.enqueue(task), { status: 502 });
 });
 
+test('Outbox 重发 Lua 契约只核验不可变身份字段，在账户锁检查和任何写入之前幂等返回', async () => {
+  let captured = '';
+  const service = new TaskService(config, () => driver({ eval: async script => {
+    captured = script;
+    return 0;
+  } }), () => now);
+  await service.enqueue(task);
+  // This guards the Lua contract without pretending a mocked eval executes Lua.
+  // The real Redis integration verifies worker status changes and retained TTLs.
+  const existingStart = captured.indexOf("local existing = redis.call('GET', KEYS[2])");
+  const queueCheck = captured.indexOf('local queueType =');
+  const activeCheck = captured.indexOf('local activeId =');
+  assert.ok(existingStart >= 0 && existingStart < queueCheck && queueCheck < activeCheck);
+  const duplicateGuard = captured.slice(existingStart, queueCheck);
+  assert.match(duplicateGuard, /pcall\(cjson\.decode, existing\)/);
+  for (const field of ['id', 'userId', 'tokenHash', 'createdAt', 'expiresAt']) {
+    assert.ok(duplicateGuard.includes(`persisted.${field} == submitted.${field}`), field);
+  }
+  assert.match(duplicateGuard, /return 0/);
+  assert.match(duplicateGuard, /return redis\.error_reply\('Login session already exists'\)/);
+  assert.doesNotMatch(duplicateGuard, /persisted\.(?:status|workerId|error)/);
+  assert.doesNotMatch(duplicateGuard, /redis\.(?:call|pcall)\('(?:SET|DEL|LPUSH|PEXPIRE|EXPIRE)'/);
+  assert.doesNotMatch(captured, /activeRaw == ARGV\[1\]/);
+});
+
 test('账号已有有效申请返回明确 409，保持 Redis 连接可用', async () => {
   let factories = 0;
   let destroyed = 0;

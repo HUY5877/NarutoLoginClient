@@ -98,7 +98,7 @@ function LoginHelp() {
         <Alert>
           <Clock3 aria-hidden="true" />
           <AlertTitle>二维码过期后可以重新生成</AlertTitle>
-          <AlertDescription>遇到连接中断时，页面会自动重试；仍然失败时，点击重新生成即可。</AlertDescription>
+          <AlertDescription>刷新后会继续查询同一份申请。连接中断时可重试查询；申请结束后再获取新的二维码。</AlertDescription>
         </Alert>
       </DialogContent>
     </Dialog>
@@ -115,11 +115,15 @@ export default function App() {
     error,
     retrying,
     pending,
+    showGetButton,
+    canRetryQuery,
+    canResumePending,
     remainingSeconds,
     countdown,
     isError,
     statusLabel,
     startLogin,
+    retryQuery,
     handleQrError,
   } = useLoginSession(auth.user?.id ?? null, auth.handleUnauthorized);
 
@@ -137,7 +141,8 @@ export default function App() {
       description: submitted ? '登录申请已提交'
         : phase === 'submitting' ? '正在提交本次登录申请'
           : phase === 'restoring' ? '正在检查本账户的有效申请'
-            : isError ? '申请提交失败，请重试' : '登录账户后提交本次申请',
+            : canRetryQuery ? '申请状态尚未确认，请重试查询'
+              : isError ? '本次申请已结束，可以重新获取' : '登录账户后提交本次申请',
       icon: ArrowRight,
       complete: submitted,
       active: phase === 'submitting' || phase === 'restoring',
@@ -146,9 +151,10 @@ export default function App() {
     {
       id: 'qr',
       title: ready ? '获取成功'
-        : isError && submitted ? '获取失败' : '正在唤醒服务器进程并获取二维码',
+        : canRetryQuery ? '等待查询确认' : isError && submitted ? '获取失败' : '正在唤醒服务器进程并获取二维码',
       description: ready ? '二维码已显示，请在有效期内扫码'
-        : isError && submitted ? phase === 'expired' ? '二维码已过期，请重新生成' : '二维码获取失败，请重新生成'
+        : canRetryQuery ? '申请会保留，恢复连接后继续查询'
+          : isError && submitted ? phase === 'expired' ? '二维码已过期，可重新获取' : '二维码获取失败，可重新获取'
           : submitted ? '请稍候，获取成功后会自动显示' : '提交申请后开始获取二维码',
       icon: QrCode,
       complete: ready,
@@ -260,12 +266,13 @@ export default function App() {
                           </EmptyMedia>
                           <EmptyTitle className="text-base">
                             {phase === 'expired' ? '二维码已过期'
-                              : isError ? '二维码准备失败'
-                                : pending ? '正在准备二维码' : '你的木叶通行证'}
+                              : canRetryQuery ? '等待查询确认' : isError ? '二维码准备失败'
+                                : phase === 'restoring' ? '正在查询登录申请' : pending ? '正在准备二维码' : '你的木叶通行证'}
                           </EmptyTitle>
                           <EmptyDescription className="text-sm leading-6">
-                            {isError ? '点击下方按钮重新生成'
-                              : pending ? '请保持页面打开，准备好后会自动显示'
+                            {canRetryQuery ? canResumePending ? '点击「继续本次申请」恢复已保存的申请' : '点击「重试查询」继续查看本次申请'
+                              : isError ? '确认本次申请结束后，可以重新获取'
+                              : pending ? '刷新或重新打开页面也会继续本次申请'
                                 : auth.user ? '点击下方按钮，生成本次登录二维码' : '先登录忍者日常账户，再获取二维码'}
                           </EmptyDescription>
                         </EmptyHeader>
@@ -282,7 +289,7 @@ export default function App() {
                       : <Clock3 className="size-3.5" aria-hidden="true" />}
                   {auth.loading ? '正在读取账户状态' : !auth.user ? '登录后即可获取二维码' : retrying ? '连接暂时中断，正在重试…' : statusLabel}
                 </span>
-                {ready && (
+                {auth.user && remainingSeconds > 0 && !showGetButton && (
                   <Badge variant="secondary" className="gap-1.5 font-mono tabular-nums" aria-label={`剩余 ${remainingSeconds} 秒`}>
                     <Clock3 aria-hidden="true" />
                     {countdown}
@@ -290,29 +297,33 @@ export default function App() {
                 )}
               </div>
 
-              {error && phase === 'failed' && (
+              {error && (phase === 'failed' || canRetryQuery) && (
                 <Alert variant="destructive" className="mt-5">
                   <CircleAlert aria-hidden="true" />
-                  <AlertTitle>暂时无法获取二维码</AlertTitle>
+                  <AlertTitle>{canRetryQuery ? '申请状态暂时无法确认' : '本次二维码准备失败'}</AlertTitle>
                   <AlertDescription>{error}</AlertDescription>
                 </Alert>
               )}
 
-              <Button
+              {!auth.loading && (!auth.user || showGetButton) && <Button
                 type="button"
                 size="lg"
                 className="mt-6 h-12 w-full max-w-sm gap-2 text-sm font-semibold shadow-sm"
                 onClick={() => { if (auth.user) void startLogin(); else openLogin(); }}
-                disabled={auth.loading || auth.busy || pending || ready}
+                disabled={auth.busy || pending}
               >
-                {pending || auth.loading ? <Spinner aria-hidden="true" className="motion-reduce:animate-none" />
-                  : !auth.user ? <LogIn aria-hidden="true" /> : ready ? <Check aria-hidden="true" /> : phase === 'idle' ? <QrCode aria-hidden="true" />
+                {!auth.user ? <LogIn aria-hidden="true" /> : phase === 'idle' ? <QrCode aria-hidden="true" />
                     : <RefreshCw aria-hidden="true" />}
-                {auth.loading ? '正在读取账户…' : !auth.user ? '登录后获取二维码'
-                  : phase === 'restoring' ? '正在恢复登录申请…' : pending ? '正在生成二维码…'
-                    : ready ? '二维码有效，请扫码' : phase === 'idle' ? '生成登录二维码' : '重新生成二维码'}
+                {!auth.user ? '登录后获取二维码' : phase === 'idle' ? '生成登录二维码' : '重新生成二维码'}
                 {phase === 'idle' && !auth.loading && <ArrowRight className="ml-1" aria-hidden="true" />}
-              </Button>
+              </Button>}
+              {canRetryQuery && auth.user && (
+                <Button type="button" variant="outline" size="lg" className="mt-6 h-12 w-full max-w-sm gap-2 bg-white/40"
+                  disabled={auth.busy || pending} onClick={() => { void retryQuery(); }}>
+                  <RefreshCw aria-hidden="true" />{canResumePending ? '继续本次申请' : '重试查询'}
+                </Button>
+              )}
+              {auth.user && ready && <p className="mt-5 text-sm font-medium text-primary">二维码有效，请在倒计时结束前扫码</p>}
               <p className="mt-3 flex items-start gap-1.5 text-center text-xs leading-5 text-muted-foreground">
                 <ShieldCheck className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
                 同一账户的多个页面共用一个有效二维码
@@ -354,7 +365,7 @@ export default function App() {
                 <CardDescription className="text-sm">提交申请，等待二维码。</CardDescription>
                 <CardAction>
                   <Badge variant="outline" className="font-normal text-muted-foreground">
-                    {ready ? '获取成功' : isError ? '获取失败' : phase !== 'idle' ? '获取中' : '待开始'}
+                    {ready ? '获取成功' : canRetryQuery ? '待确认' : isError ? '获取失败' : phase !== 'idle' ? '获取中' : '待开始'}
                   </Badge>
                 </CardAction>
               </CardHeader>
@@ -384,8 +395,9 @@ export default function App() {
                   {ready ? <CheckCheck className="mt-1 size-4 shrink-0 text-primary" aria-hidden="true" />
                     : <Clock3 className="mt-1 size-4 shrink-0" aria-hidden="true" />}
                   {ready ? '获取成功，二维码已自动显示。'
-                    : isError ? '获取失败，请点击「重新生成二维码」重试。'
-                      : '唤醒服务器可能需要一点时间，无需手动刷新页面。'}
+                    : canRetryQuery ? canResumePending ? '继续提交已保存的申请，刷新后也会使用同一份申请。' : '点击「重试查询」恢复状态，不会创建新的申请。'
+                      : isError ? '本次申请结束后，可以重新获取二维码。'
+                        : '申请进度会持续保留，刷新页面后会自动继续查询。'}
                 </p>
               </CardContent>
             </Card>
@@ -414,7 +426,7 @@ export default function App() {
                   <AccordionItem value="expires" className="border-b-0">
                     <AccordionTrigger className="text-sm font-medium">二维码过期或生成失败怎么办？</AccordionTrigger>
                     <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                      点击「重新生成二维码」重试。如果已有有效申请，页面会继续获取同一个二维码；如果持续失败，请稍后再试。
+                      页面确认没有有效申请后，会显示「重新生成二维码」。网络中断时先点击「重试查询」，继续查看已有申请。
                     </AccordionContent>
                   </AccordionItem>
                 </Accordion>

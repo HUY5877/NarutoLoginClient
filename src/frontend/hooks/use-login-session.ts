@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-export type SessionStatus =
-  | 'queued' | 'starting_emulator' | 'opening_game' | 'preparing_qr'
-  | 'qr_ready' | 'failed' | 'expired';
-export type Phase = 'idle' | 'restoring' | 'submitting' | SessionStatus;
-
+export type SessionStatus = 'queued' | 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'qr_ready' | 'failed' | 'expired';
+export type Phase = 'idle' | 'restoring' | 'submitting' | 'query_failed' | SessionStatus;
 export interface Session {
   id: string;
   status: SessionStatus;
@@ -13,20 +10,39 @@ export interface Session {
   simulation: boolean;
   error?: string;
   pollAfterMs?: number;
+  showGetButton?: boolean;
 }
-
+interface ActiveResponse { session: Session | null; showGetButton: boolean }
+interface PendingIntent { requestId: string; createdAt: number; expiresAt: number }
+const intentLifetimeMs = 120_000;
+const pendingKey = (userId: string) => `naruto-login:pending:${userId}`;
 const sessionChangedKey = 'naruto-login:session-changed';
 const statusLabels: Record<Phase, string> = {
-  idle: '等待生成二维码', restoring: '正在恢复本账户的登录申请', submitting: '正在创建登录申请',
-  queued: '申请已收到，正在排队', starting_emulator: '正在准备独立游戏环境',
-  opening_game: '正在打开火影忍者', preparing_qr: '正在准备登录二维码',
-  qr_ready: '模拟二维码已就绪', failed: '这次准备未能完成', expired: '二维码已过期',
+  idle: '等待生成二维码', restoring: '正在查询本账户的登录申请', submitting: '正在提交已保存的登录申请',
+  query_failed: '登录申请状态暂时无法确认', queued: '申请已收到，正在排队',
+  starting_emulator: '正在准备独立游戏环境', opening_game: '正在打开火影忍者',
+  preparing_qr: '正在准备登录二维码', qr_ready: '模拟二维码已就绪',
+  failed: '这次准备未能完成', expired: '二维码已过期',
 };
-
 class RequestError extends Error {
   constructor(message: string, readonly status = 0, readonly code?: string) { super(message); }
 }
-
+function readPending(userId: string): PendingIntent | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(pendingKey(userId)) || 'null') as PendingIntent | null;
+    if (!value || typeof value.requestId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.requestId) ||
+      !Number.isFinite(value.createdAt) || !Number.isFinite(value.expiresAt) ||
+      value.createdAt > Date.now() || value.expiresAt <= Date.now()) return null;
+    const expiresAt = Math.min(value.expiresAt, value.createdAt + intentLifetimeMs);
+    return expiresAt > Date.now() ? { ...value, expiresAt } : null;
+  } catch { return null; }
+}
+function clearPending(userId: string, requestId?: string) {
+  try {
+    if (!requestId || readPending(userId)?.requestId === requestId) localStorage.removeItem(pendingKey(userId));
+  } catch { /* The server remains authoritative when storage is unavailable. */ }
+}
 function delay(ms: number, signal: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
     if (signal.aborted) return reject(new DOMException('Aborted', 'AbortError'));
@@ -35,53 +51,51 @@ function delay(ms: number, signal: AbortSignal) {
     signal.addEventListener('abort', onAbort, { once: true });
   });
 }
-
 async function request(path: string, signal: AbortSignal, init?: RequestInit) {
   if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-  const timeoutController = new AbortController();
-  const onAbort = () => timeoutController.abort();
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
   signal.addEventListener('abort', onAbort, { once: true });
-  const timeout = window.setTimeout(() => timeoutController.abort(), 10_000);
+  const timeout = window.setTimeout(() => controller.abort(), 10_000);
   try {
     const response = await fetch(path, {
-      ...init, credentials: 'same-origin', cache: 'no-store', signal: timeoutController.signal,
+      ...init, credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
     });
     if (!response.ok) {
       const body = await response.json().catch(() => null) as { error?: string; code?: string } | null;
-      const message = response.status === 401 ? '请先登录账户，再获取二维码。'
-        : response.status === 404 || response.status === 410 ? '登录申请已过期，请重新生成二维码。'
-          : body?.error || '暂时无法连接登录服务，请稍后重试。';
-      throw new RequestError(message, response.status, body?.code);
+      throw new RequestError(response.status === 401 ? '请先登录账户，再查询二维码。'
+        : body?.error || '暂时无法查询登录申请，请稍后重试。', response.status, body?.code);
     }
     const body = await response.arrayBuffer();
     return new Response(body, { status: response.status, headers: response.headers });
   } catch (caught) {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     if (caught instanceof RequestError) throw caught;
-    throw new RequestError('登录服务连接超时或网络中断，请稍后重试。');
+    throw new RequestError('网络暂时中断，申请状态尚未确认，请重试查询。');
   } finally {
     clearTimeout(timeout);
     signal.removeEventListener('abort', onAbort);
   }
 }
-
+const retryable = (caught: unknown) => caught instanceof RequestError &&
+  (caught.status === 0 || caught.status === 429 || caught.status >= 500);
 async function retryRead(path: string, signal: AbortSignal, onRetry: () => void) {
   for (let attempt = 0; ; attempt += 1) {
     try { return await request(path, signal); }
     catch (caught) {
-      const retryable = caught instanceof RequestError &&
-        (caught.status === 0 || caught.status === 429 || caught.status >= 500);
-      if (!retryable || attempt >= 2 || signal.aborted) throw caught;
+      if (!retryable(caught) || attempt >= 2 || signal.aborted) throw caught;
       onRetry();
       await delay(1_000 * (attempt + 1), signal);
     }
   }
 }
-
 function validSession(value: Session): boolean {
   return typeof value?.id === 'string' && value.id.length > 0 &&
     ['queued', 'starting_emulator', 'opening_game', 'preparing_qr', 'qr_ready', 'failed', 'expired'].includes(value.status) &&
     Number.isFinite(Date.parse(value.expiresAt));
+}
+function isLive(value: Session | null): boolean {
+  return Boolean(value && !['failed', 'expired'].includes(value.status) && Date.parse(value.expiresAt) > Date.now());
 }
 
 export function useLoginSession(userId: string | null, onUnauthorized: () => void) {
@@ -91,11 +105,16 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [retrying, setRetrying] = useState(false);
+  const [showGetButton, setShowGetButton] = useState(false);
+  const [pendingUntil, setPendingUntil] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
   const controllerRef = useRef<AbortController | null>(null);
   const generationRef = useRef(0);
   const qrUrlRef = useRef<string | null>(null);
-  const submittingRef = useRef(false);
+  const sessionRef = useRef<Session | null>(null);
+  const runningRef = useRef(false);
+  const canCreateRef = useRef(false);
+  const expiryCheckedRef = useRef<number | null>(null);
   const unauthorizedRef = useRef(onUnauthorized);
   unauthorizedRef.current = onUnauthorized;
 
@@ -104,10 +123,14 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     qrUrlRef.current = next;
     setQrUrl(next);
   }, []);
+  const updateAvailability = useCallback((available: boolean) => {
+    canCreateRef.current = available;
+    setShowGetButton(available);
+  }, []);
 
-  const run = useCallback(async (create: boolean) => {
-    if (!userId || submittingRef.current || qrUrlRef.current) return;
-    submittingRef.current = true;
+  const run = useCallback(async (mode: 'recover' | 'query') => {
+    if (!userId || runningRef.current) return;
+    runningRef.current = true;
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -115,162 +138,239 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     const active = () => generationRef.current === generation && !controller.signal.aborted;
     const onRetry = () => { if (active()) setRetrying(true); };
     setOwnerId(userId);
-    setPhase(create ? 'submitting' : 'restoring');
-    setSession(null);
+    updateAvailability(false);
+    setPhase('restoring');
     setError('');
     setRetrying(false);
     replaceQr(null);
+    const savedIntent = readPending(userId);
+    setPendingUntil(savedIntent?.expiresAt ?? null);
 
-    const readActive = async () => {
+    const readActive = async (): Promise<ActiveResponse> => {
       const response = await retryRead('/api/login-sessions/active', controller.signal, onRetry);
-      const body = await response.json() as { session: Session | null };
-      if (body.session !== null && !validSession(body.session)) {
-        throw new RequestError('登录状态暂时不可用，请稍后重试。');
+      const body = await response.json() as ActiveResponse;
+      if (typeof body.showGetButton !== 'boolean' || (body.session !== null && !validSession(body.session))) {
+        throw new RequestError('登录申请状态返回异常，请重试查询。');
       }
-      return body.session;
+      return body;
+    };
+    const showInactive = (result: ActiveResponse) => {
+      const outstanding = readPending(userId);
+      setPendingUntil(outstanding?.expiresAt ?? null);
+      if (!result.showGetButton || outstanding) {
+        throw new RequestError(outstanding ? '已保存的申请仍在确认中，请稍后重试查询。' : '申请尚未结束，请稍后重试查询。');
+      }
+      const previous = sessionRef.current;
+      setPhase(previous?.status === 'failed' ? 'failed'
+        : previous && (previous.status === 'expired' || Date.parse(previous.expiresAt) <= Date.now()) ? 'expired' : 'idle');
+      setError(previous?.status === 'failed' ? previous.error || '本次准备失败，可以重新申请。' : '');
+      setRetrying(false);
+      updateAvailability(true);
+    };
+    const accept = (value: Session) => {
+      sessionRef.current = value;
+      setSession(value);
+      setNow(Date.now());
+      clearPending(userId);
+      setPendingUntil(null);
+      updateAvailability(false);
     };
 
     try {
-      let current = await readActive();
+      let result = await readActive();
       if (!active()) return;
-      if (!current && create) {
-        try {
-          const response = await request('/api/login-sessions', controller.signal, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-          });
-          current = await response.json() as Session;
-        } catch (caught) {
-          // A concurrent page or a lost response can already own the account's task.
-          if (caught instanceof RequestError &&
-            (caught.code === 'ACTIVE_LOGIN_SESSION' || caught.status === 0)) {
-            current = await readActive();
-            if (!current) throw caught;
-          } else throw caught;
+      let current = result.session;
+      if (current) accept(current);
+      if (!current && mode === 'recover' && savedIntent && savedIntent.expiresAt > Date.now()) {
+        setPhase('submitting');
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            const response = await request('/api/login-sessions', controller.signal, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ requestId: savedIntent.requestId }), keepalive: true,
+            });
+            current = await response.json() as Session;
+            if (!validSession(current) || typeof current.showGetButton !== 'boolean') {
+              throw new RequestError('申请已提交，状态尚未确认，请重试查询。');
+            }
+            break;
+          } catch (caught) {
+            if (!active()) return;
+            if (caught instanceof RequestError && (caught.code === 'ACTIVE_LOGIN_SESSION' || retryable(caught))) {
+              result = await readActive();
+              current = result.session;
+              if (current) break;
+              if (retryable(caught) && attempt < 2 && savedIntent.expiresAt > Date.now()) {
+                onRetry();
+                await delay(1_000 * (attempt + 1), controller.signal);
+                continue;
+              }
+            }
+            throw caught;
+          }
         }
-        if (!validSession(current)) throw new RequestError('登录服务返回了无效信息，请重试。');
+        if (!active()) return;
+        accept(current);
         try { localStorage.setItem(sessionChangedKey, `${userId}:${Date.now()}`); }
-        catch { /* Focus synchronization also restores tasks. */ }
+        catch { /* Focus synchronization also restores events. */ }
       }
       if (!active()) return;
-      if (!current) { setPhase('idle'); setRetrying(false); return; }
-      const sessionId = current.id;
-      const path = `/api/login-sessions/${encodeURIComponent(sessionId)}`;
-      const pollInterval = Number.isFinite(current.pollAfterMs)
-        ? Math.min(5_000, Math.max(500, current.pollAfterMs!)) : 1_000;
+      if (!current) { showInactive(result); return; }
 
       while (active()) {
-        setSession(current);
-        setNow(Date.now());
-        if (Date.now() >= Date.parse(current.expiresAt) || current.status === 'expired') {
-          setPhase('expired'); break;
+        accept(current);
+        if (!isLive(current)) {
+          setPhase(current.status === 'failed' ? 'failed' : 'expired');
+          result = await readActive();
+          if (!active()) return;
+          if (result.session && isLive(result.session)) { current = result.session; continue; }
+          showInactive(result);
+          return;
         }
-        if (current.status === 'failed') {
-          throw new RequestError(current.error || '游戏环境暂时未能准备完成，请重新生成二维码。');
-        }
+        const path = `/api/login-sessions/${encodeURIComponent(current.id)}`;
+        const sessionId = current.id;
         setPhase(current.status === 'qr_ready' ? 'preparing_qr' : current.status);
         setRetrying(false);
         if (current.status === 'qr_ready') {
           const response = await retryRead(`${path}/qr`, controller.signal, onRetry);
           if (!(response.headers.get('content-type') ?? '').toLowerCase().startsWith('image/png')) {
-            throw new RequestError('二维码格式异常，请重试。');
+            throw new RequestError('二维码图片暂时无法读取，请重试查询。');
           }
           const blob = await response.blob();
           if (!active()) return;
-          if (Date.now() >= Date.parse(current.expiresAt)) { setPhase('expired'); break; }
-          if (!blob.size) throw new RequestError('二维码图片为空，请重试。');
+          if (!isLive(current)) continue;
+          if (!blob.size) throw new RequestError('二维码图片为空，请重试查询。');
           replaceQr(URL.createObjectURL(blob));
           setPhase('qr_ready');
           setRetrying(false);
-          break;
+          return;
         }
-        await delay(pollInterval, controller.signal);
-        const response = await retryRead(path, controller.signal, onRetry);
-        current = await response.json() as Session;
-        if (!validSession(current) || current.id !== sessionId) {
-          throw new RequestError('登录状态暂时不可用，请重试。');
+        const interval = Number.isFinite(current.pollAfterMs) ? Math.min(5_000, Math.max(500, current.pollAfterMs!)) : 1_000;
+        await delay(interval, controller.signal);
+        let response: Response;
+        try { response = await retryRead(path, controller.signal, onRetry); }
+        catch (caught) {
+          if (caught instanceof RequestError && [404, 410].includes(caught.status)) {
+            result = await readActive();
+            if (!active()) return;
+            if (result.session) { current = result.session; continue; }
+            showInactive(result);
+            return;
+          }
+          throw caught;
         }
+        const next = await response.json() as Session;
+        if (!validSession(next) || next.id !== sessionId || typeof next.showGetButton !== 'boolean') {
+          throw new RequestError('登录申请状态暂时无法确认，请重试查询。');
+        }
+        current = next;
       }
     } catch (caught) {
       if (!active()) return;
       replaceQr(null);
+      updateAvailability(false);
       if (caught instanceof RequestError && caught.status === 401) {
         setSession(null);
+        sessionRef.current = null;
         setPhase('idle');
         unauthorizedRef.current();
       } else {
-        setPhase(caught instanceof RequestError && [404, 410].includes(caught.status) ? 'expired' : 'failed');
-        setError(caught instanceof RequestError ? caught.message : '登录状态读取失败，请重试。');
+        setPhase('query_failed');
+        setError(caught instanceof RequestError ? caught.message : '申请状态查询失败，请重试查询。');
       }
       setRetrying(false);
     } finally {
-      if (generationRef.current === generation) submittingRef.current = false;
+      if (generationRef.current === generation) runningRef.current = false;
     }
-  }, [userId, replaceQr]);
+  }, [userId, replaceQr, updateAvailability]);
 
   useEffect(() => {
     generationRef.current += 1;
     controllerRef.current?.abort();
-    submittingRef.current = false;
+    runningRef.current = false;
+    expiryCheckedRef.current = null;
     replaceQr(null);
     setSession(null);
+    sessionRef.current = null;
     setOwnerId(userId);
     setPhase('idle');
     setError('');
     setRetrying(false);
-    if (userId) void run(false);
-    const onFocus = () => { if (userId) void run(false); };
+    setPendingUntil(null);
+    updateAvailability(false);
+    if (userId) void run('recover');
+    const onFocus = () => { if (userId && !qrUrlRef.current) void run('recover'); };
     const onStorage = (event: StorageEvent) => {
-      if (event.key === sessionChangedKey && event.newValue?.startsWith(`${userId}:`)) void run(false);
+      if (!userId) return;
+      if ((event.key === pendingKey(userId) && event.newValue) ||
+        (event.key === sessionChangedKey && event.newValue?.startsWith(`${userId}:`))) {
+        updateAvailability(false);
+        if (!qrUrlRef.current) void run('recover');
+      }
     };
     window.addEventListener('focus', onFocus);
     window.addEventListener('storage', onStorage);
+    const clock = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => {
       generationRef.current += 1;
       controllerRef.current?.abort();
-      submittingRef.current = false;
+      runningRef.current = false;
       if (qrUrlRef.current) URL.revokeObjectURL(qrUrlRef.current);
       qrUrlRef.current = null;
+      clearInterval(clock);
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('storage', onStorage);
     };
-  }, [userId, run, replaceQr]);
+  }, [userId, run, replaceQr, updateAvailability]);
 
+  const expiry = pendingUntil ?? (session && !['failed', 'expired'].includes(session.status) ? Date.parse(session.expiresAt) : null);
   useEffect(() => {
-    if (!session || phase === 'expired' || phase === 'failed') return;
-    const tick = () => {
-      const timestamp = Date.now();
-      setNow(timestamp);
-      if (timestamp >= Date.parse(session.expiresAt)) {
-        generationRef.current += 1;
-        controllerRef.current?.abort();
-        submittingRef.current = false;
-        replaceQr(null);
-        setPhase('expired');
-        setRetrying(false);
-      }
-    };
-    tick();
-    const interval = window.setInterval(tick, 1_000);
-    return () => clearInterval(interval);
-  }, [session, phase, replaceQr]);
+    if (!userId || ownerId !== userId || !expiry || now < expiry || expiryCheckedRef.current === expiry) return;
+    expiryCheckedRef.current = expiry;
+    generationRef.current += 1;
+    controllerRef.current?.abort();
+    runningRef.current = false;
+    replaceQr(null);
+    updateAvailability(false);
+    void run('query');
+  }, [userId, ownerId, expiry, now, run, replaceQr, updateAvailability]);
 
+  function startLogin() {
+    if (!userId || !canCreateRef.current || runningRef.current) return;
+    updateAvailability(false);
+    try {
+      const timestamp = Date.now();
+      const intent = readPending(userId) || {
+        requestId: crypto.randomUUID(), createdAt: timestamp, expiresAt: timestamp + intentLifetimeMs,
+      };
+      // This synchronous write precedes every await and POST, including an immediate page reload.
+      localStorage.setItem(pendingKey(userId), JSON.stringify(intent));
+      setPendingUntil(intent.expiresAt);
+      void run('recover');
+    } catch {
+      setPhase('query_failed');
+      setError('浏览器无法保存本次申请，请允许网站存储后重试查询。');
+    }
+  }
   function handleQrError() {
     replaceQr(null);
-    setPhase('failed');
-    setError('二维码图片加载失败，请重试。');
+    updateAvailability(false);
+    setPhase('query_failed');
+    setError('二维码图片加载失败，请重试查询。');
   }
-
   const currentOwner = Boolean(userId && ownerId === userId);
   const visiblePhase = currentOwner ? phase : 'idle';
   const visibleSession = currentOwner ? session : null;
   const pending = ['restoring', 'submitting', 'queued', 'starting_emulator', 'opening_game', 'preparing_qr'].includes(visiblePhase);
-  const remainingSeconds = visibleSession ? Math.max(0, Math.ceil((Date.parse(visibleSession.expiresAt) - now) / 1_000)) : 0;
+  const remainingSeconds = currentOwner && expiry ? Math.max(0, Math.ceil((expiry - now) / 1_000)) : 0;
   const countdown = `${Math.floor(remainingSeconds / 60).toString().padStart(2, '0')}:${(remainingSeconds % 60).toString().padStart(2, '0')}`;
-
+  const canResumePending = currentOwner && pendingUntil !== null && pendingUntil > now;
   return {
     phase: visiblePhase, session: visibleSession, qrUrl: currentOwner ? qrUrl : null,
     error: currentOwner ? error : '', retrying: currentOwner && retrying, pending,
-    remainingSeconds, countdown, isError: visiblePhase === 'failed' || visiblePhase === 'expired',
-    statusLabel: statusLabels[visiblePhase], startLogin: () => run(true), handleQrError,
+    showGetButton: currentOwner && showGetButton, canRetryQuery: currentOwner && visiblePhase === 'query_failed', canResumePending,
+    remainingSeconds, countdown, isError: ['failed', 'expired', 'query_failed'].includes(visiblePhase),
+    statusLabel: statusLabels[visiblePhase], startLogin,
+    retryQuery: () => run(userId && readPending(userId) ? 'recover' : 'query'), handleQrError,
   };
 }

@@ -5,10 +5,11 @@ import { createApp, type Dependencies } from '../src/server/app.js';
 import { AuthService, type AuthSession, type User } from '../src/server/auth.js';
 import { loadConfig } from '../src/server/config.js';
 import { ApiError } from '../src/server/errors.js';
-import { TaskService, type Submission, type Task } from '../src/server/queue.js';
+import type { Task } from '../src/server/queue.js';
 
 const config = loadConfig({});
 const id = '123e4567-e89b-42d3-a456-426614174000';
+const requestId = '123e4567-e89b-42d3-a456-426614174111';
 const token = 'a'.repeat(64);
 const otherToken = 'b'.repeat(64);
 const user: User = { id: '456e7890-e89b-42d3-a456-426614174000', username: 'naruto' };
@@ -23,15 +24,16 @@ const otherHeaders = { Cookie: `naruto_session=${otherToken}` };
 const jsonHeaders = { 'Content-Type': 'application/json' };
 const post = { method: 'POST', headers: { ...headers, ...jsonHeaders }, body: '{}' };
 
-function tasks(overrides: Partial<Dependencies['tasks']> = {}): Dependencies['tasks'] {
-  return { enqueue: async () => {}, getForUser: async () => ({ ...baseTask }), getActive: async () => null, ...overrides };
+function events(overrides: Partial<Dependencies['events']> = {}): Dependencies['events'] {
+  return { create: async () => ({ ...baseTask, status: 'queued' }), getForUser: async () => ({ ...baseTask }),
+    getActive: async () => null, recordStatus: async () => {}, ...overrides };
 }
 function auth(overrides: Partial<Dependencies['auth']> = {}): Dependencies['auth'] {
   return { register: async () => authSession, login: async () => authSession, logout: async () => {},
     getUser: async value => value === token ? user : value === otherToken ? otherUser : null, ...overrides };
 }
 async function withApi(deps: Partial<Dependencies>, run: (base: string) => Promise<void>, trustProxy = false) {
-  const app = createApp(config, { tasks: tasks(), auth: auth(),
+  const app = createApp(config, { events: events(), auth: auth(),
     storage: { exists: async () => false, read: async () => png }, now: () => start, ...deps });
   if (trustProxy) app.set('trust proxy', 1);
   const server = app.listen(0, '127.0.0.1');
@@ -42,44 +44,71 @@ async function withApi(deps: Partial<Dependencies>, run: (base: string) => Promi
   finally { server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
 }
 
-test('入队身份来自 Cookie，随机 ID/内部凭证由服务端生成，凭证不返回客户端', async () => {
-  const submitted: Submission[] = [];
-  await withApi({ tasks: tasks({ enqueue: async task => { submitted.push(task); } }) }, async base => {
-    const results = await Promise.all([{ headers, owner: user }, { headers: otherHeaders, owner: otherUser }].map(async account => {
+test('事件身份来自 Cookie，请求编号透传服务且不作为事件编号，不返回内部凭证', async () => {
+  const submitted: { userId: string; requestId: string }[] = [];
+  await withApi({ events: events({ create: async (userId, inputRequestId) => {
+    submitted.push({ userId, requestId: inputRequestId });
+    return { ...baseTask, status: 'queued' };
+  } }) }, async base => {
+    for (const account of [{ headers, owner: user }, { headers: otherHeaders, owner: otherUser }]) {
       const response = await fetch(`${base}/api/login-sessions`, { ...post, headers: { ...account.headers, ...jsonHeaders },
-        body: JSON.stringify({ userId: 'forged-user', id, accessToken: 'forged-token' }) });
+        body: JSON.stringify({ userId: 'forged-user', id: requestId, accessToken: 'forged-token', requestId }) });
       assert.equal(response.status, 202);
       assert.equal(response.headers.get('cache-control'), 'no-store');
       const body = await response.json() as Task & Record<string, unknown>;
       assert.equal(Object.hasOwn(body, 'accessToken'), false);
+      assert.equal(Object.hasOwn(body, 'tokenHash'), false);
       assert.equal(Object.hasOwn(body, 'userId'), false);
+      assert.equal(body.id, id);
+      assert.notEqual(body.id, requestId);
       assert.equal(body.status, 'queued');
+      assert.equal(body.showGetButton, false);
       assert.equal(body.simulation, true);
       assert.equal(Date.parse(body.expiresAt) - Date.parse(body.createdAt), 120000);
-      return { body, owner: account.owner };
-    }));
-    assert.equal(submitted.length, 2);
-    assert.notEqual(results[0].body.id, results[1].body.id);
-    assert.notEqual(submitted[0].accessToken, submitted[1].accessToken);
-    for (const result of results) {
-      const queued = submitted.find(task => task.id === result.body.id);
-      assert(queued);
-      assert.match(queued.accessToken, /^[a-f0-9]{64}$/);
-      assert.notEqual(queued.id, id);
-      assert.equal(queued.userId, result.owner.id);
-      assert.equal(queued.createdAt, result.body.createdAt);
-      assert.equal(queued.expiresAt, result.body.expiresAt);
     }
+    assert.deepEqual(submitted, [{ userId: user.id, requestId }, { userId: otherUser.id, requestId }]);
   });
 });
 
+test('缺省 requestId 生成独立 UUIDv4，提供的 requestId 必须合法', async () => {
+  const received: string[] = [];
+  await withApi({ events: events({ create: async (userId, value) => {
+    assert.equal(userId, user.id);
+    received.push(value);
+    return baseTask;
+  } }) }, async base => {
+    for (let attempt = 0; attempt < 2; attempt++) assert.equal((await fetch(`${base}/api/login-sessions`, post)).status, 202);
+    assert.equal(received.length, 2);
+    assert.notEqual(received[0], received[1]);
+    for (const value of received) assert.match(value, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    for (const value of ['not-a-uuid', '', 123, null, '123e4567-e89b-12d3-a456-426614174111']) {
+      const response = await fetch(`${base}/api/login-sessions`, { ...post, body: JSON.stringify({ requestId: value }) });
+      assert.equal(response.status, 400, `requestId=${JSON.stringify(value)}`);
+    }
+    assert.equal(received.length, 2, 'invalid request IDs must not create or reuse events');
+  });
+});
+
+test('创建或复用事件由返回状态决定按钮：处理中及二维码就绪隐藏，失败和过期显示', async () => {
+  for (const status of ['queued', 'opening_game', 'qr_ready', 'failed', 'expired'] as const) {
+    await withApi({ events: events({ create: async () => ({ ...baseTask, status }) }) }, async base => {
+      const response = await fetch(`${base}/api/login-sessions`, { ...post, body: JSON.stringify({ requestId }) });
+      assert.equal(response.status, 202);
+      const body = await response.json() as Task & { showGetButton: boolean };
+      assert.equal(body.id, id);
+      assert.equal(body.status, status);
+      assert.equal(body.showGetButton, status === 'failed' || status === 'expired');
+    });
+  }
+});
+
 test('队列失败不泄露内部错误，账号冲突透传 409', async () => {
-  await withApi({ tasks: tasks({ enqueue: async () => { throw new Error('secret sdk path'); } }) }, async base => {
+  await withApi({ events: events({ create: async () => { throw new Error('secret sdk path'); } }) }, async base => {
     const response = await fetch(`${base}/api/login-sessions`, post);
     assert.equal(response.status, 500);
     assert.doesNotMatch(await response.text(), /secret sdk path/);
   });
-  await withApi({ tasks: tasks({ enqueue: async () => { throw new ApiError(409, '已有登录申请', 'ACTIVE_LOGIN_SESSION'); } }) }, async base => {
+  await withApi({ events: events({ create: async () => { throw new ApiError(409, '已有登录申请', 'ACTIVE_LOGIN_SESSION'); } }) }, async base => {
     const response = await fetch(`${base}/api/login-sessions`, post);
     assert.equal(response.status, 409);
     assert.deepEqual(await response.json(), { error: '已有登录申请', code: 'ACTIVE_LOGIN_SESSION' });
@@ -102,7 +131,7 @@ test('全部写接口拒绝跨站请求，同源页面可以申请登录', async
 
 test('全部写接口要求 JSON 内容类型，拒绝表单、文本和缺失类型', async () => {
   const unexpected = async (): Promise<never> => assert.fail('unsupported content types must not invoke a write');
-  await withApi({ auth: auth({ register: unexpected, login: unexpected, logout: unexpected }), tasks: tasks({ enqueue: unexpected }) }, async base => {
+  await withApi({ auth: auth({ register: unexpected, login: unexpected, logout: unexpected }), events: events({ create: unexpected }) }, async base => {
     for (const path of ['/api/login-sessions', '/api/auth/register', '/api/auth/login', '/api/auth/logout']) {
       for (const type of ['text/plain', 'application/x-www-form-urlencoded']) {
         assert.equal((await fetch(`${base}${path}`, { ...post, headers: { ...headers, 'Content-Type': type } })).status, 415, path);
@@ -163,10 +192,10 @@ test('退出撤销服务端会话并清除 Cookie，原 Cookie 无法继续申�
 });
 
 test('缺失或无效 Cookie 及仅 Bearer 不能访问二维码接口，且不访问 Redis/OSS', async () => {
-  const unexpected = async (): Promise<never> => assert.fail('unauthenticated requests must not touch tasks or storage');
+  const unexpected = async (): Promise<never> => assert.fail('unauthenticated requests must not touch events or storage');
   const attempts: Record<string, string>[] = [{}, { Authorization: `Bearer ${token}` },
     { Cookie: 'naruto_session=invalid' }, { Cookie: `naruto_session=${'c'.repeat(64)}` }];
-  await withApi({ tasks: { enqueue: unexpected, getForUser: unexpected, getActive: unexpected }, storage: { exists: unexpected, read: unexpected } }, async base => {
+  await withApi({ events: { create: unexpected, getForUser: unexpected, getActive: unexpected, recordStatus: unexpected }, storage: { exists: unexpected, read: unexpected } }, async base => {
     for (const requestHeaders of attempts) {
       for (const path of ['/api/login-sessions/active', `/api/login-sessions/${id}`, `/api/login-sessions/${id}/qr`]) {
         const response = await fetch(`${base}${path}`, { headers: requestHeaders });
@@ -181,44 +210,51 @@ test('缺失或无效 Cookie 及仅 Bearer 不能访问二维码接口，且不�
 });
 
 test('跨账号读取返回 404 且不访问 OSS，active 查询只恢复当前账号申请', async () => {
-  const ownedTasks = tasks({ getForUser: async (requestedId, userId) => {
+  const ownedEvents = events({ getForUser: async (requestedId, userId) => {
     assert.equal(requestedId, id);
     if (userId !== user.id) throw new ApiError(404, 'not found');
     return baseTask;
   }, getActive: async userId => userId === user.id ? baseTask : null });
-  await withApi({ tasks: ownedTasks, storage: { exists: async () => assert.fail('must not probe'), read: async () => assert.fail('must not read') } }, async base => {
+  await withApi({ events: ownedEvents, storage: { exists: async () => assert.fail('must not probe'), read: async () => assert.fail('must not read') } }, async base => {
     for (const suffix of ['', '/qr']) assert.equal((await fetch(`${base}/api/login-sessions/${id}${suffix}`, { headers: otherHeaders })).status, 404);
     const active = await fetch(`${base}/api/login-sessions/active`, { headers: otherHeaders });
     assert.equal(active.status, 200);
-    assert.deepEqual(await active.json(), { session: null });
+    assert.deepEqual(await active.json(), { session: null, showGetButton: true });
   });
-  await withApi({ tasks: ownedTasks }, async base => {
+  await withApi({ events: ownedEvents }, async base => {
     const active = await fetch(`${base}/api/login-sessions/active`, { headers });
     assert.equal(active.status, 200);
-    assert.deepEqual(await active.json(), { session: baseTask });
+    assert.deepEqual(await active.json(), { session: baseTask, showGetButton: false });
   });
 });
 
 test('授权通过后直接检查对象存储，文件已到达即返回就绪', async () => {
   let probes = 0;
-  await withApi({ storage: { exists: async value => { assert.equal(value, id); probes++; return true; }, read: async () => png } }, async base => {
+  const statuses: unknown[][] = [];
+  await withApi({ events: events({ recordStatus: async (...args) => { statuses.push(args); } }),
+    storage: { exists: async value => { assert.equal(value, id); probes++; return true; }, read: async () => png } }, async base => {
     const response = await fetch(`${base}/api/login-sessions/${id}`, { headers });
     assert.equal(response.status, 200);
-    assert.equal((await response.json() as Task).status, 'qr_ready');
+    const body = await response.json() as Task & { showGetButton: boolean };
+    assert.equal(body.status, 'qr_ready');
+    assert.equal(body.showGetButton, false);
     assert.equal(probes, 1);
+    assert.deepEqual(statuses, [[id, user.id, 'qr_ready']]);
   });
 });
 
 test('仅有工作进程就绪状态，OSS 没有文件时不能误报就绪', async () => {
-  await withApi({ tasks: tasks({ getForUser: async () => ({ ...baseTask, status: 'qr_ready' }) }) }, async base => {
+  await withApi({ events: events({ getForUser: async () => ({ ...baseTask, status: 'qr_ready' }) }) }, async base => {
     const response = await fetch(`${base}/api/login-sessions/${id}`, { headers });
-    assert.equal((await response.json() as Task).status, 'preparing_qr');
+    const body = await response.json() as Task & { showGetButton: boolean };
+    assert.equal(body.status, 'preparing_qr');
+    assert.equal(body.showGetButton, false);
   });
 });
 
 test('无效 ID 在授权后返回 400，不读取任务或二维码存储', async () => {
-  const unexpected = async (): Promise<never> => assert.fail('invalid ids must not touch tasks or storage');
-  await withApi({ tasks: tasks({ getForUser: unexpected }), storage: { exists: unexpected, read: unexpected } }, async base => {
+  const unexpected = async (): Promise<never> => assert.fail('invalid ids must not touch events or storage');
+  await withApi({ events: events({ getForUser: unexpected }), storage: { exists: unexpected, read: unexpected } }, async base => {
     assert.equal((await fetch(`${base}/api/login-sessions/invalid`, { headers })).status, 400);
     assert.equal((await fetch(`${base}/api/login-sessions/invalid/qr`, { headers })).status, 400);
   });
@@ -227,7 +263,9 @@ test('无效 ID 在授权后返回 400，不读取任务或二维码存储', asy
 test('过期会话停止存储访问，图片接口返回 410', async () => {
   const unexpected = async (): Promise<never> => assert.fail('expired sessions must not touch storage');
   await withApi({ now: () => start + 120000, storage: { exists: unexpected, read: unexpected } }, async base => {
-    assert.equal((await (await fetch(`${base}/api/login-sessions/${id}`, { headers })).json() as Task).status, 'expired');
+    const body = await (await fetch(`${base}/api/login-sessions/${id}`, { headers })).json() as Task & { showGetButton: boolean };
+    assert.equal(body.status, 'expired');
+    assert.equal(body.showGetButton, true);
     assert.equal((await fetch(`${base}/api/login-sessions/${id}/qr`, { headers })).status, 410);
   });
 });
@@ -253,9 +291,11 @@ test('图片返回 PNG 且禁用缓存，缺失图片为 404', async () => {
 });
 
 test('失败会话不读取图片，非法图片不会透传客户端', async () => {
-  const unexpected = async (): Promise<never> => assert.fail('failed tasks must not touch storage');
-  await withApi({ tasks: tasks({ getForUser: async () => ({ ...baseTask, status: 'failed' }) }), storage: { exists: unexpected, read: unexpected } }, async base => {
-    assert.equal((await (await fetch(`${base}/api/login-sessions/${id}`, { headers })).json() as Task).status, 'failed');
+  const unexpected = async (): Promise<never> => assert.fail('failed events must not touch storage');
+  await withApi({ events: events({ getForUser: async () => ({ ...baseTask, status: 'failed' }) }), storage: { exists: unexpected, read: unexpected } }, async base => {
+    const body = await (await fetch(`${base}/api/login-sessions/${id}`, { headers })).json() as Task & { showGetButton: boolean };
+    assert.equal(body.status, 'failed');
+    assert.equal(body.showGetButton, true);
     assert.equal((await fetch(`${base}/api/login-sessions/${id}/qr`, { headers })).status, 409);
   });
   await withApi({ storage: { exists: async () => true, read: async () => Buffer.from('secret invalid file') } }, async base => {
@@ -287,7 +327,8 @@ test('OSS 必需配置、TTL、数据库和 Redis 配置在启动时校验', () 
 });
 
 test('无数据库且无 Cookie 时 health/me 可用，二维码申请先返回 401', async () => {
-  await withApi({ auth: new AuthService(config), tasks: new TaskService(config) }, async base => {
+  const unexpected = async (): Promise<never> => assert.fail('unauthenticated request must not call event persistence');
+  await withApi({ auth: new AuthService(config), events: events({ create: unexpected }) }, async base => {
     assert.equal((await fetch(`${base}/api/health`)).status, 200);
     const me = await fetch(`${base}/api/auth/me`);
     assert.equal(me.status, 200);
@@ -299,7 +340,7 @@ test('无数据库且无 Cookie 时 health/me 可用，二维码申请先返回 
 });
 
 test('已认证但未配置 Redis 时申请明确返回 503', async () => {
-  await withApi({ tasks: new TaskService(config) }, async base => {
+  await withApi({ events: events({ create: async () => { throw new ApiError(503, 'Redis 未配置，请先配置 REDIS_URL。', 'REDIS_NOT_CONFIGURED'); } }) }, async base => {
     const response = await fetch(`${base}/api/login-sessions`, post);
     assert.equal(response.status, 503);
     assert.deepEqual(await response.json(), { error: 'Redis 未配置，请先配置 REDIS_URL。', code: 'REDIS_NOT_CONFIGURED' });

@@ -34,14 +34,15 @@ npm start
 ```text
 TSX 页面注册 / 登录 → PostgreSQL 账户与会话 → HttpOnly Cookie
 TSX 页面 POST /api/login-sessions
-  → TS 后端校验网站账号，生成 UUID 和过期时间
+  → 页面先保存本次 requestId，刷新时复用同一个编号
+  → TS 后端校验网站账号，在 PostgreSQL 事件表保存 UUID、状态和过期时间
   → Redis 原子检查账号当前任务、保存会话，并 LPUSH 登录任务
   → Python 工作进程 BRPOP 同一个队列
   → Python 启动独立模拟进程、生成演示二维码
   → Python 上传 login/{id}/qr.png 到 OSS
 
 TSX 页面每秒 GET /api/login-sessions/{id}
-  → TS 后端校验网站账号与 Redis 任务归属
+  → TS 后端校验网站账号与事件归属，读取 Redis 进度并同步事件状态
   → HEAD OSS 对象，存在即返回 qr_ready
   → 页面 GET /api/login-sessions/{id}/qr
   → TS 后端 GET OSS 对象并转发 PNG
@@ -51,9 +52,17 @@ TSX 页面每秒 GET /api/login-sessions/{id}
 
 ## 网站账号
 
-只需新增一个 `DATABASE_URL`，例如 `postgresql://username:password@host:5432/naruto_login`。本项目使用独立数据库 `naruto_login`，不使用 `hackathon`。首次访问认证功能时自动在目标库创建 `naruto_login.users` 和 `naruto_login.sessions`，不会改动其他业务表。用户名为 3–24 个汉字、英文字母、数字、下划线或短横线，英文字母不区分大小写，数据库唯一约束防止并发重复注册；密码为 8–128 个字符，按当前项目要求以明文保存在 `users.password` 中，API 不返回该字段。会话表仅保存随机登录凭证的 SHA-256 摘要。
+只需新增一个 `DATABASE_URL`，例如 `postgresql://username:password@host:5432/naruto_login`。本项目使用独立数据库 `naruto_login`，不使用 `hackathon`。首次访问认证功能时自动在目标库创建 `naruto_login.users`、`naruto_login.sessions` 和 `naruto_login.login_events`，不会改动其他业务表。用户名为 3–24 个汉字、英文字母、数字、下划线或短横线，英文字母不区分大小写，数据库唯一约束防止并发重复注册；密码为 8–128 个字符，按当前项目要求以明文保存在 `users.password` 中，API 不返回该字段。会话表仅保存随机登录凭证的 SHA-256 摘要。
 
-未配置数据库时，注册登录返回 `503 / DATABASE_NOT_CONFIGURED`；未登录申请二维码返回 `401 / AUTH_REQUIRED`。同账号并发申请由 Redis Lua 原子拦截，返回 `409 / ACTIVE_LOGIN_SESSION`，页面自动读取该账号当前任务；不能通过修改请求中的用户 ID 访问其他账号的二维码。
+未配置数据库时，注册登录返回 `503 / DATABASE_NOT_CONFIGURED`；未登录申请二维码返回 `401 / AUTH_REQUIRED`。同账号并发申请通过数据库账号行锁和唯一约束复用当前事件；Redis Lua 负责同任务重试不重复入队。不能通过修改请求中的用户 ID 访问其他账号的二维码。
+
+## 刷新与事件恢复
+
+`naruto_login.login_events` 保存 `id`、`user_id`、`request_id`、`status`、`created_at`、`expires_at`、`dispatched_at` 和 `finished_at`。内部 `access_token` 仅用于重试相同任务的投递，不返回浏览器。每个账号只允许一条未结束事件；同账号、同 `request_id` 永远对应原事件，即使已过期也不会创建新任务。
+
+页面登录后先查 `GET /api/login-sessions/active`。接口返回 `{ session, showGetButton }`：有未结束且未过期事件时恢复进度并隐藏获取按钮，没有才显示。查询中或网络故障不会当作没有事件；失败或过期后重新查询服务端，再决定按钮。`showGetButton` 根据事件和当前时间实时计算，避免数据库里保存的按钮标记过期后没有及时更新。
+
+点击时先同步保存本账号的 `requestId`，再发送请求。刷新发生在请求返回之前时，会继续查询事件；如果尚未落库，则用同一个 `requestId` 补交原申请。数据库先保存事件，再投递 Redis；若入队成功但响应丢失，恢复时重发相同 ID 和凭据，Lua 确认已有任务后直接返回成功。已确认投递的事件不会因 Redis 记录丢失而重新入队，原事件在有效期内继续占用账号名额。
 
 ## Redis 与 Python 接入协议
 
@@ -143,9 +152,9 @@ Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run 
 | `POST /api/auth/register` | 用户名、密码注册，返回 `201` 并自动登录 |
 | `POST /api/auth/login` | 用户名、密码登录，设置 HttpOnly Cookie |
 | `POST /api/auth/logout` | 撤销当前登录会话并清除 Cookie |
-| `POST /api/login-sessions` | 登录后成功投递返回 `202`，包含 `id`、状态和有效时间；已有申请返回 `409` |
-| `GET /api/login-sessions/active` | 当前账号未过期申请，供其他标签页与刷新后恢复 |
-| `GET /api/login-sessions/:id` | 当前账号的申请进度，使用登录 Cookie |
+| `POST /api/login-sessions` | `{requestId}` 创建或恢复同一事件，返回 `202` 和 `id`、状态、有效时间、`showGetButton` |
+| `GET /api/login-sessions/active` | `{session, showGetButton}`，当前账号未过期事件，供其他标签页与刷新后恢复 |
+| `GET /api/login-sessions/:id` | 当前账号的事件进度及 `showGetButton`，使用登录 Cookie |
 | `GET /api/login-sessions/:id/qr` | 当前账号的二维码 `image/png`；过期或 Redis 会话失效后不可读取 |
 | `GET /api/health` | 客户端后端状态与配置情况，不保证 Redis 或 OSS 实时连通 |
 
