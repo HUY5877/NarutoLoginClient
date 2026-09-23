@@ -254,7 +254,6 @@ export function useLoginSession() {
   const pending = ['submitting', 'queued', 'starting_emulator', 'opening_game', 'preparing_qr'].includes(phase);
   const remainingSeconds = session ? Math.max(0, Math.ceil((Date.parse(session.expiresAt) - now) / 1_000)) : 0;
   const countdown = `${Math.floor(remainingSeconds / 60).toString().padStart(2, '0')}:${(remainingSeconds % 60).toString().padStart(2, '0')}`;
-  const step = phase === 'qr_ready' ? 3 : ['opening_game', 'preparing_qr'].includes(phase) ? 2 : pending ? 1 : 0;
   const isError = phase === 'failed' || phase === 'expired';
 
   return {
@@ -266,7 +265,6 @@ export function useLoginSession() {
     pending,
     remainingSeconds,
     countdown,
-    step,
     isError,
     statusLabel: statusLabels[phase],
     startLogin,
