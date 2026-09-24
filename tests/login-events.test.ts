@@ -31,6 +31,10 @@ function fixture() {
       return record ? { ...record } : null;
     },
     async getEvent(id, userId) { const r = records.get(id); return r?.userId === userId ? { ...r } : null; },
+    async getLatestForUser(userId) {
+      return [...records.values()].filter(r => r.userId === userId)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))[0] ?? null;
+    },
     async markDispatched(id, _userId, now) { records.get(id)!.dispatchedAt = now.toISOString(); },
     async updateStatus(id, _userId, status, now) {
       const record = records.get(id)!;

@@ -4,6 +4,7 @@ import { PgAuthStore } from '../src/server/database.js';
 import { LoginEventService } from '../src/server/login-events.js';
 import { loadConfig } from '../src/server/config.js';
 import { TaskService } from '../src/server/queue.js';
+import { TaskRunService } from '../src/server/task-runs.js';
 import { createObjectReader } from '../src/server/storage.js';
 
 const config = loadConfig();
@@ -11,6 +12,7 @@ const store = config.databaseUrl ? new PgAuthStore(config.databaseUrl, config.ti
 const tasks = new TaskService(config);
 const app = createApp(config, {
   events: new LoginEventService(config, { store, tasks }),
+  runs: new TaskRunService(config, { store }),
   auth: new AuthService(config, { store }), storage: createObjectReader(config),
 });
 // Vercel terminates HTTPS before forwarding the request to this function.

@@ -64,6 +64,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { useLoginSession } from '@/hooks/use-login-session';
 import { useAuth } from '@/hooks/use-auth';
+import { useTaskRun } from '@/hooks/use-task-run';
+import { TaskRunPanel } from '@/components/task-run-panel';
 
 function LoginHelp() {
   return (
@@ -127,6 +129,7 @@ export default function App() {
     retryQuery,
     handleQrError,
   } = useLoginSession(auth.user?.id ?? null, auth.handleUnauthorized);
+  const taskRun = useTaskRun(auth.user?.id ?? null, session, auth.handleUnauthorized);
 
   function openLogin() {
     auth.clearError();
@@ -436,6 +439,7 @@ export default function App() {
             </Card>
           </div>
         </div>
+        {auth.user && <TaskRunPanel view={taskRun} retry={taskRun.retry} />}
       </main>
       <AuthDialog open={authOpen} onOpenChange={setAuthOpen} busy={auth.busy}
         error={auth.error} clearError={auth.clearError} authenticate={auth.authenticate} />

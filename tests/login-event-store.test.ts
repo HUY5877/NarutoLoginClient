@@ -70,6 +70,11 @@ function fixture(t: TestContext) {
       let matches: Row[];
       if (sql.includes('request_id = $2')) matches = [...rows.values()].filter(row => row.userId === values[0] && row.requestId === values[1]);
       else if (sql.includes('WHERE id = $1 AND user_id = $2')) matches = [...rows.values()].filter(row => row.id === values[0] && row.userId === values[1]);
+      else if (sql.includes('ORDER BY created_at DESC, id DESC LIMIT 1')) {
+        assert.match(sql, /WHERE user_id = \$1 ORDER BY created_at DESC, id DESC LIMIT 1$/);
+        matches = [...rows.values()].filter(row => row.userId === values[0])
+          .sort((a, b) => +b.createdAt - +a.createdAt || b.id.localeCompare(a.id)).slice(0, 1);
+      }
       else {
         assert.match(sql, /WHERE user_id = \$1 AND finished_at IS NULL AND expires_at > \$2$/);
         matches = [...rows.values()].filter(row => row.userId === values[0] && row.finishedAt === null && row.expiresAt > (values[1] as Date));
@@ -261,6 +266,21 @@ test('不存在的账号无法预留事件，事务回滚且没有创建孤立�
   await assert.rejects(store.reserve(candidate(1, '10000000-0000-4000-8000-000000000003'), date()), /account does not exist/);
   assert.equal(rows.size, 0);
   assert.equal(operations.at(-1)?.sql, 'ROLLBACK');
+});
+
+test('最近任务查询包含已过期记录且按账号与创建顺序隔离，不改变记录或重新分发', async t => {
+  const { store, operations } = fixture(t);
+  const first = await store.reserve(candidate(), date());
+  const other = await store.reserve(candidate(2, otherOwner), date());
+  const latest = await store.reserve(candidate(3, owner, 120000), date(120000));
+  await store.updateStatus(latest.id, owner, 'expired', date(240000));
+  const before = operations.length;
+  assert.equal((await store.getLatestForUser(owner))?.id, latest.id);
+  assert.equal((await store.getLatestForUser(owner))?.status, 'expired');
+  assert.equal((await store.getLatestForUser(otherOwner))?.id, other.id);
+  assert.equal(await store.getLatestForUser('missing-user'), null);
+  assert.notEqual(first.id, latest.id);
+  for (const operation of operations.slice(before)) assert.match(operation.sql, /^SELECT .*WHERE user_id = \$1 ORDER BY created_at DESC, id DESC LIMIT 1$/);
 });
 
 test('共享存储初始化失败后可重试，不缓存失败 Promise', async t => {

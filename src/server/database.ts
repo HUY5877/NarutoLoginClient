@@ -45,6 +45,7 @@ export interface LoginEventStore {
   reserve(candidate: LoginEvent, now: Date): Promise<LoginEvent>;
   getActive(userId: string, now: Date): Promise<LoginEvent | null>;
   getEvent(id: string, userId: string): Promise<LoginEvent | null>;
+  getLatestForUser(userId: string): Promise<LoginEvent | null>;
   markDispatched(id: string, userId: string, now: Date): Promise<void>;
   updateStatus(id: string, userId: string, status: Status, now: Date): Promise<void>;
 }
@@ -140,6 +141,7 @@ CREATE TABLE IF NOT EXISTS naruto_login.login_events (
 CREATE UNIQUE INDEX IF NOT EXISTS naruto_login_login_events_active_user_idx
   ON naruto_login.login_events (user_id) WHERE finished_at IS NULL;
 CREATE INDEX IF NOT EXISTS naruto_login_login_events_user_expires_idx ON naruto_login.login_events (user_id, expires_at);
+CREATE INDEX IF NOT EXISTS naruto_login_login_events_user_created_idx ON naruto_login.login_events (user_id, created_at DESC, id DESC);
 `;
 
 // Each application service owns one pool, reused across requests and warm serverless invocations.
@@ -334,6 +336,15 @@ export class PgAuthStore implements AuthStore, LoginEventStore {
     await this.initialize();
     await this.pool.query(`UPDATE naruto_login.login_events SET dispatched_at = COALESCE(dispatched_at, $3)
       WHERE id = $1 AND user_id = $2`, [id, userId, now]);
+  }
+
+  async getLatestForUser(userId: string): Promise<LoginEvent | null> {
+    await this.initialize();
+    const result = await this.pool.query<LoginEventRow>(
+      `SELECT ${eventColumns} FROM naruto_login.login_events WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [userId],
+    );
+    return result.rows[0] ? loginEvent(result.rows[0]) : null;
   }
 
   async updateStatus(id: string, userId: string, status: Status, now: Date): Promise<void> {

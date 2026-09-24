@@ -6,11 +6,13 @@ import type { ObjectReader } from './storage.js';
 import { ApiError } from './errors.js';
 import type { Task } from './queue.js';
 import type { LoginEventService } from './login-events.js';
+import { isStreamCursor, type TaskRunService } from './task-runs.js';
 
 export interface Dependencies {
   events: Pick<LoginEventService, 'create' | 'getForUser' | 'getActive' | 'recordStatus'>;
   auth: Pick<AuthService, 'register' | 'login' | 'getUser' | 'listApplications' | 'reviewApplication'>;
   storage: ObjectReader;
+  runs?: Pick<TaskRunService, 'getLatest' | 'getEvents'>;
   now?: () => number;
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -31,7 +33,7 @@ function cookieOptions(req: Request): CookieOptions {
   return { httpOnly: true, sameSite: 'lax', secure: req.secure, path: '/' };
 }
 
-export function createApp(config: Config, { events, auth, storage, now = Date.now }: Dependencies) {
+export function createApp(config: Config, { events, auth, storage, runs, now = Date.now }: Dependencies) {
   const app = express();
   app.disable('x-powered-by');
   app.use('/api', (_req, res, next) => {
@@ -83,11 +85,22 @@ export function createApp(config: Config, { events, auth, storage, now = Date.no
     res.json(await auth.reviewApplication(res.locals.user as User, id, req.body));
   });
 
-  app.use('/api/login-sessions', async (req, res, next) => {
+  app.use(['/api/login-sessions', '/api/task-runs'], async (req, res, next) => {
     const user = await auth.getUser(sessionToken(req));
     if (!user) throw new ApiError(401, '请先登录账号，再获取二维码。', 'AUTH_REQUIRED');
     res.locals.user = user;
     next();
+  });
+  app.get('/api/task-runs/latest', async (_req, res) => {
+    if (!runs) throw new ApiError(503, '任务日志服务尚未配置。', 'TASK_RUNS_UNAVAILABLE');
+    res.json(await runs.getLatest((res.locals.user as User).id));
+  });
+  app.get('/api/task-runs/:id/events', async (req, res) => {
+    const id = sessionId(req);
+    const after = req.query.after === undefined ? '0-0' : req.query.after;
+    if (!isStreamCursor(after)) throw new ApiError(400, '无效的日志读取位置。');
+    if (!runs) throw new ApiError(503, '任务日志服务尚未配置。', 'TASK_RUNS_UNAVAILABLE');
+    res.json(await runs.getEvents(id, (res.locals.user as User).id, after));
   });
   const publicTask = (task: Task) => ({ ...task, showGetButton: task.status === 'failed' || task.status === 'expired' || now() >= Date.parse(task.expiresAt) });
   app.post('/api/login-sessions', async (req, res) => {

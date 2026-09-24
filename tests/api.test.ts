@@ -473,3 +473,46 @@ test('已认证但未配置 Redis 时申请明确返回 503', async () => {
     assert.deepEqual(await response.json(), { error: 'Redis 未配置，请先配置 REDIS_URL。', code: 'REDIS_NOT_CONFIGURED' });
   });
 });
+
+test('任务日志接口使用 Cookie 身份，独立于二维码过期且不调用登录申请恢复或 OSS', async () => {
+  const unexpected = async (): Promise<never> => assert.fail('run logs must not touch login dispatch or QR storage');
+  const calls: unknown[][] = [];
+  const task = { id, status: 'expired' as const, createdAt: baseTask.createdAt, expiresAt: baseTask.createdAt };
+  const result = { task, run: null, logs: [], nextCursor: '123-4', hasMore: false, truncated: false };
+  await withApi({ events: events({ create: unexpected, getForUser: unexpected, getActive: unexpected, recordStatus: unexpected }),
+    storage: { exists: unexpected, read: unexpected }, runs: {
+      async getLatest(userId) { calls.push(['latest', userId]); return { task }; },
+      async getEvents(taskId, userId, after) { calls.push(['events', taskId, userId, after]); return result; },
+    } }, async base => {
+    for (const route of ['/api/task-runs/latest', `/api/task-runs/${id}/events`]) {
+      const unauthenticated = await fetch(`${base}${route}`);
+      assert.equal(unauthenticated.status, 401);
+      assert.equal((await unauthenticated.json() as { code: string }).code, 'AUTH_REQUIRED');
+    }
+    const latest = await fetch(`${base}/api/task-runs/latest`, { headers });
+    assert.equal(latest.status, 200);
+    assert.deepEqual(await latest.json(), { task });
+    const response = await fetch(`${base}/api/task-runs/${id}/events?after=123-4&userId=forged`, { headers });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await response.json(), result);
+    await fetch(`${base}/api/task-runs/${id}/events`, { headers: otherHeaders });
+    assert.deepEqual(calls, [['latest', user.id], ['events', id, user.id, '123-4'], ['events', id, otherUser.id, '0-0']]);
+  });
+});
+
+test('日志游标拒绝重复参数和非法范围，服务错误仅返回脱敏响应且旧接口仍可用', async () => {
+  const unexpected = async (): Promise<never> => assert.fail('invalid cursor must not reach the service');
+  await withApi({ runs: { getLatest: unexpected, getEvents: unexpected } }, async base => {
+    for (const query of ['after=-', 'after=1-0&after=2-0', 'after=1-01', 'after=18446744073709551616-0', 'after=0-0%0A']) {
+      assert.equal((await fetch(`${base}/api/task-runs/${id}/events?${query}`, { headers })).status, 400);
+    }
+    assert.equal((await fetch(`${base}/api/task-runs/not-a-uuid/events`, { headers })).status, 400);
+  });
+  await withApi({ runs: { getLatest: async () => { throw new Error('secret redis URL'); }, getEvents: unexpected } }, async base => {
+    const response = await fetch(`${base}/api/task-runs/latest`, { headers });
+    assert.equal(response.status, 500);
+    assert.doesNotMatch(await response.text(), /secret|redis URL/);
+    assert.equal((await fetch(`${base}/api/login-sessions/active`, { headers })).status, 200);
+  });
+});

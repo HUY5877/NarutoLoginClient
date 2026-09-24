@@ -2,7 +2,7 @@
 
 React / TSX 前端和 TypeScript 客户端后端放在同一个仓库。客户端后端生成唯一任务 ID，将任务直接投放到 Redis，Python 工作进程通过 Redis 取任务并上传二维码到阿里云 OSS；客户端后端检查 OSS，页面读取并显示二维码。
 
-**用户注册后需等待管理员审批，通过后才能登录并申请游戏二维码。** 同一个账号同时只能有一条有效申请；不同标签页、刷新页面或重新登录会恢复已有申请。Python 工作进程已接入 Redis 与 OSS，当前生成模拟二维码，尚未实现雷电点击、真实扫码确认或登录成功回调。
+**用户注册后需等待管理员审批，通过后才能登录并申请游戏二维码。** 同一个账号同时只能有一条有效登录申请；不同标签页、刷新页面或重新登录会恢复已有申请。Python 的 `mock` 驱动生成模拟二维码；`ldplayer` 驱动支持真实取码、确认扫码登录和继续执行日常。任务执行面板从 Redis 读取该任务的进度与日志，二维码过期后仍可查看。
 
 ## 本地启动
 
@@ -39,7 +39,7 @@ TSX 页面 POST /api/login-sessions
   → TS 后端校验网站账号，在 PostgreSQL 事件表保存 UUID、状态和过期时间
   → Redis 原子检查账号当前任务、保存会话，并 LPUSH 登录任务
   → Python 工作进程 BRPOP 同一个队列
-  → Python 启动独立模拟进程、生成演示二维码
+  → Python 启动独立任务进程，按所配置驱动生成二维码
   → Python 上传 login/{id}/qr.png 到 OSS
 
 TSX 页面每秒 GET /api/login-sessions/{id}
@@ -98,6 +98,16 @@ Python 消费端需要校验消息版本、UUID 和过期时间，直接丢弃�
 工作进程可以选择回写 `starting_emulator`、`opening_game`、`preparing_qr` 或 `failed` 等状态。回写时必须保留 `tokenHash`、时间字段和其他会话字段，并保留原 TTL；例如更新既有 JSON 后使用 `SET ... XX KEEPTTL`，不要新建已过期会话或延长申请有效期。不回写中间状态也可以，客户端会继续检查 OSS，文件到达后显示二维码。
 
 Python 项目位于 `E:\code\NarutoDailyADB` 的 `naruto_daily/login_service/`，通过 Redis 消费上述协议。客户端不调用 Python HTTP 接口；本次账户功能不改变队列消息格式，工作进程回写状态时需继续保留 `userId` 等额外字段。
+
+## 日常执行进度与日志
+
+登录后页面独立查询最近任务的执行记录。Python 将快照写入 `${REDIS_QUEUE_KEY}:runs:<任务ID>`（String JSON），将日志追加到 `${REDIS_QUEUE_KEY}:logs:<任务ID>`（Redis Stream）。每条 Stream 的 `json` 字段是 `{time, level, message, actionIndex?, actionTotal?}`；运行状态使用独立的 `starting_emulator`、`opening_game`、`preparing_qr`、`waiting_scan`、`running_daily`、`completed`、`failed`、`interrupted`、`expired`，不会写入原登录事件的状态白名单。
+
+`GET /api/task-runs/latest` 按当前网站账号查询 PostgreSQL 中最近的任务，包含已过期的登录申请；仅查询，不重新派发任务。`GET /api/task-runs/:id/events?after=0-0` 先校验登录与任务归属，再原子读取运行快照和最多 100 条日志，返回 `{task, run, logs, nextCursor, hasMore, truncated}`。每条 `logs` 含 Stream `id`；下次使用 `nextCursor`，有剩余分页时继续读取。访问其他用户任务返回 404，内部 worker 标识与协议序号不返回网页。
+
+前端每 1.5 秒增量轮询，拿到二维码、登录会话到期都不会停止已存在的日常运行记录。任务终态的日志读取完毕后停止；刷新恢复最近任务，退出和切换账号立即清空记录并取消旧请求。页面最多保留最新 2000 条，历史裁剪时提示；用户向上翻阅日志时暂停自动滚底，网络错误可点击“重试更新”继续原游标。
+
+保留策略由 Python 配置：默认 Redis 保留最近 2000 条日志，最终写入后保留 24 小时，运行中额外预留日常总超时预算。保留期与二维码 TTL 独立。旧 worker 未上报运行记录时显示等待或无记录，不把二维码过期误判成日常完成。实时日志为尽力投递，强杀或长期断网可能缺少部分记录；它不改变原队列的任务恢复语义。
 
 ## 对象存储
 
@@ -170,6 +180,8 @@ Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run 
 | `GET /api/login-sessions/active` | `{session, showGetButton}`，当前账号未过期事件，供其他标签页与刷新后恢复 |
 | `GET /api/login-sessions/:id` | 当前账号的事件进度及 `showGetButton`，使用登录 Cookie |
 | `GET /api/login-sessions/:id/qr` | 当前账号的二维码 `image/png`；过期或 Redis 会话失效后不可读取 |
+| `GET /api/task-runs/latest` | 当前账号最近的任务，供执行日志恢复，独立于二维码有效期 |
+| `GET /api/task-runs/:id/events?after=0-0` | 该账号任务的执行快照和最多 100 条增量日志，包含下一页游标和历史裁剪提示 |
 | `GET /api/health` | 客户端后端状态与配置情况，不保证 Redis 或 OSS 实时连通 |
 
 状态包括 `queued`、`starting_emulator`、`opening_game`、`preparing_qr`、`qr_ready`、`failed` 和 `expired`。`qr_ready` 仅表示二维码可读取，不表示账号已登录。OSS 404 表示尚未上传；其他存储错误返回可重试错误。

@@ -12,6 +12,7 @@ import { loadConfig } from './config.js';
 import { releasePort } from './port.js';
 import { createObjectReader } from './storage.js';
 import { TaskService } from './queue.js';
+import { TaskRunService } from './task-runs.js';
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const serverRoot = existsSync(resolve(moduleDir, 'package.json')) ? moduleDir : resolve(moduleDir, '..');
@@ -29,7 +30,8 @@ const tasks = new TaskService(config);
 const store = config.databaseUrl ? new PgAuthStore(config.databaseUrl, config.timeoutMs) : undefined;
 const auth = new AuthService(config, { store });
 const events = new LoginEventService(config, { store, tasks });
-const app = createApp(config, { events, auth, storage: createObjectReader(config) });
+const runs = new TaskRunService(config, { store });
+const app = createApp(config, { events, auth, runs, storage: createObjectReader(config) });
 const server = createServer(app);
 let vite: import('vite').ViteDevServer | undefined;
 
@@ -66,6 +68,7 @@ async function shutdown() {
   if (closing) return;
   closing = true;
   tasks.close();
+  runs.close();
   server.close();
   server.closeIdleConnections();
   setTimeout(() => server.closeAllConnections(), 5000).unref();
