@@ -67,7 +67,7 @@ import { useLoginSession } from '@/hooks/use-login-session';
 import { useAuth } from '@/hooks/use-auth';
 import { useTaskRun } from '@/hooks/use-task-run';
 import { TaskRunPanel } from '@/components/task-run-panel';
-import { deriveTaskProgress, hasGameAuthorization, selectProgressRun } from '@/lib/task-progress';
+import { deriveTaskProgress, hasGameAuthorization, isUnclaimedQueueTimeout, selectProgressRun } from '@/lib/task-progress';
 import { isRunTerminal } from '@/lib/task-run';
 
 function LoginHelp() {
@@ -150,6 +150,7 @@ export default function App() {
   const authorizedRun = hasGameAuthorization(currentRun) && (session?.id === currentRun?.taskId
     || !session && phase === 'idle' && ['finishing_login', 'running_daily'].includes(currentRun?.status ?? ''));
   const authorizationComplete = phase === 'login_confirmed' || authorizedRun;
+  const queueTimedOut = phase === 'expired' && isUnclaimedQueueTimeout(session, currentRun);
   const ready = progressInput.qrReady && !authorizationComplete;
   const qrPending = pending && !authorizationComplete;
   const qrError = isError && !authorizationComplete;
@@ -265,12 +266,13 @@ export default function App() {
                                   : <img src="/icons/leaf-village.svg" alt="" width="42" height="42" aria-hidden="true" />}
                           </EmptyMedia>
                           <EmptyTitle className="text-base">
-                            {authorizationComplete ? '扫码授权已完成' : phase === 'expired' ? '二维码已过期'
+                            {authorizationComplete ? '扫码授权已完成' : queueTimedOut ? '排队超时' : phase === 'expired' ? '二维码已过期'
                               : canRetryQuery ? '等待查询确认' : isError ? '二维码准备失败'
                                 : phase === 'restoring' ? '正在查询登录申请' : pending ? '正在准备二维码' : '你的木叶通行证'}
                           </EmptyTitle>
                           <EmptyDescription className="text-sm leading-6">
                             {authorizationComplete ? currentRun?.status === 'finishing_login' ? '正在进入游戏，无需再次扫码' : '无需再次扫码，请在执行记录中查看后续进度'
+                              : queueTimedOut ? '本次申请未被领取，请稍后重新生成二维码'
                               : canRetryQuery ? canResumePending ? '点击「继续本次申请」恢复已保存的申请' : '点击「重试查询」继续查看本次申请'
                               : isError ? '确认本次申请结束后，可以重新获取'
                               : pending ? '保持页面打开，二维码准备好后会自动显示'
@@ -288,7 +290,7 @@ export default function App() {
                   {qrPending ? <Spinner aria-hidden="true" className="size-3.5 motion-reduce:animate-none" />
                     : ready || authorizationComplete ? <Check className="size-4 text-primary" aria-hidden="true" />
                       : <Clock3 className="size-3.5" aria-hidden="true" />}
-                  {auth.loading ? '正在读取账户状态' : !auth.user ? '登录后即可获取二维码' : authorizationComplete ? progress.summary : retrying ? '连接暂时中断，正在重试…' : statusLabel}
+                  {auth.loading ? '正在读取账户状态' : !auth.user ? '登录后即可获取二维码' : authorizationComplete ? progress.summary : queueTimedOut ? '排队等待超时' : retrying ? '连接暂时中断，正在重试…' : statusLabel}
                 </span>
                 {auth.user && !authorizationComplete && remainingSeconds > 0 && !showGetButton && (
                   <Badge variant="secondary" className="gap-1.5 font-mono tabular-nums" aria-label={`剩余 ${remainingSeconds} 秒`}>
@@ -298,10 +300,10 @@ export default function App() {
                 )}
               </div>
 
-              {!authorizationComplete && error && (phase === 'failed' || canRetryQuery) && (
+              {!authorizationComplete && error && (phase === 'failed' || canRetryQuery || queueTimedOut) && (
                 <Alert variant="destructive" className="mt-5">
                   <CircleAlert aria-hidden="true" />
-                  <AlertTitle>{canRetryQuery ? '申请状态暂时无法确认' : '本次二维码准备失败'}</AlertTitle>
+                  <AlertTitle>{canRetryQuery ? '申请状态暂时无法确认' : queueTimedOut ? '排队等待超时' : '本次二维码准备失败'}</AlertTitle>
                   <AlertDescription>{error}</AlertDescription>
                 </Alert>
               )}

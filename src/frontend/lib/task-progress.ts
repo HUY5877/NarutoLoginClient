@@ -19,6 +19,11 @@ export interface ProgressInput {
 export function hasGameAuthorization(run: TaskRun | null): boolean {
   return Boolean(run && (run.authorizedAt || run.startedAt || ['finishing_login', 'running_daily'].includes(run.status)));
 }
+export function isUnclaimedQueueTimeout(session: Session | null, run: TaskRun | null): boolean {
+  // A run snapshot proves the worker started, even if session polling missed it.
+  return session?.status === 'expired' && session.errorCode === 'queue_timeout'
+    && (!run || run.taskId !== session.id);
+}
 export function selectProgressRun({ phase, session, view, awaitingSubmission }: ProgressInput): TaskRunView {
   // A previous task may still be polling while the user submits another request.
   // Wait for that request's identity before associating execution logs with it.
@@ -78,7 +83,11 @@ export function deriveTaskProgress(input: ProgressInput) {
     return { steps, summary, tone, hint, taskId: task.id };
   }
 
-  if (run?.status === 'completed') {
+  if (isUnclaimedQueueTimeout(session, run)) {
+    qr.state = 'failed'; qr.description = taskFailureMessage('queue_timeout');
+    script.description = '申请排队超时，脚本尚未开始';
+    summary = '排队超时'; tone = 'danger'; hint = qr.description;
+  } else if (run?.status === 'completed') {
     // The mock worker completes QR generation without ever starting a daily script.
     qr.state = 'completed'; qr.description = '二维码生成流程已完成';
     script.description = '本次未执行脚本';

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { loginFailure } from '../../shared/task-errors';
+import { expireLoginSession } from '../lib/login-expiry';
 
 export type SessionStatus = 'queued' | 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'qr_ready' | 'failed' | 'expired';
 export type Phase = 'idle' | 'restoring' | 'submitting' | 'query_failed' | 'login_confirmed' | SessionStatus;
@@ -166,14 +167,20 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
       if (!result.showGetButton || outstanding) {
         throw new RequestError(outstanding ? '已保存的申请仍在确认中，请稍后重试查询。' : '申请尚未结束，请稍后重试查询。');
       }
-      const previous = sessionRef.current;
+      let previous = sessionRef.current;
+      if (previous && previous.status !== 'failed' && Date.parse(previous.expiresAt) <= Date.now()) {
+        previous = expireLoginSession(previous);
+        sessionRef.current = previous;
+        setSession(previous);
+      }
       setPhase(previous?.status === 'failed' ? 'failed'
         : previous && (previous.status === 'expired' || Date.parse(previous.expiresAt) <= Date.now()) ? 'expired' : 'idle');
-      setError(previous?.status === 'failed' ? loginFailure(previous.errorCode).error : '');
+      setError(previous?.status === 'failed' || previous?.errorCode === 'queue_timeout' ? loginFailure(previous.errorCode).error : '');
       setRetrying(false);
       updateAvailability(true);
     };
     const accept = (value: Session) => {
+      if (value.status === 'expired') value = expireLoginSession(value, sessionRef.current);
       setAcceptedRevision(generation);
       sessionRef.current = value;
       setSession(value);
@@ -181,13 +188,14 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
       clearPending(userId);
       setPendingUntil(null);
       updateAvailability(false);
+      return value;
     };
 
     try {
       let result = await readActive();
       if (!active()) return;
       let current = result.session;
-      if (current) accept(current);
+      if (current) current = accept(current);
       if (!current && mode === 'recover' && savedIntent && savedIntent.expiresAt > Date.now()) {
         setPhase('submitting');
         for (let attempt = 0; ; attempt += 1) {
@@ -217,18 +225,18 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
           }
         }
         if (!active()) return;
-        accept(current);
+        current = accept(current);
       }
       if (!active()) return;
       if (!current) { showInactive(result); return; }
 
       while (active()) {
-        accept(current);
+        current = accept(current);
         if (!isLive(current)) {
-          const ended: Session = { ...current, status: current.status === 'failed' ? 'failed' : 'expired' };
+          const ended = expireLoginSession(current);
           accept(ended);
           setPhase(ended.status);
-          setError(ended.status === 'failed' ? loginFailure(ended.errorCode).error : '');
+          setError(ended.status === 'failed' || ended.errorCode === 'queue_timeout' ? loginFailure(ended.errorCode).error : '');
           setRetrying(false);
           updateAvailability(true);
           return;
@@ -258,9 +266,10 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
         catch (caught) {
           if (!active()) return;
           if (caught instanceof RequestError && [404, 410].includes(caught.status)) {
-            const ended: Session = { ...current, status: 'expired' };
+            const ended = expireLoginSession(current);
             accept(ended);
             setPhase('expired');
+            setError(ended.errorCode === 'queue_timeout' ? loginFailure(ended.errorCode).error : '');
             setRetrying(false);
             updateAvailability(true);
             return;
@@ -332,13 +341,13 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     runningRef.current = false;
     replaceQr(null);
     if (sessionRef.current) {
-      const ended: Session = { ...sessionRef.current, status: 'expired' };
+      const ended = expireLoginSession(sessionRef.current);
       sessionRef.current = ended;
       setSession(ended);
     }
     setPendingUntil(null);
     setPhase('expired');
-    setError('');
+    setError(sessionRef.current?.errorCode === 'queue_timeout' ? loginFailure('queue_timeout').error : '');
     setRetrying(false);
     updateAvailability(true);
   }, [userId, ownerId, expiry, now, replaceQr, updateAvailability]);

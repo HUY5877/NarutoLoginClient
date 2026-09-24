@@ -1,5 +1,6 @@
 /** Public messages are selected by code; Redis exception text is never trusted. */
 const taskFailureMessages = {
+  queue_timeout: '服务器可用实例紧张，请稍后再试。',
   worker_clock_skew: '执行服务器时间与任务服务器不同步，请同步执行服务器系统时间后重新申请。',
   invalid_task_payload: '登录任务数据无效，无法开始执行，请重新申请。',
   invalid_task_timestamps: '登录任务时间信息无效，请重新申请。',

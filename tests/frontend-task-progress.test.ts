@@ -3,6 +3,7 @@ import test from 'node:test';
 import { deriveTaskProgress, hasGameAuthorization, selectProgressRun, type ProgressInput } from '../src/frontend/lib/task-progress';
 import { emptyTaskRun, type RunStatus } from '../src/frontend/lib/task-run';
 import type { Session } from '../src/frontend/hooks/use-login-session';
+import { expireLoginSession } from '../src/frontend/lib/login-expiry';
 
 const at = '2026-09-24T01:00:00.000Z';
 const session: Session = { id: 'new-task', status: 'queued', createdAt: at, expiresAt: '2026-09-24T01:02:00.000Z', simulation: true };
@@ -15,6 +16,22 @@ function input(status?: RunStatus, patch: Partial<ProgressInput> = {}): Progress
     } : null }, ...patch };
 }
 const states = (value: ProgressInput) => deriveTaskProgress(value).steps.map(step => step.state);
+
+test('unclaimed expiry reports capacity pressure only without execution evidence for this task', () => {
+  const expired = expireLoginSession(session);
+  const waiting = input(undefined, { phase: 'expired', session: expired });
+  const result = deriveTaskProgress(waiting);
+  assert.deepEqual(states(waiting), ['completed', 'failed', 'pending']);
+  assert.equal(result.summary, '排队超时');
+  assert.equal(result.steps[1].description, '服务器可用实例紧张，请稍后再试。');
+  for (const status of ['starting_emulator', 'preparing_qr', 'waiting_scan', 'finishing_login', 'running_daily', 'failed'] as const) {
+    const claimed = input(status, { phase: 'expired', session: expired });
+    assert.doesNotMatch(JSON.stringify(deriveTaskProgress(claimed)), /实例紧张|排队超时/);
+  }
+  const oldRun = input('running_daily', { phase: 'expired', session: expired });
+  oldRun.view.task = { ...session, id: 'old-task' }; oldRun.view.run!.taskId = 'old-task';
+  assert.equal(deriveTaskProgress(oldRun).summary, '排队超时');
+});
 
 test('right-side steps have three fixed titles and progress from submission through QR to script', () => {
   const fresh = input(undefined, { phase: 'idle', session: null, view: emptyTaskRun() });

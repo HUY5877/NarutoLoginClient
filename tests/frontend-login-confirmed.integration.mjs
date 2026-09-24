@@ -28,7 +28,7 @@ async function until(check) {
   while (!check()) { assert.ok(Date.now() < limit, 'mock request did not arrive'); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
 
-test('QR authorization confirmation', { skip: skip || false, timeout: 30_000 }, async t => {
+test('QR authorization confirmation and queue expiry', { skip: skip || false, timeout: 45_000 }, async t => {
   const { createServer } = await import(pathToFileURL(require.resolve('vite')).href);
   const { default: react } = await import(pathToFileURL(require.resolve('@vitejs/plugin-react')).href);
   const { default: tailwindcss } = await import(pathToFileURL(require.resolve('@tailwindcss/vite')).href);
@@ -41,14 +41,15 @@ test('QR authorization confirmation', { skip: skip || false, timeout: 30_000 }, 
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
     browser = await chromium.launch({ headless: true,
       ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
-    async function fixture({ old = false } = {}) {
+    async function fixture({ old = false, sessionStatus = 'qr_ready', runStatus = 'waiting_scan' } = {}) {
       const context = await browser.newContext();
       const page = await context.newPage();
       page.setDefaultTimeout(6_000);
       const time = new Date().toISOString();
-      const session = { id: taskId, status: 'qr_ready', createdAt: time, expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      const session = { id: taskId, status: sessionStatus, createdAt: time, expiresAt: new Date(Date.now() + 60_000).toISOString(),
         simulation: true, showGetButton: false };
-      const state = { status: 'waiting_scan', calls: [], errors: [], oldRequested: false, oldGate: deferred() };
+      const state = { status: runStatus, detailStatus: sessionStatus, detailHttpStatus: 200,
+        calls: [], errors: [], oldRequested: false, oldGate: deferred() };
       page.on('pageerror', error => state.errors.push(error.message));
       await context.route('**/*', async route => {
         const url = new URL(route.request().url());
@@ -58,14 +59,18 @@ test('QR authorization confirmation', { skip: skip || false, timeout: 30_000 }, 
         let body;
         if (url.pathname === '/api/auth/me') body = { user: { id: 'confirmed-user', username: '授权测试', isAdmin: false } };
         else if (url.pathname === '/api/login-sessions/active') body = { session, showGetButton: false };
+        else if (url.pathname === `/api/login-sessions/${taskId}`) {
+          return route.fulfill({ status: state.detailHttpStatus,
+            json: { ...session, status: state.detailStatus, showGetButton: state.detailStatus === 'expired' } });
+        }
         else if (url.pathname === `/api/login-sessions/${taskId}/qr`) return route.fulfill({ status: 200, contentType: 'image/png', body: png });
         else if (url.pathname === '/api/task-runs/latest') body = { task: old ? { ...session, id: oldId } : null };
         else if (url.pathname.endsWith('/events')) {
           const id = url.pathname.split('/')[3];
           if (id === oldId) { state.oldRequested = true; await state.oldGate.promise; }
           const status = id === oldId ? 'finishing_login' : state.status;
-          body = { task: { ...session, id }, run: { taskId: id, status, updatedAt: time, startedAt: null, finishedAt: null,
-            ...(status === 'finishing_login' ? { authorizedAt: time } : {}) },
+          body = { task: { ...session, id }, run: status ? { taskId: id, status, updatedAt: time, startedAt: null, finishedAt: null,
+            ...(status === 'finishing_login' ? { authorizedAt: time } : {}) } : null,
           logs: [], nextCursor: '0-0', hasMore: false, truncated: false };
         } else { state.errors.push(`Unexpected API ${url.pathname}`); return route.fulfill({ status: 404, json: {} }); }
         return route.fulfill({ status: 200, json: body }).catch(() => {});
@@ -73,6 +78,39 @@ test('QR authorization confirmation', { skip: skip || false, timeout: 30_000 }, 
       await page.goto(origin, { waitUntil: 'domcontentloaded' });
       await page.getByRole('button', { name: '生成登录二维码', exact: true }).waitFor();
       return { context, page, state, async close() { state.oldGate.resolve(); await context.close(); assert.deepEqual(state.errors, []); } };
+    }
+
+    for (const source of ['clock', 'api-expired', 'http-410']) {
+      await t.test(`unclaimed task expiry from ${source} shows capacity message and allows retry`, async () => {
+        const f = await fixture({ sessionStatus: 'queued', runStatus: null });
+        try {
+          await f.page.getByRole('button', { name: '生成登录二维码', exact: true }).click();
+          await f.page.getByText('申请已收到，正在排队', { exact: true }).waitFor();
+          if (source === 'clock') await f.page.evaluate(() => { const now = Date.now; Date.now = () => now() + 120_000; });
+          else if (source === 'api-expired') f.state.detailStatus = 'expired';
+          else f.state.detailHttpStatus = 410;
+          await f.page.getByText('服务器可用实例紧张，请稍后再试。', { exact: true }).first().waitFor();
+          const qrStage = f.page.getByLabel('任务执行进度', { exact: true }).locator('[data-stage="qr"][data-state="failed"]');
+          assert.match(await qrStage.innerText(), /服务器可用实例紧张，请稍后再试/);
+          assert.equal(await f.page.getByText('二维码已过期', { exact: true }).count(), 0);
+          assert.equal(await f.page.getByLabel(/^剩余 \d+ 秒$/).count(), 0);
+          assert.equal(await f.page.getByRole('button', { name: '重新生成二维码', exact: true }).isEnabled(), true);
+        } finally { await f.close(); }
+      });
+    }
+
+    for (const sessionStatus of ['queued', 'preparing_qr', 'qr_ready']) {
+      await t.test(`claimed ${sessionStatus} session does not report capacity pressure at expiry`, async () => {
+        const f = await fixture({ sessionStatus, runStatus: sessionStatus === 'queued' ? 'starting_emulator' : null });
+        try {
+          await f.page.getByRole('button', { name: '生成登录二维码', exact: true }).click();
+          await f.page.getByLabel(/^剩余 \d+ 秒$/).waitFor();
+          await until(() => f.state.calls.includes(`/api/task-runs/${taskId}/events`));
+          await f.page.evaluate(() => { const now = Date.now; Date.now = () => now() + 120_000; });
+          await f.page.getByText('二维码已过期', { exact: true }).first().waitFor();
+          assert.doesNotMatch(await f.page.locator('body').innerText(), /实例紧张|排队超时/);
+        } finally { await f.close(); }
+      });
     }
 
     await t.test('matching authorization hides the real QR and countdown before the original expiry', async () => {
