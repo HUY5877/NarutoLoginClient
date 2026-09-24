@@ -143,7 +143,7 @@ export class TaskRunService {
   }
   private publicTask(event: LoginEvent): RunTask {
     return { id: event.id, createdAt: event.createdAt, expiresAt: event.expiresAt,
-      status: Date.parse(event.expiresAt) <= this.now() ? 'expired' : event.status };
+      status: event.status === 'failed' ? 'failed' : Date.parse(event.expiresAt) <= this.now() ? 'expired' : event.status };
   }
   async getLatest(userId: string): Promise<{ task: RunTask | null }> {
     // Deliberately bypass LoginEventService.resume: reading logs must never dispatch a job.

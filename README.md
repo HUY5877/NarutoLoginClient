@@ -78,6 +78,8 @@ TSX 页面每秒 GET /api/login-sessions/{id}
 
 数据库先保存事件，再投递 Redis；若入队成功但响应丢失，恢复时重发相同 ID 和凭据，Lua 确认已有任务后直接返回成功。已确认投递的事件不会因 Redis 记录丢失而重新入队，原事件在有效期内继续占用账号名额。
 
+工作进程在领取阶段校验失败时，二维码区域和登录准备步骤显示明确失败原因，执行记录同时显示 ERROR 日志。`worker_clock_skew` 表示执行服务器时间不同步，`invalid_task_payload` 表示任务格式异常，`invalid_task_timestamps` 表示任务时间信息异常。客户端按安全错误码生成固定中文提示，不直接展示 Redis 中未知的错误文本。已收到的失败原因不会被二维码倒计时覆盖；刷新后二维码仍按需加载，独立执行记录会恢复失败原因和日志。
+
 ## Redis 与 Python 接入协议
 
 设置 `REDIS_URL` 为已有 Redis 的连接地址，支持 `redis://` 和 `rediss://`。云端和 Python 所在机器都必须能访问该实例；暂时没有 Redis 时保持未配置，不要填写伪地址。
@@ -104,7 +106,11 @@ Python 项目位于 `E:\code\NarutoDailyADB` 的 `naruto_daily/login_service/`�
 
 ## 日常执行进度与日志
 
+右侧按「提交登录申请 → 获取二维码 → 执行脚本」三个固定阶段展示总进度。二维码生成后等待扫码，确认登录后才进入日常脚本；二维码到期不会把正在执行的日常标成失败。下方日志记录提交、启动模拟器、打开游戏、生成二维码、等待扫码、开始日常、动作进度及最终结果，省略反复截图和坐标识别等细节。
+
 登录后页面独立查询最近任务的执行记录。Python 将快照写入 `${REDIS_QUEUE_KEY}:runs:<任务ID>`（String JSON），将日志追加到 `${REDIS_QUEUE_KEY}:logs:<任务ID>`（Redis Stream）。每条 Stream 的 `json` 字段是 `{time, level, message, actionIndex?, actionTotal?}`；运行状态使用独立的 `starting_emulator`、`opening_game`、`preparing_qr`、`waiting_scan`、`running_daily`、`completed`、`failed`、`interrupted`、`expired`，不会写入原登录事件的状态白名单。
+
+提交日志在客户端后端的入队 Lua 中写入，先于工作进程的日志；重复投递同一申请不会重复追加。工作进程尚未领取或校验失败时，用户也能看到申请已提交。该初始日志保留 24 小时，后续日志写入采用 Python 的保留配置；日志写入故障不会将已接收的任务误报为提交失败。
 
 `GET /api/task-runs/latest` 按当前网站账号查询 PostgreSQL 中最近的任务，包含已过期的登录申请；仅查询，不重新派发任务。`GET /api/task-runs/:id/events?after=0-0` 先校验登录与任务归属，再原子读取运行快照和最多 100 条日志，返回 `{task, run, logs, nextCursor, hasMore, truncated}`。每条 `logs` 含 Stream `id`；下次使用 `nextCursor`，有剩余分页时继续读取。访问其他用户任务返回 404，内部 worker 标识与协议序号不返回网页。
 

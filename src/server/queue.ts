@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { createClient } from 'redis';
 import type { Config } from './config.js';
 import { ApiError } from './errors.js';
+import { loginFailure, type TaskFailureCode } from '../shared/task-errors.js';
 
 export type Status = 'queued' | 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'qr_ready' | 'failed' | 'expired';
 export interface Task {
@@ -11,6 +12,7 @@ export interface Task {
   expiresAt: string;
   simulation: true;
   error?: string;
+  errorCode?: TaskFailureCode;
 }
 export interface Submission { id: string; userId: string; accessToken: string; createdAt: string; expiresAt: string }
 interface StoredTask extends Task { userId?: string; tokenHash: string }
@@ -80,6 +82,15 @@ if type(queued) == 'table' and queued.err then
     end
   end
   return queued
+end
+-- The submission event precedes every worker event because the whole dispatch
+-- runs atomically. A repeated outbox delivery returns above without adding it.
+-- Logging failure must not turn an already accepted job into a failed POST.
+local logType = redis.pcall('TYPE', KEYS[4])
+local logKind = type(logType) == 'table' and logType.ok
+if logKind == 'none' or logKind == 'stream' then
+  local logged = redis.pcall('XADD', KEYS[4], 'MAXLEN', 2000, '*', 'json', ARGV[5])
+  if type(logged) == 'string' then redis.pcall('EXPIRE', KEYS[4], 86400) end
 end
 return 1
 `;
@@ -174,9 +185,12 @@ export class TaskService {
       expiresAt: task.expiresAt, simulation: true, tokenHash: hash(task.accessToken) });
     const payload = JSON.stringify({ version: 1, id: task.id, createdAt: task.createdAt,
       expiresAt: task.expiresAt, objectKey: `${this.config.ossPrefix}/${task.id}/qr.png` });
+    const submittedLog = JSON.stringify({ time: task.createdAt, level: 'INFO',
+      message: '登录申请已提交，等待执行服务器领取任务。' });
     const result = await this.request((driver, signal) => driver.eval(enqueueScript, {
-      keys: [this.config.redisQueueKey, this.sessionKey(task.id), this.activeKey(task.userId)],
-      arguments: [record, String(ttl), payload, new Date(now).toISOString()],
+      keys: [this.config.redisQueueKey, this.sessionKey(task.id), this.activeKey(task.userId),
+        `${this.config.redisQueueKey}:logs:${task.id}`],
+      arguments: [record, String(ttl), payload, new Date(now).toISOString(), submittedLog],
     }, signal));
     if (result === -1) throw new ApiError(409, '当前账号已有登录申请，请等待二维码过期或申请失败后重试。', 'ACTIVE_LOGIN_SESSION');
     if (result !== 0 && result !== 1) throw new ApiError(502, 'Redis 返回了无效结果，请重新申请。');
@@ -216,9 +230,9 @@ export class TaskService {
   private activeKey(userId: string) { return `${this.config.redisQueueKey}:users:${userId}:active`; }
 
   private publicTask(record: StoredTask): Task {
-    return { id: record.id, status: this.now() >= Date.parse(record.expiresAt) ? 'expired' : record.status,
+    return { id: record.id, status: record.status === 'failed' ? 'failed' : this.now() >= Date.parse(record.expiresAt) ? 'expired' : record.status,
       createdAt: record.createdAt, expiresAt: record.expiresAt, simulation: true,
-      ...(record.status === 'failed' ? { error: '二维码生成失败，请重新申请。' } : {}) };
+      ...(record.status === 'failed' ? loginFailure(record.errorCode) : {}) };
   }
 
   close() {

@@ -3,6 +3,7 @@ import type { Config } from './config.js';
 import type { LoginEvent, LoginEventStore } from './database.js';
 import { ApiError } from './errors.js';
 import type { Status, Task, TaskService } from './queue.js';
+import { loginFailure } from '../shared/task-errors.js';
 
 interface Options {
   store?: LoginEventStore;
@@ -30,14 +31,23 @@ export class LoginEventService {
   }
 
   private publicTask(event: LoginEvent): Task {
-    const status = Date.parse(event.expiresAt) <= this.now() ? 'expired' : event.status;
+    const status = event.status === 'failed' ? 'failed' : Date.parse(event.expiresAt) <= this.now() ? 'expired' : event.status;
     return { id: event.id, status, createdAt: event.createdAt, expiresAt: event.expiresAt, simulation: true,
-      ...(status === 'failed' ? { error: '二维码生成失败，请重新申请。' } : {}) };
+      ...(status === 'failed' ? loginFailure(undefined) : {}) };
   }
 
   private async resume(event: LoginEvent): Promise<Task> {
     const task = this.publicTask(event);
-    if (task.status === 'expired' || task.status === 'failed') return task;
+    if (task.status === 'expired') return task;
+    if (task.status === 'failed') {
+      // The database remembers failure, while Redis retains its safe reason.
+      // Never replay a failed job or revive it from a stale Redis status.
+      try {
+        const current = await this.options.tasks.getForUser(event.id, event.userId);
+        if (current.status === 'failed') return { ...task, ...loginFailure(current.errorCode) };
+      } catch { /* The known failure remains visible when Redis has expired or is unavailable. */ }
+      return task;
+    }
     if (!event.dispatchedAt) {
       // Keep the event on timeout: Redis may have accepted a command whose reply
       // was lost. A later read can safely complete this same dispatch.
@@ -47,6 +57,10 @@ export class LoginEventService {
     try {
       const current = await this.options.tasks.getForUser(event.id, event.userId);
       await this.recordStatus(event.id, event.userId, current.status);
+      if (current.status === 'failed') {
+        const { error: _error, errorCode, ...publicFields } = current;
+        return { ...publicFields, ...loginFailure(errorCode) };
+      }
       return current;
     } catch (error) {
       // A dispatched task must not be submitted again when Redis loses a key.

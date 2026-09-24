@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ArrowRight,
   Check,
@@ -8,6 +8,7 @@ import {
   Clock3,
   LogIn,
   LogOut,
+  ListChecks,
   QrCode,
   RefreshCw,
   ScanLine,
@@ -66,6 +67,7 @@ import { useLoginSession } from '@/hooks/use-login-session';
 import { useAuth } from '@/hooks/use-auth';
 import { useTaskRun } from '@/hooks/use-task-run';
 import { TaskRunPanel } from '@/components/task-run-panel';
+import { deriveTaskProgress, selectProgressRun } from '@/lib/task-progress';
 
 function LoginHelp() {
   return (
@@ -111,6 +113,7 @@ function LoginHelp() {
 export default function App() {
   const auth = useAuth();
   const [authOpen, setAuthOpen] = useState(false);
+  const [submissionRevision, setSubmissionRevision] = useState<number | null>(null);
   const {
     phase,
     session,
@@ -128,8 +131,11 @@ export default function App() {
     startLogin,
     retryQuery,
     handleQrError,
+    acceptedRevision,
   } = useLoginSession(auth.user?.id ?? null, auth.handleUnauthorized);
   const taskRun = useTaskRun(auth.user?.id ?? null, session, auth.handleUnauthorized);
+  useEffect(() => { setSubmissionRevision(null); }, [auth.user?.id]);
+  const awaitingSubmission = submissionRevision !== null && acceptedRevision === submissionRevision;
 
   function openLogin() {
     auth.clearError();
@@ -137,35 +143,10 @@ export default function App() {
   }
 
   const ready = phase === 'qr_ready' && Boolean(qrUrl);
-  const submitted = Boolean(session);
-  const preparationSteps = [
-    {
-      id: 'submission',
-      title: '提交登录申请',
-      description: submitted ? '登录申请已提交'
-        : phase === 'submitting' ? '正在提交本次登录申请'
-          : phase === 'restoring' ? '正在检查本账户的有效申请'
-            : canRetryQuery ? '申请状态尚未确认，请重试查询'
-              : isError ? '本次申请已结束，可以重新获取' : '登录账户后提交本次申请',
-      icon: ArrowRight,
-      complete: submitted,
-      active: phase === 'submitting' || phase === 'restoring',
-      failed: isError && !submitted,
-    },
-    {
-      id: 'qr',
-      title: ready ? '获取成功'
-        : canRetryQuery ? '等待查询确认' : isError && submitted ? '获取失败' : '正在唤醒服务器进程并获取二维码',
-      description: ready ? '二维码已显示，请在有效期内扫码'
-        : canRetryQuery ? '申请会保留，恢复连接后继续查询'
-          : isError && submitted ? phase === 'expired' ? '二维码已过期，可重新获取' : '二维码获取失败，可重新获取'
-          : submitted ? '请稍候，获取成功后会自动显示' : '提交申请后开始获取二维码',
-      icon: QrCode,
-      complete: ready,
-      active: submitted && !ready && !isError,
-      failed: isError && submitted,
-    },
-  ];
+  const progressInput = { phase, session, qrReady: ready, view: taskRun, awaitingSubmission };
+  const progress = deriveTaskProgress(progressInput);
+  const visibleRun = selectProgressRun(progressInput);
+  const stepIcons = { submission: ArrowRight, qr: QrCode, script: ListChecks };
 
   return (
     <div className="login-shell min-h-svh text-foreground">
@@ -314,7 +295,7 @@ export default function App() {
                 type="button"
                 size="lg"
                 className="login-action mt-6 h-12 w-full max-w-sm gap-2 text-sm font-semibold"
-                onClick={() => { if (auth.user) void startLogin(); else openLogin(); }}
+                onClick={() => { if (auth.user) { setSubmissionRevision(acceptedRevision); void startLogin(); } else openLogin(); }}
                 disabled={auth.busy || pending}
               >
                 {!auth.user ? <LogIn aria-hidden="true" /> : phase === 'idle' ? <QrCode aria-hidden="true" />
@@ -365,20 +346,22 @@ export default function App() {
               <CardHeader className="gap-2">
                 <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base">
                   <img src="/icons/shuriken.svg" alt="" width="19" height="19" aria-hidden="true" />
-                  登录准备
+                  任务进度
                 </CardTitle>
-                <CardDescription className="text-sm">提交申请，等待二维码。</CardDescription>
+                <CardDescription className="text-sm">提交申请、获取二维码、执行脚本。</CardDescription>
                 <CardAction>
-                  <Badge variant="outline" className="font-normal text-muted-foreground">
-                    {ready ? '获取成功' : canRetryQuery ? '待确认' : isError ? '获取失败' : phase !== 'idle' ? '获取中' : '待开始'}
+                  <Badge variant={progress.tone === 'danger' ? 'destructive' : 'outline'} className="font-normal" aria-label="任务整体状态">
+                    {progress.summary}
                   </Badge>
                 </CardAction>
               </CardHeader>
               <CardContent>
-                <ItemGroup aria-label="二维码准备进度" className="gap-1">
-                  {preparationSteps.map(({ id, title, description, icon: StepIcon, complete, active, failed }) => {
+                <ItemGroup aria-label="任务执行进度" className="gap-1">
+                  {progress.steps.map(({ id, title, description, state }, index) => {
+                    const StepIcon = stepIcons[id];
+                    const complete = state === 'completed', active = state === 'active', failed = state === 'failed';
                     return (
-                      <Item key={id} role="listitem" size="sm" variant={active ? 'muted' : 'default'} className="items-start gap-3 px-2.5 py-3" aria-current={active ? 'step' : undefined}>
+                      <Item key={id} role="listitem" data-stage={id} data-state={state} size="sm" variant={active ? 'muted' : 'default'} className="items-start gap-3 px-2.5 py-3" aria-current={active ? 'step' : undefined}>
                         <ItemMedia variant="icon" className={`size-8 rounded-lg ${failed ? 'bg-destructive/10 text-destructive' : active || complete ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
                           {failed ? <CircleAlert aria-hidden="true" />
                             : complete ? <Check aria-hidden="true" />
@@ -387,7 +370,7 @@ export default function App() {
                         </ItemMedia>
                         <ItemContent className="min-w-0 gap-1">
                           <ItemTitle className={`line-clamp-none text-sm leading-6 ${failed ? 'text-destructive' : active || complete ? '' : 'text-muted-foreground'}`}>
-                            {title}
+                            {index + 1}. {title}
                           </ItemTitle>
                           <ItemDescription className="line-clamp-none text-sm leading-6">{description}</ItemDescription>
                         </ItemContent>
@@ -397,12 +380,9 @@ export default function App() {
                 </ItemGroup>
                 <Separator className="my-4" />
                 <p className="flex items-start gap-2 text-sm leading-6 text-muted-foreground">
-                  {ready ? <CheckCheck className="mt-1 size-4 shrink-0 text-primary" aria-hidden="true" />
+                  {progress.tone === 'success' ? <CheckCheck className="mt-1 size-4 shrink-0 text-primary" aria-hidden="true" />
                     : <Clock3 className="mt-1 size-4 shrink-0" aria-hidden="true" />}
-                  {ready ? '获取成功，二维码已自动显示。'
-                    : canRetryQuery ? canResumePending ? '点击「继续本次申请」提交已保存的申请编号。' : '点击「重试查询」恢复状态，不会创建新的申请。'
-                      : isError ? '本次申请结束后，可以重新获取二维码。'
-                        : '点击「生成登录二维码」后才查询；刷新或重新打开页面不会自动加载二维码。'}
+                  {progress.hint}
                 </p>
               </CardContent>
             </Card>
@@ -439,7 +419,7 @@ export default function App() {
             </Card>
           </div>
         </div>
-        {auth.user && <TaskRunPanel view={taskRun} retry={taskRun.retry} />}
+        {auth.user && <TaskRunPanel view={visibleRun} retry={taskRun.retry} />}
       </main>
       <AuthDialog open={authOpen} onOpenChange={setAuthOpen} busy={auth.busy}
         error={auth.error} clearError={auth.clearError} authenticate={auth.authenticate} />

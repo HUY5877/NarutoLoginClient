@@ -204,3 +204,14 @@ test('未配置 Redis 不影响数据库恢复，超时中止读取并释放连�
   assert.equal(signal?.aborted, true);
   assert.equal(f.destroyed, 1);
 });
+
+test('失败任务到二维码有效期后仍保留失败状态与独立运行错误码', async () => {
+  const f = fixture();
+  f.records.set(id, { ...event, status: 'failed' });
+  f.setSnapshot([JSON.stringify({ ...run, status: 'failed', finishedAt: at, errorCode: 'worker_clock_skew' }), [], '', 0, 0]);
+  assert.equal((await f.service.getLatest(owner)).task?.status, 'failed');
+  const result = await f.service.getEvents(id, owner);
+  assert.equal(result.task.status, 'failed');
+  assert.equal(result.run?.errorCode, 'worker_clock_skew');
+  assert.deepEqual(result.logs, []);
+});

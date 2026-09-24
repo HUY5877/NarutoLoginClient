@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Spinner } from '@/components/ui/spinner';
 import type { RunStatus, TaskRunView } from '@/lib/task-run';
+import { taskFailureMessage } from '../../shared/task-errors';
 
 const labels: Record<RunStatus, string> = {
   starting_emulator: '准备游戏环境', opening_game: '打开游戏', preparing_qr: '获取二维码',
@@ -32,7 +33,7 @@ export function TaskRunPanel({ view, retry }: { view: TaskRunView; retry: () => 
         <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base">
           <ListChecks className="size-5 text-primary" aria-hidden="true" />任务执行记录
         </CardTitle>
-        <CardDescription>扫码登录后，继续在本次游戏环境中执行日常。刷新页面可恢复查看。</CardDescription>
+        <CardDescription>记录提交申请、二维码准备和脚本执行的关键节点。刷新页面可继续查看。</CardDescription>
         <CardAction><Badge variant={bad ? 'destructive' : 'secondary'} className="gap-1.5">
           {view.polling && <Spinner className="size-3 motion-reduce:animate-none" aria-hidden="true" />}{label}
         </Badge></CardAction>
@@ -42,6 +43,10 @@ export function TaskRunPanel({ view, retry }: { view: TaskRunView; retry: () => 
           <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
             <span>{view.error}</span><Button variant="outline" size="sm" onClick={retry} className="gap-1.5"><RefreshCw aria-hidden="true" />重试更新</Button>
           </AlertDescription>
+        </Alert>}
+        {bad && view.run?.errorCode && <Alert variant="destructive" aria-label="任务失败原因">
+          <CircleAlert aria-hidden="true" />
+          <AlertDescription>{taskFailureMessage(view.run.errorCode)}</AlertDescription>
         </Alert>}
         {view.task && <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
           <span className="min-w-0 break-all">任务 <code>{view.task.id}</code></span>
@@ -63,7 +68,7 @@ export function TaskRunPanel({ view, retry }: { view: TaskRunView; retry: () => 
             <span className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{log.message}</span>
           </div>)}
         </div> : !view.unavailable && <p className="rounded-lg border border-dashed p-5 text-center text-sm leading-6 text-muted-foreground">
-          {view.loading ? '正在读取执行记录…' : view.task ? '任务开始后，执行进度和日志会显示在这里。' : '生成登录二维码后，在这里查看本次任务的执行进度。'}
+          {view.loading ? '正在读取执行记录…' : bad ? '本次任务未留下详细执行日志。' : view.task ? '任务开始后，执行进度和日志会显示在这里。' : '生成登录二维码后，在这里查看本次任务的执行进度。'}
         </p>}
         {view.run?.status === 'running_daily' && <p className="text-xs leading-5 text-muted-foreground">二维码到期不会停止已开始的日常任务，执行记录会继续更新。</p>}
       </CardContent>

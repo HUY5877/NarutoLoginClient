@@ -3,7 +3,7 @@
 // All APIs are intercepted. Vite uses an empty env directory and never starts the backend.
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rmdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, rmdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,6 +31,7 @@ const secondUser = { id: 'lazy-user-two', username: '第二位测试用户', isA
 const sessionId = '11111111-1111-4111-8111-111111111111';
 const latestId = '22222222-2222-4222-8222-222222222222';
 const pendingId = '33333333-3333-4333-8333-333333333333';
+const clockError = '执行服务器时间与任务服务器不同步，请同步执行服务器系统时间后重新申请。';
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7nwAAAAASUVORK5CYII=', 'base64');
 function session(status = 'qr_ready', expiresAt = Date.now() + 60_000) {
   return { id: sessionId, status, createdAt: new Date().toISOString(), expiresAt: new Date(expiresAt).toISOString(),
@@ -49,6 +50,18 @@ async function waitFor(predicate, message, timeout = 8_000) {
     if (Date.now() >= deadline) assert.fail(message);
     await new Promise(resolve => setTimeout(resolve, 20));
   }
+}
+async function expectStages(page, expected) {
+  const progress = page.getByLabel('任务执行进度', { exact: true });
+  await progress.waitFor();
+  const stages = ['submission', 'qr', 'script'];
+  const titles = ['提交登录申请', '二维码获取状态', '执行脚本'];
+  for (const [index, stage] of stages.entries()) {
+    const item = progress.locator(`[data-stage="${stage}"][data-state="${expected[index]}"]`);
+    await item.waitFor();
+    assert.equal(await item.getByText(new RegExp(`^${index + 1}\\.\\s*${titles[index]}$`)).count(), 1);
+  }
+  assert.equal(await progress.getByRole('listitem').count(), 3);
 }
 
 test('QR sessions load only after an explicit click', { skip: unavailable || false, timeout: 90_000 }, async t => {
@@ -71,7 +84,14 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
     async function fixture() {
       const context = await browser.newContext();
       const state = { user: firstUser, calls: [], errors: [], active: () => ({ session: null, showGetButton: true }),
-        submit: () => session('queued'), detail: () => session(), afterQr: null };
+        submit: () => session('queued'), detail: () => session(), afterQr: null, qrResponse: null,
+        latest: () => ({ task: { ...session('expired', Date.now() - 60_000), id: latestId } }),
+        events: (taskId, url) => {
+          const now = new Date().toISOString();
+          return { task: { ...session('expired', Date.now() - 60_000), id: taskId },
+            run: { taskId, status: 'running_daily', updatedAt: now, startedAt: now, finishedAt: null, actionIndex: 2, actionTotal: 38 },
+            logs: [], nextCursor: url.searchParams.get('after') || '0-0', hasMore: false, truncated: false };
+        } };
       context.on('page', current => current.on('pageerror', error => state.errors.push(error.message)));
       await context.route('**/*', async route => {
         const url = new URL(route.request().url());
@@ -87,15 +107,13 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         else if (url.pathname === `/api/login-sessions/${sessionId}`) body = await state.detail(request);
         else if (url.pathname === `/api/login-sessions/${sessionId}/qr`) {
           if (state.afterQr) await state.afterQr();
+          if (state.qrResponse) return route.fulfill(state.qrResponse).catch(() => {});
           return route.fulfill({ status: 200, contentType: 'image/png', body: png }).catch(() => {});
         } else if (url.pathname === '/api/task-runs/latest') {
-          body = { task: { ...session('expired', Date.now() - 60_000), id: latestId } };
+          body = await state.latest();
         } else if (/^\/api\/task-runs\/[^/]+\/events$/.test(url.pathname)) {
           const taskId = url.pathname.split('/')[3];
-          const now = new Date().toISOString();
-          body = { task: { ...session('expired', Date.now() - 60_000), id: taskId },
-            run: { taskId, status: 'running_daily', updatedAt: now, startedAt: now, finishedAt: null, actionIndex: 2, actionTotal: 38 },
-            logs: [], nextCursor: url.searchParams.get('after') || '0-0', hasMore: false, truncated: false };
+          body = await state.events(taskId, url);
         } else {
           state.errors.push(`Unexpected mocked API: ${request.method()} ${url.pathname}`);
           return route.fulfill({ status: 404, json: {} });
@@ -223,6 +241,191 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         assert.deepEqual(callsToLogin(f.state.calls).map(call => call.path), ['/api/login-sessions/active']);
         assert.equal(await generate(f.page).isEnabled(), true);
       } finally { gate.resolve(); await f.close(); }
+    });
+
+    await t.test('fixed stages follow QR preparation and script execution, survive QR expiry and lazy reload, then complete', async () => {
+      const f = await fixture();
+      try {
+        let created;
+        let qrStatus = 'queued';
+        let runStatus = 'starting_emulator';
+        let startedAt = null;
+        const logs = [];
+        const milestone = message => logs.push({ id: `${logs.length + 1}-0`, time: new Date().toISOString(), level: 'INFO', message });
+        f.state.latest = () => ({ task: created ? { ...created, status: qrStatus } : null });
+        f.state.submit = () => {
+          created = session('queued');
+          milestone('登录申请已提交，等待执行。');
+          return created;
+        };
+        f.state.detail = () => ({ ...created, status: qrStatus });
+        f.state.events = (taskId, url) => {
+          const after = Number((url.searchParams.get('after') || '0-0').split('-')[0]);
+          const now = new Date().toISOString();
+          return { task: { ...created, id: taskId, status: qrStatus },
+            run: { taskId, status: runStatus, updatedAt: now, startedAt,
+              finishedAt: runStatus === 'completed' ? now : null, ...(startedAt ? { actionIndex: 2, actionTotal: 38 } : {}) },
+            logs: logs.filter(log => Number(log.id.split('-')[0]) > after),
+            nextCursor: `${logs.length}-0`, hasMore: false, truncated: false };
+        };
+        await f.open();
+        await expectStages(f.page, ['pending', 'pending', 'pending']);
+        await generate(f.page).click();
+        await expectStages(f.page, ['completed', 'active', 'pending']);
+        qrStatus = 'preparing_qr';
+        runStatus = 'preparing_qr';
+        milestone('游戏已打开，正在获取二维码。');
+        await f.page.getByRole('log', { name: '任务执行日志' }).getByText(logs.at(-1).message, { exact: true }).waitFor();
+        await expectStages(f.page, ['completed', 'active', 'pending']);
+        qrStatus = 'qr_ready';
+        runStatus = 'waiting_scan';
+        milestone('二维码已就绪，等待扫码登录。');
+        await f.page.locator('img[src^="blob:"]').waitFor();
+        await expectStages(f.page, ['completed', 'completed', 'pending']);
+        runStatus = 'running_daily';
+        startedAt = new Date().toISOString();
+        milestone('登录完成，开始执行日常脚本。');
+        await expectStages(f.page, ['completed', 'completed', 'active']);
+        const progressCard = f.page.locator('[data-slot="card"]').filter({ has: f.page.getByLabel('任务执行进度', { exact: true }) });
+        await progressCard.getByText('脚本执行中', { exact: true }).waitFor();
+        const screenshotPath = path.join(repository, '.data/login-lazy-integration/running-daily.png');
+        await mkdir(path.dirname(screenshotPath), { recursive: true });
+        await f.page.screenshot({ path: screenshotPath, fullPage: true });
+        t.diagnostic(`Running script screenshot: ${screenshotPath}`);
+        const loginCalls = callsToLogin(f.state.calls).length;
+        // Move only this isolated page's clock beyond the QR TTL; no fixed wait for the full TTL.
+        await f.page.evaluate(() => { const realNow = Date.now; Date.now = () => realNow() + 120_000; });
+        await f.page.getByRole('button', { name: '重新生成二维码', exact: true }).waitFor();
+        await expectStages(f.page, ['completed', 'completed', 'active']);
+        assert.equal(await progressCard.getByText('脚本执行中', { exact: true }).isVisible(), true);
+        assert.equal(await progressCard.getByText('获取失败', { exact: true }).count(), 0);
+        assert.equal(callsToLogin(f.state.calls).length, loginCalls);
+        qrStatus = 'expired';
+        created.expiresAt = new Date(Date.now() - 1_000).toISOString();
+        await f.page.reload({ waitUntil: 'networkidle' });
+        await generate(f.page).waitFor();
+        await expectStages(f.page, ['completed', 'completed', 'active']);
+        assert.equal(await f.page.locator('img[src^="blob:"]').count(), 0);
+        assert.equal(callsToLogin(f.state.calls).length, loginCalls, 'Restoring script progress must not load the QR');
+        runStatus = 'completed';
+        milestone('日常脚本执行完成。');
+        await expectStages(f.page, ['completed', 'completed', 'completed']);
+        await progressCard.getByText('任务已完成', { exact: true }).waitFor();
+        const logArea = f.page.getByRole('log', { name: '任务执行日志' });
+        for (const entry of logs) assert.equal(await logArea.getByText(entry.message, { exact: true }).isVisible(), true);
+        assert.equal(callsToLogin(f.state.calls).length, loginCalls);
+      } finally { await f.close(); }
+    });
+
+    await t.test('restoring a failed script leaves submission and QR completed and marks only execution failed', async () => {
+      const f = await fixture();
+      try {
+        const failedTask = { ...session('expired', Date.now() - 60_000), id: latestId };
+        f.state.latest = () => ({ task: failedTask });
+        f.state.events = taskId => {
+          const time = new Date().toISOString();
+          return { task: failedTask,
+            run: { taskId, status: 'failed', updatedAt: time, startedAt: time, finishedAt: time, errorCode: 'daily_failed' },
+            logs: [{ id: '1-0', time, level: 'ERROR', message: '日常脚本执行失败，请检查执行环境后重试。' }],
+            nextCursor: '1-0', hasMore: false, truncated: false };
+        };
+        await f.open();
+        await expectStages(f.page, ['completed', 'completed', 'failed']);
+        await f.page.getByRole('log', { name: '任务执行日志' }).getByText('错误', { exact: true }).waitFor();
+        assert.deepEqual(callsToLogin(f.state.calls), []);
+      } finally { await f.close(); }
+    });
+
+    await t.test('an accepted session keeps its execution records visible when reading the QR image fails', async () => {
+      const f = await fixture();
+      try {
+        f.state.latest = () => ({ task: null });
+        f.state.active = () => ({ session: session(), showGetButton: false });
+        f.state.qrResponse = { status: 400, json: { error: '本次二维码图片暂时无法读取，请重试查询。' } };
+        const message = '已接受申请的执行记录仍可查看。';
+        f.state.events = (taskId, url) => {
+          const time = new Date().toISOString();
+          return { task: { ...session(), id: taskId },
+            run: { taskId, status: 'running_daily', updatedAt: time, startedAt: time, finishedAt: null },
+            logs: url.searchParams.get('after') === '0-0' ? [{ id: '1-0', time, level: 'INFO', message }] : [],
+            nextCursor: '1-0', hasMore: false, truncated: false };
+        };
+        await f.open();
+        await generate(f.page).click();
+        await f.page.getByRole('button', { name: '重试查询', exact: true }).waitFor();
+        await f.page.getByRole('log', { name: '任务执行日志' }).getByText(message, { exact: true }).waitFor();
+        await expectStages(f.page, ['completed', 'completed', 'active']);
+        assert.equal(callsToLogin(f.state.calls).filter(call => call.method === 'POST').length, 0);
+      } finally { await f.close(); }
+    });
+
+    await t.test('worker clock failure is visible in QR and ERROR logs, survives expiry, and restores logs after reload', async () => {
+      const f = await fixture();
+      try {
+        let created;
+        let failed = false;
+        f.state.latest = () => ({ task: failed ? { ...created, status: 'failed' } : null });
+        f.state.submit = () => {
+          created = session('queued', Date.now() + 2_500);
+          return created;
+        };
+        f.state.detail = () => {
+          failed = true;
+          return { ...created, status: 'failed', showGetButton: true, errorCode: 'worker_clock_skew', error: clockError };
+        };
+        f.state.events = (taskId, url) => {
+          const time = new Date().toISOString();
+          const after = url.searchParams.get('after') || '0-0';
+          const logs = failed && after === '0-0'
+            ? [{ id: '1-0', time, level: 'ERROR', message: clockError }] : [];
+          return { task: { ...created, id: taskId, status: failed ? 'failed' : 'queued' },
+            run: { taskId, status: failed ? 'failed' : 'starting_emulator', updatedAt: time,
+              startedAt: null, finishedAt: failed ? time : null, ...(failed ? { errorCode: 'worker_clock_skew' } : {}) },
+            logs, nextCursor: logs.length ? '1-0' : after, hasMore: false, truncated: false };
+        };
+        await f.open();
+        await generate(f.page).click();
+        const qrCard = f.page.locator('[data-slot="card"]').filter({ has: f.page.getByRole('heading', { name: '扫码登录', exact: true }) });
+        const runCard = f.page.locator('[data-slot="card"]').filter({ has: f.page.getByRole('heading', { name: '任务执行记录', exact: true }) });
+        await qrCard.getByText(clockError, { exact: true }).waitFor();
+        const logArea = f.page.getByRole('log', { name: '任务执行日志' });
+        await logArea.getByText(clockError, { exact: true }).waitFor();
+        await expectStages(f.page, ['completed', 'failed', 'pending']);
+        assert.equal(await logArea.getByText('错误', { exact: true }).count(), 1);
+        assert.ok(await runCard.getByText('执行失败', { exact: true }).count());
+        assert.equal(callsToLogin(f.state.calls).filter(call => call.method === 'POST').length, 1);
+        assert.equal(callsToLogin(f.state.calls).filter(call => call.path.endsWith('/qr')).length, 0);
+        const loginCalls = callsToLogin(f.state.calls).length;
+        await f.page.waitForTimeout(Math.max(0, Date.parse(created.expiresAt) - Date.now()) + 1_100);
+        assert.equal(await qrCard.getByText(clockError, { exact: true }).isVisible(), true);
+        assert.equal(await qrCard.getByText('二维码已过期', { exact: true }).count(), 0);
+        assert.equal(callsToLogin(f.state.calls).length, loginCalls);
+        await f.page.reload({ waitUntil: 'networkidle' });
+        await generate(f.page).waitFor();
+        await f.page.getByRole('log', { name: '任务执行日志' }).getByText(clockError, { exact: true }).waitFor();
+        assert.equal(callsToLogin(f.state.calls).length, loginCalls, 'Reload must restore run logs without querying QR sessions');
+        assert.ok(f.state.calls.filter(call => call.path === '/api/task-runs/latest').length >= 2);
+      } finally { await f.close(); }
+    });
+
+    await t.test('failed run exposes its clock error code even when no log entries remain', async () => {
+      const f = await fixture();
+      try {
+        const failedTask = { ...session('failed', Date.now() - 60_000), id: latestId };
+        f.state.latest = () => ({ task: failedTask });
+        f.state.events = taskId => {
+          const time = new Date().toISOString();
+          return { task: failedTask,
+            run: { taskId, status: 'failed', updatedAt: time, startedAt: null, finishedAt: time, errorCode: 'worker_clock_skew' },
+            logs: [], nextCursor: '0-0', hasMore: false, truncated: false };
+        };
+        await f.open();
+        const runCard = f.page.locator('[data-slot="card"]').filter({ has: f.page.getByRole('heading', { name: '任务执行记录', exact: true }) });
+        await runCard.getByRole('alert', { name: '任务失败原因' }).getByText(clockError, { exact: true }).waitFor();
+        assert.equal(await f.page.getByRole('log', { name: '任务执行日志' }).count(), 0);
+        assert.deepEqual(callsToLogin(f.state.calls), []);
+        assert.ok(await runCard.getByText('执行失败', { exact: true }).count());
+      } finally { await f.close(); }
     });
   } finally {
     await browser?.close();

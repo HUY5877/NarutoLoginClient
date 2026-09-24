@@ -120,8 +120,8 @@ export function createApp(config: Config, { events, auth, storage, runs, now = D
     const id = sessionId(req);
     const userId = (res.locals.user as User).id;
     const task = await events.getForUser(id, userId);
-    if (now() >= Date.parse(task.expiresAt) || task.status === 'expired') return res.json(publicTask({ ...task, status: 'expired' }));
     if (task.status === 'failed') return res.json(publicTask(task));
+    if (now() >= Date.parse(task.expiresAt) || task.status === 'expired') return res.json(publicTask({ ...task, status: 'expired' }));
     // 对象是否存在决定二维码就绪；队列状态只用于显示当前步骤。
     const exists = await storage.exists(id);
     if (now() >= Date.parse(task.expiresAt)) return res.json(publicTask({ ...task, status: 'expired' }));

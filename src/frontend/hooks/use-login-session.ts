@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { loginFailure } from '../../shared/task-errors';
 
 export type SessionStatus = 'queued' | 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'qr_ready' | 'failed' | 'expired';
 export type Phase = 'idle' | 'restoring' | 'submitting' | 'query_failed' | SessionStatus;
@@ -9,6 +10,7 @@ export interface Session {
   expiresAt: string;
   simulation: boolean;
   error?: string;
+  errorCode?: string;
   pollAfterMs?: number;
   showGetButton?: boolean;
 }
@@ -106,6 +108,7 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
   const [retrying, setRetrying] = useState(false);
   const [showGetButton, setShowGetButton] = useState(false);
   const [pendingUntil, setPendingUntil] = useState<number | null>(null);
+  const [acceptedRevision, setAcceptedRevision] = useState(0);
   const [now, setNow] = useState(Date.now());
   const controllerRef = useRef<AbortController | null>(null);
   const generationRef = useRef(0);
@@ -162,11 +165,12 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
       const previous = sessionRef.current;
       setPhase(previous?.status === 'failed' ? 'failed'
         : previous && (previous.status === 'expired' || Date.parse(previous.expiresAt) <= Date.now()) ? 'expired' : 'idle');
-      setError(previous?.status === 'failed' ? previous.error || '本次准备失败，可以重新申请。' : '');
+      setError(previous?.status === 'failed' ? loginFailure(previous.errorCode).error : '');
       setRetrying(false);
       updateAvailability(true);
     };
     const accept = (value: Session) => {
+      setAcceptedRevision(generation);
       sessionRef.current = value;
       setSession(value);
       setNow(Date.now());
@@ -220,7 +224,7 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
           const ended: Session = { ...current, status: current.status === 'failed' ? 'failed' : 'expired' };
           accept(ended);
           setPhase(ended.status);
-          setError(ended.status === 'failed' ? ended.error || '本次准备失败，可以重新申请。' : '');
+          setError(ended.status === 'failed' ? loginFailure(ended.errorCode).error : '');
           setRetrying(false);
           updateAvailability(true);
           return;
@@ -297,6 +301,7 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     setError('');
     setRetrying(false);
     setPendingUntil(null);
+    setAcceptedRevision(0);
     // Opening a page only resets its local view. The button initiates the
     // authoritative server check, including recovery of a saved request ID.
     updateAvailability(Boolean(userId));
@@ -362,6 +367,7 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
   const countdown = `${Math.floor(remainingSeconds / 60).toString().padStart(2, '0')}:${(remainingSeconds % 60).toString().padStart(2, '0')}`;
   const canResumePending = currentOwner && pendingUntil !== null && pendingUntil > now;
   return {
+    acceptedRevision: currentOwner ? acceptedRevision : 0,
     phase: visiblePhase, session: visibleSession, qrUrl: currentOwner ? qrUrl : null,
     error: currentOwner ? error : '', retrying: currentOwner && retrying, pending,
     showGetButton: currentOwner && showGetButton, canRetryQuery: currentOwner && visiblePhase === 'query_failed', canResumePending,

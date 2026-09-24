@@ -7,6 +7,7 @@ import { loadConfig } from '../src/server/config.js';
 import { ApiError } from '../src/server/errors.js';
 import type { Task } from '../src/server/queue.js';
 import type { AuthStore } from '../src/server/database.js';
+import { loginFailure } from '../src/shared/task-errors.js';
 
 const config = loadConfig({});
 const id = '123e4567-e89b-42d3-a456-426614174000';
@@ -514,5 +515,15 @@ test('日志游标拒绝重复参数和非法范围，服务错误仅返回脱�
     assert.equal(response.status, 500);
     assert.doesNotMatch(await response.text(), /secret|redis URL/);
     assert.equal((await fetch(`${base}/api/login-sessions/active`, { headers })).status, 200);
+  });
+});
+
+test('已失败申请的明确安全原因不被原二维码到期覆盖，不查询 OSS', async () => {
+  const unexpected = async (): Promise<never> => assert.fail('failed request must not query QR storage');
+  const failed = { ...baseTask, status: 'failed' as const, expiresAt: new Date(start - 1).toISOString(), ...loginFailure('worker_clock_skew') };
+  await withApi({ events: events({ getForUser: async () => failed }), storage: { exists: unexpected, read: unexpected } }, async base => {
+    const response = await fetch(`${base}/api/login-sessions/${id}`, { headers });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ...failed, showGetButton: true });
   });
 });

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { ApiError } from '../src/server/errors.js';
 import { TaskService, type RedisDriver, type Submission } from '../src/server/queue.js';
+import { loginFailure } from '../src/shared/task-errors.js';
 
 const now = Date.now();
 const config = { redisUrl: 'redis://localhost:6379', redisQueueKey: 'naruto:login:tasks', timeoutMs: 100, ossPrefix: 'login' };
@@ -28,12 +29,14 @@ test('未配置 Redis 时返回明确 503，不创建连接', async () => {
 test('原子提交会话与 LPUSH 任务，队列不含浏览器凭证，TTL 只保留剩余有效期', async () => {
   const service = new TaskService(config, () => driver({ eval: async (_script, options, signal) => {
     assert.deepEqual(options.keys, [config.redisQueueKey, `${config.redisQueueKey}:sessions:${task.id}`,
-      `${config.redisQueueKey}:users:${task.userId}:active`]);
+      `${config.redisQueueKey}:users:${task.userId}:active`, `${config.redisQueueKey}:logs:${task.id}`]);
     assert.deepEqual(JSON.parse(options.arguments[0]), stored);
     assert.equal(options.arguments[1], '119000');
     assert.deepEqual(JSON.parse(options.arguments[2]), { version: 1, id: task.id, createdAt: task.createdAt,
       expiresAt: task.expiresAt, objectKey: `login/${task.id}/qr.png` });
     assert.equal(options.arguments[3], new Date(now + 1000).toISOString());
+    assert.deepEqual(JSON.parse(options.arguments[4]), { time: task.createdAt, level: 'INFO',
+      message: '登录申请已提交，等待执行服务器领取任务。' });
     assert.ok(!options.arguments[2].includes(task.userId));
     assert.ok(!options.arguments.join('').includes(task.accessToken));
     assert.equal(signal.aborted, false);
@@ -75,7 +78,8 @@ test('Outbox 重发 Lua 契约只核验不可变身份字段，在账户锁检�
   assert.match(duplicateGuard, /return 0/);
   assert.match(duplicateGuard, /return redis\.error_reply\('Login session already exists'\)/);
   assert.doesNotMatch(duplicateGuard, /persisted\.(?:status|workerId|error)/);
-  assert.doesNotMatch(duplicateGuard, /redis\.(?:call|pcall)\('(?:SET|DEL|LPUSH|PEXPIRE|EXPIRE)'/);
+  assert.doesNotMatch(duplicateGuard, /redis\.(?:call|pcall)\('(?:SET|DEL|LPUSH|PEXPIRE|EXPIRE|XADD)'/);
+  assert.ok(captured.indexOf("redis.pcall('XADD'") > captured.indexOf("redis.pcall('LPUSH'"));
   assert.doesNotMatch(captured, /activeRaw == ARGV\[1\]/);
 });
 
@@ -212,4 +216,21 @@ test('连接和命令超时均有上限，销毁坏连接并隐藏网络凭据',
   await assert.rejects(service.get(task.id, task.accessToken), { status: 503, message: 'Redis 暂时不可用，请检查连接配置后重试。' });
   assert.equal((await service.get(task.id, task.accessToken)).status, 'queued');
   assert.equal(created, 2);
+});
+
+test('工作进程失败仅按白名单代码返回安全中文，保留失败状态并忽略 Redis 任意错误文本', async () => {
+  for (const errorCode of ['worker_clock_skew', 'invalid_task_payload', 'invalid_task_timestamps', 'constructor', 'private_secret', null]) {
+    for (const at of [now, now + 120001]) {
+      const service = new TaskService(config, () => driver({ get: async () => JSON.stringify({ ...stored,
+        status: 'failed', errorCode, error: 'redis://private-password@private-host' }) }), () => at);
+      const result = await service.getForUser(task.id, task.userId);
+      assert.deepEqual(result, { id: task.id, status: 'failed', createdAt: task.createdAt, expiresAt: task.expiresAt,
+        simulation: true, ...loginFailure(errorCode) });
+      assert.doesNotMatch(JSON.stringify(result), /private-password|private-host|private_secret|constructor/);
+      await assert.rejects(service.getForUser(task.id, 'other-user'), { status: 404 });
+    }
+  }
+  const pending = new TaskService(config, () => driver({ get: async () => JSON.stringify({ ...stored,
+    errorCode: 'worker_clock_skew', error: 'secret' }) }), () => now);
+  assert.equal(Object.hasOwn(await pending.getForUser(task.id, task.userId), 'errorCode'), false);
 });

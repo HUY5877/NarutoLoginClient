@@ -5,6 +5,7 @@ import type { LoginEvent, LoginEventStore } from '../src/server/database.js';
 import { ApiError } from '../src/server/errors.js';
 import { LoginEventService } from '../src/server/login-events.js';
 import type { Submission, Task } from '../src/server/queue.js';
+import { loginFailure } from '../src/shared/task-errors.js';
 
 function fixture() {
   let time = Date.now();
@@ -147,4 +148,35 @@ test('跨账户不能恢复或读取事件；数据库查询失败不能伪装�
   await assert.rejects(f.service().getForUser(task.id, other), { status: 404 });
   f.store.getActive = async () => { throw new Error('private connection'); };
   await assert.rejects(f.service().getActive(userId), { status: 503, code: 'LOGIN_EVENTS_UNAVAILABLE' });
+});
+
+test('失败原因在首次读取、数据库已标记失败后的复查及原二维码到期后保持，不重新派发', async () => {
+  const f = fixture(), userId = randomUUID();
+  const original = await f.service().create(userId, randomUUID());
+  Object.assign(f.queue.get(original.id)!, { status: 'failed', errorCode: 'worker_clock_skew', error: 'private connection failure' });
+  const first = await f.service().getForUser(original.id, userId);
+  assert.equal(first.status, 'failed');
+  assert.deepEqual({ error: first.error, errorCode: first.errorCode }, loginFailure('worker_clock_skew'));
+  assert.equal(f.records.get(original.id)?.status, 'failed');
+  assert.deepEqual(await f.service().getForUser(original.id, userId), first);
+  f.advance(120001);
+  assert.deepEqual(await f.service().getForUser(original.id, userId), first);
+  assert.equal(f.submissions.length, 1);
+  await assert.rejects(f.service().getForUser(original.id, randomUUID()), { status: 404 });
+});
+
+test('失败会话过期或 Redis 不可用仍保留数据库失败结果，迟到正常状态不可复活', async () => {
+  const f = fixture(), userId = randomUUID();
+  const original = await f.service().create(userId, randomUUID());
+  Object.assign(f.queue.get(original.id)!, { status: 'failed', errorCode: 'worker_clock_skew' });
+  await f.service().getForUser(original.id, userId);
+  const expected = { ...original, status: 'failed', ...loginFailure(undefined) };
+  Object.assign(f.queue.get(original.id)!, { status: 'queued' });
+  assert.deepEqual(await f.service().getForUser(original.id, userId), expected);
+  f.queue.clear();
+  f.advance(120001);
+  assert.deepEqual(await f.service().getForUser(original.id, userId), expected);
+  f.tasks.getForUser = async () => { throw new ApiError(503, 'private redis details'); };
+  assert.deepEqual(await f.service().getForUser(original.id, userId), expected);
+  assert.equal(f.submissions.length, 1);
 });
