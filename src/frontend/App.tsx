@@ -101,7 +101,7 @@ function LoginHelp() {
         <Alert>
           <Clock3 aria-hidden="true" />
           <AlertTitle>二维码过期后可以重新生成</AlertTitle>
-          <AlertDescription>刷新后会继续查询同一份申请。连接中断时可重试查询；申请结束后再获取新的二维码。</AlertDescription>
+          <AlertDescription>刷新后点击「生成登录二维码」再查询；已有有效申请会继续使用。连接中断时可重试查询。</AlertDescription>
         </Alert>
       </DialogContent>
     </Dialog>
@@ -277,7 +277,7 @@ export default function App() {
                           <EmptyDescription className="text-sm leading-6">
                             {canRetryQuery ? canResumePending ? '点击「继续本次申请」恢复已保存的申请' : '点击「重试查询」继续查看本次申请'
                               : isError ? '确认本次申请结束后，可以重新获取'
-                              : pending ? '刷新或重新打开页面也会继续本次申请'
+                              : pending ? '保持页面打开，二维码准备好后会自动显示'
                                 : auth.user ? '点击下方按钮，生成本次登录二维码' : '先登录忍者日常账户，再获取二维码'}
                           </EmptyDescription>
                         </EmptyHeader>
@@ -352,7 +352,7 @@ export default function App() {
                         <p className="text-muted-foreground">申请编号</p>
                         <code className="block break-all rounded-md border bg-background px-3 py-2 font-mono text-xs leading-5">{session.id}</code>
                       </div>
-                      <p className="leading-6 text-muted-foreground">刷新或重新打开页面会继续本次申请；二维码过期后可重新生成。</p>
+                      <p className="leading-6 text-muted-foreground">刷新或重新打开后，点击「生成登录二维码」继续查看已有有效申请；过期后可重新生成。</p>
                     </AccordionContent>
                   </AccordionItem>
                 </Accordion>
@@ -400,9 +400,9 @@ export default function App() {
                   {ready ? <CheckCheck className="mt-1 size-4 shrink-0 text-primary" aria-hidden="true" />
                     : <Clock3 className="mt-1 size-4 shrink-0" aria-hidden="true" />}
                   {ready ? '获取成功，二维码已自动显示。'
-                    : canRetryQuery ? canResumePending ? '继续提交已保存的申请，刷新后也会使用同一份申请。' : '点击「重试查询」恢复状态，不会创建新的申请。'
+                    : canRetryQuery ? canResumePending ? '点击「继续本次申请」提交已保存的申请编号。' : '点击「重试查询」恢复状态，不会创建新的申请。'
                       : isError ? '本次申请结束后，可以重新获取二维码。'
-                        : '申请进度会持续保留，刷新页面后会自动继续查询。'}
+                        : '点击「生成登录二维码」后才查询；刷新或重新打开页面不会自动加载二维码。'}
                 </p>
               </CardContent>
             </Card>
@@ -425,13 +425,13 @@ export default function App() {
                   <AccordionItem value="account">
                     <AccordionTrigger className="text-sm font-medium">多个页面能同时获取二维码吗？</AccordionTrigger>
                     <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                      同一账户同时只有一个有效申请。刷新、重新登录或打开新页面都会恢复已有二维码，过期或准备失败后才能重新申请。
+                      同一账户同时只有一个有效申请。每个页面点击「生成登录二维码」后查询并复用已有申请，过期或准备失败后才能重新申请。
                     </AccordionContent>
                   </AccordionItem>
                   <AccordionItem value="expires" className="border-b-0">
                     <AccordionTrigger className="text-sm font-medium">二维码过期或生成失败怎么办？</AccordionTrigger>
                     <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                      页面确认没有有效申请后，会显示「重新生成二维码」。网络中断时先点击「重试查询」，继续查看已有申请。
+                      过期或准备失败后可点击「重新生成二维码」，服务端会先检查已有申请。网络中断时点击「重试查询」，继续查看本次申请。
                     </AccordionContent>
                   </AccordionItem>
                 </Accordion>

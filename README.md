@@ -2,7 +2,7 @@
 
 React / TSX 前端和 TypeScript 客户端后端放在同一个仓库。客户端后端生成唯一任务 ID，将任务直接投放到 Redis，Python 工作进程通过 Redis 取任务并上传二维码到阿里云 OSS；客户端后端检查 OSS，页面读取并显示二维码。
 
-**用户注册后需等待管理员审批，通过后才能登录并申请游戏二维码。** 同一个账号同时只能有一条有效登录申请；不同标签页、刷新页面或重新登录会恢复已有申请。Python 的 `mock` 驱动生成模拟二维码；`ldplayer` 驱动支持真实取码、确认扫码登录和继续执行日常。任务执行面板从 Redis 读取该任务的进度与日志，二维码过期后仍可查看。
+**用户注册后需等待管理员审批，通过后才能登录并申请游戏二维码。** 同一个账号同时只能有一条有效登录申请；页面按需查询二维码，刷新、新开页面或重新登录后，点击「生成登录二维码」才检查并复用已有有效申请。Python 的 `mock` 驱动生成模拟二维码；`ldplayer` 驱动支持真实取码、确认扫码登录和继续执行日常。任务执行面板从 Redis 读取该任务的进度与日志，二维码过期后仍可查看。
 
 ## 本地启动
 
@@ -34,8 +34,9 @@ npm start
 ```text
 TSX 页面注册 → PostgreSQL 待审核账号与申请 → 管理员审批
 TSX 页面登录 → 校验账号启用状态 → 后端签发 JWT → 浏览器 HttpOnly Cookie
-TSX 页面 POST /api/login-sessions
-  → 页面先保存本次 requestId，刷新时复用同一个编号
+TSX 页面点击「生成登录二维码」
+  → 用户点击生成后保存本次 requestId，先查询已有有效申请
+  → 有申请则继续查询；没有时才 POST，刷新后再次点击可复用原编号
   → TS 后端校验网站账号，在 PostgreSQL 事件表保存 UUID、状态和过期时间
   → Redis 原子检查账号当前任务、保存会话，并 LPUSH 登录任务
   → Python 工作进程 BRPOP 同一个队列
@@ -71,9 +72,11 @@ TSX 页面每秒 GET /api/login-sessions/{id}
 
 `naruto_login.login_events` 保存 `id`、`user_id`、`request_id`、`status`、`created_at`、`expires_at`、`dispatched_at` 和 `finished_at`。内部 `access_token` 仅用于重试相同任务的投递，不返回浏览器。每个账号只允许一条未结束事件；同账号、同 `request_id` 永远对应原事件，即使已过期也不会创建新任务。
 
-页面登录后先查 `GET /api/login-sessions/active`。接口返回 `{ session, showGetButton }`：有未结束且未过期事件时恢复进度并隐藏获取按钮，没有才显示。查询中或网络故障不会当作没有事件；失败或过期后重新查询服务端，再决定按钮。`showGetButton` 根据事件和当前时间实时计算，避免数据库里保存的按钮标记过期后没有及时更新。
+首次打开、刷新、新开页面和切回窗口时，二维码区域保持空闲并显示「生成登录二维码」，不请求登录申请状态，也不因其他页面的本地存储事件自动查询。用户点击后才查 `GET /api/login-sessions/active`：有有效申请则继续轮询并显示原二维码，没有才提交保存的请求编号。查询失败不会当作没有事件，不会据此创建重复任务。网站账号身份读取和独立任务日志查询不受此按需加载策略影响。
 
-点击时先同步保存本账号的 `requestId`，再发送请求。刷新发生在请求返回之前时，会继续查询事件；如果尚未落库，则用同一个 `requestId` 补交原申请。数据库先保存事件，再投递 Redis；若入队成功但响应丢失，恢复时重发相同 ID 和凭据，Lua 确认已有任务后直接返回成功。已确认投递的事件不会因 Redis 记录丢失而重新入队，原事件在有效期内继续占用账号名额。
+点击时先同步保存本账号的 `requestId`，再发送请求。刷新发生在请求返回之前时，页面不主动补交；用户再次点击后查询已有申请，如果尚未落库，则用有效期内保存的同一个 `requestId` 补交。点击后的准备进度继续自动轮询，获取二维码后停止；失败或到期在本地结束显示并恢复按钮，不自动重新查询或创建任务。再次点击时仍由服务端确认已有申请。
+
+数据库先保存事件，再投递 Redis；若入队成功但响应丢失，恢复时重发相同 ID 和凭据，Lua 确认已有任务后直接返回成功。已确认投递的事件不会因 Redis 记录丢失而重新入队，原事件在有效期内继续占用账号名额。
 
 ## Redis 与 Python 接入协议
 
@@ -177,7 +180,7 @@ Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run 
 | `GET /api/admin/registration-applications?status=pending` | 管理员查看最近 100 条申请，支持 `pending`、`approved`、`rejected`、`all` |
 | `POST /api/admin/registration-applications/:id/review` | 管理员提交 `{decision: "approved" 或 "rejected", reason?: string}`，审核人与时间由后端确定 |
 | `POST /api/login-sessions` | `{requestId}` 创建或恢复同一事件，返回 `202` 和 `id`、状态、有效时间、`showGetButton` |
-| `GET /api/login-sessions/active` | `{session, showGetButton}`，当前账号未过期事件，供其他标签页与刷新后恢复 |
+| `GET /api/login-sessions/active` | `{session, showGetButton}`，用户主动点击后查询当前账号未过期事件 |
 | `GET /api/login-sessions/:id` | 当前账号的事件进度及 `showGetButton`，使用登录 Cookie |
 | `GET /api/login-sessions/:id/qr` | 当前账号的二维码 `image/png`；过期或 Redis 会话失效后不可读取 |
 | `GET /api/task-runs/latest` | 当前账号最近的任务，供执行日志恢复，独立于二维码有效期 |
@@ -216,3 +219,5 @@ npm run build
 所有写接口使用 `Content-Type: application/json`，并校验请求来源。
 
 测试使用模拟数据库、Redis 驱动、OSS 方法和临时目录，不需要真实云端凭据。覆盖注册唯一性、JWT 签发/验签/过期、退出清除 Cookie、实时权限、任务归属、同账号互斥、失败处理、存储就绪判定、过期与 PNG 响应，并检查单端口开发启动。
+
+二维码懒加载的浏览器回归可单独执行 `node --test tests/frontend-login-lazy.integration.mjs`。测试使用真实前端和模拟 API，覆盖刷新、新页面、点击恢复、请求编号复用、过期和账号切换。可用 `PLAYWRIGHT_MODULE` 与 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` 指定现有 Playwright 模块和 Chromium 路径；依赖不可用时明确跳过，不会自动安装。

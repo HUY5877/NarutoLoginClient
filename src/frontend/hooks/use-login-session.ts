@@ -16,7 +16,6 @@ interface ActiveResponse { session: Session | null; showGetButton: boolean }
 interface PendingIntent { requestId: string; createdAt: number; expiresAt: number }
 const intentLifetimeMs = 120_000;
 const pendingKey = (userId: string) => `naruto-login:pending:${userId}`;
-const sessionChangedKey = 'naruto-login:session-changed';
 const statusLabels: Record<Phase, string> = {
   idle: '等待生成二维码', restoring: '正在查询本账户的登录申请', submitting: '正在提交已保存的登录申请',
   query_failed: '登录申请状态暂时无法确认', queued: '申请已收到，正在排队',
@@ -211,8 +210,6 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
         }
         if (!active()) return;
         accept(current);
-        try { localStorage.setItem(sessionChangedKey, `${userId}:${Date.now()}`); }
-        catch { /* Focus synchronization also restores events. */ }
       }
       if (!active()) return;
       if (!current) { showInactive(result); return; }
@@ -220,11 +217,12 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
       while (active()) {
         accept(current);
         if (!isLive(current)) {
-          setPhase(current.status === 'failed' ? 'failed' : 'expired');
-          result = await readActive();
-          if (!active()) return;
-          if (result.session && isLive(result.session)) { current = result.session; continue; }
-          showInactive(result);
+          const ended: Session = { ...current, status: current.status === 'failed' ? 'failed' : 'expired' };
+          accept(ended);
+          setPhase(ended.status);
+          setError(ended.status === 'failed' ? ended.error || '本次准备失败，可以重新申请。' : '');
+          setRetrying(false);
+          updateAvailability(true);
           return;
         }
         const path = `/api/login-sessions/${encodeURIComponent(current.id)}`;
@@ -250,11 +248,13 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
         let response: Response;
         try { response = await retryRead(path, controller.signal, onRetry); }
         catch (caught) {
+          if (!active()) return;
           if (caught instanceof RequestError && [404, 410].includes(caught.status)) {
-            result = await readActive();
-            if (!active()) return;
-            if (result.session) { current = result.session; continue; }
-            showInactive(result);
+            const ended: Session = { ...current, status: 'expired' };
+            accept(ended);
+            setPhase('expired');
+            setRetrying(false);
+            updateAvailability(true);
             return;
           }
           throw caught;
@@ -297,19 +297,9 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     setError('');
     setRetrying(false);
     setPendingUntil(null);
-    updateAvailability(false);
-    if (userId) void run('recover');
-    const onFocus = () => { if (userId && !qrUrlRef.current) void run('recover'); };
-    const onStorage = (event: StorageEvent) => {
-      if (!userId) return;
-      if ((event.key === pendingKey(userId) && event.newValue) ||
-        (event.key === sessionChangedKey && event.newValue?.startsWith(`${userId}:`))) {
-        updateAvailability(false);
-        if (!qrUrlRef.current) void run('recover');
-      }
-    };
-    window.addEventListener('focus', onFocus);
-    window.addEventListener('storage', onStorage);
+    // Opening a page only resets its local view. The button initiates the
+    // authoritative server check, including recovery of a saved request ID.
+    updateAvailability(Boolean(userId));
     const clock = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => {
       generationRef.current += 1;
@@ -318,10 +308,8 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
       if (qrUrlRef.current) URL.revokeObjectURL(qrUrlRef.current);
       qrUrlRef.current = null;
       clearInterval(clock);
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('storage', onStorage);
     };
-  }, [userId, run, replaceQr, updateAvailability]);
+  }, [userId, replaceQr, updateAvailability]);
 
   const expiry = pendingUntil ?? (session && !['failed', 'expired'].includes(session.status) ? Date.parse(session.expiresAt) : null);
   useEffect(() => {
@@ -331,9 +319,17 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     controllerRef.current?.abort();
     runningRef.current = false;
     replaceQr(null);
-    updateAvailability(false);
-    void run('query');
-  }, [userId, ownerId, expiry, now, run, replaceQr, updateAvailability]);
+    if (sessionRef.current) {
+      const ended: Session = { ...sessionRef.current, status: 'expired' };
+      sessionRef.current = ended;
+      setSession(ended);
+    }
+    setPendingUntil(null);
+    setPhase('expired');
+    setError('');
+    setRetrying(false);
+    updateAvailability(true);
+  }, [userId, ownerId, expiry, now, replaceQr, updateAvailability]);
 
   function startLogin() {
     if (!userId || !canCreateRef.current || runningRef.current) return;
