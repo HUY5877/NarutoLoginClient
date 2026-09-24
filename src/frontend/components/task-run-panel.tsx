@@ -10,7 +10,7 @@ import { taskFailureMessage } from '../../shared/task-errors';
 
 const labels: Record<RunStatus, string> = {
   starting_emulator: '准备游戏环境', opening_game: '打开游戏', preparing_qr: '获取二维码',
-  waiting_scan: '等待扫码登录', running_daily: '正在刷日常', completed: '任务已完成',
+  waiting_scan: '等待扫码登录', finishing_login: '授权完成，正在进入游戏', running_daily: '正在刷日常', completed: '任务已完成',
   failed: '执行失败', interrupted: '执行已中断', expired: '等待登录超时',
 };
 const levelLabels = { INFO: '信息', WARNING: '注意', ERROR: '错误' };

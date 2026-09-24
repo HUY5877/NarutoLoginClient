@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { loginFailure } from '../../shared/task-errors';
 
 export type SessionStatus = 'queued' | 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'qr_ready' | 'failed' | 'expired';
-export type Phase = 'idle' | 'restoring' | 'submitting' | 'query_failed' | SessionStatus;
+export type Phase = 'idle' | 'restoring' | 'submitting' | 'query_failed' | 'login_confirmed' | SessionStatus;
 export interface Session {
   id: string;
   status: SessionStatus;
@@ -22,7 +22,7 @@ const statusLabels: Record<Phase, string> = {
   idle: '等待生成二维码', restoring: '正在查询本账户的登录申请', submitting: '正在提交已保存的登录申请',
   query_failed: '登录申请状态暂时无法确认', queued: '申请已收到，正在排队',
   starting_emulator: '正在准备独立游戏环境', opening_game: '正在打开火影忍者',
-  preparing_qr: '正在准备登录二维码', qr_ready: '模拟二维码已就绪',
+  preparing_qr: '正在准备登录二维码', qr_ready: '登录二维码已就绪', login_confirmed: '扫码授权已完成',
   failed: '这次准备未能完成', expired: '二维码已过期',
 };
 class RequestError extends Error {
@@ -109,6 +109,8 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
   const [showGetButton, setShowGetButton] = useState(false);
   const [pendingUntil, setPendingUntil] = useState<number | null>(null);
   const [acceptedRevision, setAcceptedRevision] = useState(0);
+  const [confirmedTaskId, setConfirmedTaskId] = useState<string | null>(null);
+  const confirmedTaskRef = useRef<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const controllerRef = useRef<AbortController | null>(null);
   const generationRef = useRef(0);
@@ -144,6 +146,8 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     setPhase('restoring');
     setError('');
     setRetrying(false);
+    confirmedTaskRef.current = null;
+    setConfirmedTaskId(null);
     replaceQr(null);
     const savedIntent = readPending(userId);
     setPendingUntil(savedIntent?.expiresAt ?? null);
@@ -302,6 +306,8 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     setRetrying(false);
     setPendingUntil(null);
     setAcceptedRevision(0);
+    confirmedTaskRef.current = null;
+    setConfirmedTaskId(null);
     // Opening a page only resets its local view. The button initiates the
     // authoritative server check, including recovery of a saved request ID.
     updateAvailability(Boolean(userId));
@@ -316,7 +322,8 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     };
   }, [userId, replaceQr, updateAvailability]);
 
-  const expiry = pendingUntil ?? (session && !['failed', 'expired'].includes(session.status) ? Date.parse(session.expiresAt) : null);
+  const expiry = session && session.id === confirmedTaskId ? null
+    : pendingUntil ?? (session && !['failed', 'expired'].includes(session.status) ? Date.parse(session.expiresAt) : null);
   useEffect(() => {
     if (!userId || ownerId !== userId || !expiry || now < expiry || expiryCheckedRef.current === expiry) return;
     expiryCheckedRef.current = expiry;
@@ -354,11 +361,27 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     }
   }
   function handleQrError() {
+    if (sessionRef.current?.id === confirmedTaskRef.current) return;
     replaceQr(null);
     updateAvailability(false);
     setPhase('query_failed');
     setError('二维码图片加载失败，请重试查询。');
   }
+  const confirmLogin = useCallback((taskId: string, finished = false) => {
+    if (!userId || sessionRef.current?.id !== taskId) return;
+    updateAvailability(finished);
+    if (confirmedTaskRef.current === taskId) return;
+    confirmedTaskRef.current = taskId;
+    setConfirmedTaskId(taskId);
+    generationRef.current += 1;
+    controllerRef.current?.abort();
+    runningRef.current = false;
+    replaceQr(null);
+    setPendingUntil(null);
+    setPhase('login_confirmed');
+    setError('');
+    setRetrying(false);
+  }, [userId, replaceQr, updateAvailability]);
   const currentOwner = Boolean(userId && ownerId === userId);
   const visiblePhase = currentOwner ? phase : 'idle';
   const visibleSession = currentOwner ? session : null;
@@ -372,7 +395,7 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     error: currentOwner ? error : '', retrying: currentOwner && retrying, pending,
     showGetButton: currentOwner && showGetButton, canRetryQuery: currentOwner && visiblePhase === 'query_failed', canResumePending,
     remainingSeconds, countdown, isError: ['failed', 'expired', 'query_failed'].includes(visiblePhase),
-    statusLabel: statusLabels[visiblePhase], startLogin,
+    statusLabel: statusLabels[visiblePhase], startLogin, confirmLogin,
     retryQuery: () => run(userId && readPending(userId) ? 'recover' : 'query'), handleQrError,
   };
 }

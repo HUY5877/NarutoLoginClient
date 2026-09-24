@@ -11,6 +11,8 @@ const taskFailureMessages = {
   unexpected_error: '任务执行异常，请稍后重新申请。',
   login_timeout: '扫码登录等待超时，请重新申请。',
   login_failed: '未能确认游戏登录成功，请重新申请。',
+  login_finish_timeout: '扫码授权已完成，但进入游戏超时，请重新申请。',
+  login_finish_failed: '扫码授权已完成，但进入游戏失败，请重新申请。',
   daily_timeout: '日常任务执行超时，请查看执行日志。',
   daily_failed: '日常任务执行失败，请查看执行日志。',
   instance_cleanup_failed: '游戏环境清理失败，请联系管理员检查模拟器状态。',

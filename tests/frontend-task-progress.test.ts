@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deriveTaskProgress, selectProgressRun, type ProgressInput } from '../src/frontend/lib/task-progress';
+import { deriveTaskProgress, hasGameAuthorization, selectProgressRun, type ProgressInput } from '../src/frontend/lib/task-progress';
 import { emptyTaskRun, type RunStatus } from '../src/frontend/lib/task-run';
 import type { Session } from '../src/frontend/hooks/use-login-session';
 
@@ -127,4 +127,22 @@ test('restored failed login without retained run data never appears to be prepar
     view: { ...emptyTaskRun(), task: { ...session, status: 'failed' }, unavailable: true } });
   assert.deepEqual(states(current), ['completed', 'failed', 'pending']);
   assert.equal(deriveTaskProgress(current).summary, '二维码获取失败');
+});
+
+test('confirmed authorization ends QR waiting before daily execution and survives the original QR deadline', () => {
+  const finishing = input('finishing_login', { phase: 'expired', session: { ...session, status: 'expired' } });
+  finishing.view.run!.authorizedAt = at;
+  assert.equal(hasGameAuthorization(finishing.view.run), true);
+  assert.deepEqual(states(finishing), ['completed', 'completed', 'active']);
+  assert.equal(deriveTaskProgress(finishing).summary, '正在进入游戏');
+  assert.equal(deriveTaskProgress({ ...finishing, phase: 'idle', session: null }).summary, '正在进入游戏');
+  finishing.view.run!.status = 'failed';
+  finishing.view.run!.errorCode = 'login_finish_timeout';
+  assert.equal(hasGameAuthorization(finishing.view.run), true);
+  assert.deepEqual(states(finishing), ['completed', 'completed', 'failed']);
+  assert.equal(deriveTaskProgress(finishing).steps[2].description, '扫码授权已完成，但进入游戏超时，请重新申请。');
+  assert.equal(hasGameAuthorization(input('waiting_scan').view.run), false);
+  const mock = input('completed'); mock.view.run!.startedAt = null;
+  assert.equal(hasGameAuthorization(mock.view.run), false);
+  assert.equal(hasGameAuthorization(input('running_daily').view.run), true);
 });

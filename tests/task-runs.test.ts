@@ -215,3 +215,17 @@ test('失败任务到二维码有效期后仍保留失败状态与独立运行�
   assert.equal(result.run?.errorCode, 'worker_clock_skew');
   assert.deepEqual(result.logs, []);
 });
+
+test('授权完成与登录收尾状态可独立于二维码到期读取，授权时间只接受有效时间戳', async () => {
+  const f = fixture();
+  f.setSnapshot([JSON.stringify({ ...run, status: 'finishing_login', authorizedAt: at, startedAt: null }), [], '', 0, 0]);
+  const result = await f.service.getEvents(id, owner);
+  assert.equal(result.task.status, 'expired');
+  assert.equal(result.run?.status, 'finishing_login');
+  assert.equal(result.run?.authorizedAt, at);
+  assert.equal(result.run?.startedAt, null);
+  f.setSnapshot([JSON.stringify({ ...run, status: 'failed', authorizedAt: at, startedAt: null, errorCode: 'login_finish_timeout' }), [], '', 0, 0]);
+  assert.equal((await f.service.getEvents(id, owner)).run?.authorizedAt, at);
+  f.setSnapshot([JSON.stringify({ ...run, authorizedAt: 'private-invalid-value' }), [], '', 0, 0]);
+  await assert.rejects(f.service.getEvents(id, owner), { code: 'TASK_RUN_DATA_INVALID' });
+});

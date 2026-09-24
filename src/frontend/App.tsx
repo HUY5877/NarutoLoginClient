@@ -67,7 +67,8 @@ import { useLoginSession } from '@/hooks/use-login-session';
 import { useAuth } from '@/hooks/use-auth';
 import { useTaskRun } from '@/hooks/use-task-run';
 import { TaskRunPanel } from '@/components/task-run-panel';
-import { deriveTaskProgress, selectProgressRun } from '@/lib/task-progress';
+import { deriveTaskProgress, hasGameAuthorization, selectProgressRun } from '@/lib/task-progress';
+import { isRunTerminal } from '@/lib/task-run';
 
 function LoginHelp() {
   return (
@@ -87,7 +88,7 @@ function LoginHelp() {
           {[
             ['登录并获取二维码', '注册申请审批通过后，登录账户并点击「生成登录二维码」。同账户的多个页面共用一份有效申请。'],
             ['等待准备完成', '保持页面打开，页面会自动更新准备进度和二维码。'],
-            ['查看本次二维码', '当前是模拟环境，只能预览流程，扫描后不能登录真实账号。'],
+            ['扫码授权并执行', '使用手机 QQ 扫描二维码并确认授权；进入游戏后自动继续执行日常脚本。'],
           ].map(([title, description], index) => (
             <Item key={title} role="listitem" size="sm" className="items-start px-0">
               <ItemMedia variant="icon" className="size-8 rounded-lg bg-primary/10 text-primary">
@@ -132,6 +133,7 @@ export default function App() {
     retryQuery,
     handleQrError,
     acceptedRevision,
+    confirmLogin,
   } = useLoginSession(auth.user?.id ?? null, auth.handleUnauthorized);
   const taskRun = useTaskRun(auth.user?.id ?? null, session, auth.handleUnauthorized);
   useEffect(() => { setSubmissionRevision(null); }, [auth.user?.id]);
@@ -142,10 +144,21 @@ export default function App() {
     setAuthOpen(true);
   }
 
-  const ready = phase === 'qr_ready' && Boolean(qrUrl);
-  const progressInput = { phase, session, qrReady: ready, view: taskRun, awaitingSubmission };
-  const progress = deriveTaskProgress(progressInput);
+  const progressInput = { phase, session, qrReady: phase === 'qr_ready' && Boolean(qrUrl), view: taskRun, awaitingSubmission };
   const visibleRun = selectProgressRun(progressInput);
+  const currentRun = visibleRun.run;
+  const authorizedRun = hasGameAuthorization(currentRun) && (session?.id === currentRun?.taskId
+    || !session && phase === 'idle' && ['finishing_login', 'running_daily'].includes(currentRun?.status ?? ''));
+  const authorizationComplete = phase === 'login_confirmed' || authorizedRun;
+  const ready = progressInput.qrReady && !authorizationComplete;
+  const qrPending = pending && !authorizationComplete;
+  const qrError = isError && !authorizationComplete;
+  const progress = deriveTaskProgress({ ...progressInput, qrReady: ready });
+  useEffect(() => {
+    if (session && currentRun?.taskId === session.id && hasGameAuthorization(currentRun)) {
+      confirmLogin(session.id, isRunTerminal(currentRun.status));
+    }
+  }, [session?.id, currentRun?.taskId, currentRun?.status, currentRun?.authorizedAt, currentRun?.startedAt, confirmLogin]);
   const stepIcons = { submission: ArrowRight, qr: QrCode, script: ListChecks };
 
   return (
@@ -230,33 +243,35 @@ export default function App() {
             <Separator />
 
             <CardContent className="flex flex-col items-center px-6 py-8 sm:px-8 sm:py-9">
-              <div className="qr-frame w-full max-w-64" data-ready={ready ? 'true' : undefined} aria-busy={pending}>
+              <div className="qr-frame w-full max-w-64" data-ready={ready ? 'true' : undefined} aria-busy={qrPending}>
                 <AspectRatio ratio={1} className="overflow-hidden rounded-xl border border-dashed border-foreground/20 bg-transparent">
                   {ready && qrUrl ? (
                     <img
                       className="size-full object-contain"
                       src={qrUrl}
-                      alt="本地模拟登录二维码，仅用于流程演示，不能登录真实账号"
+                      alt="火影忍者 QQ 登录二维码，请使用手机 QQ 扫码授权"
                       onError={handleQrError}
                     />
                   ) : (
                     <>
-                      {pending && <Skeleton className="absolute inset-0 size-full rounded-none bg-white/20 motion-reduce:animate-none" />}
+                      {qrPending && <Skeleton className="absolute inset-0 size-full rounded-none bg-white/20 motion-reduce:animate-none" />}
                       <Empty className="relative h-full gap-4 border-0 p-5 md:p-5">
                         <EmptyHeader className="gap-2.5">
-                          <EmptyMedia variant="icon" className={`mb-1 size-16 rounded-2xl ${isError ? 'bg-destructive/10 text-destructive' : 'qr-emblem text-muted-foreground'}`}>
-                            {pending ? <Spinner aria-hidden="true" className="size-6 motion-reduce:animate-none" />
+                          <EmptyMedia variant="icon" className={`mb-1 size-16 rounded-2xl ${qrError ? 'bg-destructive/10 text-destructive' : 'qr-emblem text-muted-foreground'}`}>
+                            {authorizationComplete ? <CheckCheck className="text-primary" aria-hidden="true" />
+                              : qrPending ? <Spinner aria-hidden="true" className="size-6 motion-reduce:animate-none" />
                               : phase === 'expired' ? <TimerOff aria-hidden="true" />
                                 : isError ? <CircleAlert aria-hidden="true" />
                                   : <img src="/icons/leaf-village.svg" alt="" width="42" height="42" aria-hidden="true" />}
                           </EmptyMedia>
                           <EmptyTitle className="text-base">
-                            {phase === 'expired' ? '二维码已过期'
+                            {authorizationComplete ? '扫码授权已完成' : phase === 'expired' ? '二维码已过期'
                               : canRetryQuery ? '等待查询确认' : isError ? '二维码准备失败'
                                 : phase === 'restoring' ? '正在查询登录申请' : pending ? '正在准备二维码' : '你的木叶通行证'}
                           </EmptyTitle>
                           <EmptyDescription className="text-sm leading-6">
-                            {canRetryQuery ? canResumePending ? '点击「继续本次申请」恢复已保存的申请' : '点击「重试查询」继续查看本次申请'
+                            {authorizationComplete ? currentRun?.status === 'finishing_login' ? '正在进入游戏，无需再次扫码' : '无需再次扫码，请在执行记录中查看后续进度'
+                              : canRetryQuery ? canResumePending ? '点击「继续本次申请」恢复已保存的申请' : '点击「重试查询」继续查看本次申请'
                               : isError ? '确认本次申请结束后，可以重新获取'
                               : pending ? '保持页面打开，二维码准备好后会自动显示'
                                 : auth.user ? '点击下方按钮，生成本次登录二维码' : '先登录忍者日常账户，再获取二维码'}
@@ -269,13 +284,13 @@ export default function App() {
               </div>
 
               <div className="mt-5 flex min-h-6 flex-wrap items-center justify-center gap-x-3 gap-y-2 text-sm" role="status" aria-live="polite" aria-atomic="true">
-                <span className={`inline-flex items-center gap-2 ${isError ? 'text-destructive' : 'text-muted-foreground'}`}>
-                  {pending ? <Spinner aria-hidden="true" className="size-3.5 motion-reduce:animate-none" />
-                    : ready ? <Check className="size-4 text-primary" aria-hidden="true" />
+                <span className={`inline-flex items-center gap-2 ${qrError ? 'text-destructive' : 'text-muted-foreground'}`}>
+                  {qrPending ? <Spinner aria-hidden="true" className="size-3.5 motion-reduce:animate-none" />
+                    : ready || authorizationComplete ? <Check className="size-4 text-primary" aria-hidden="true" />
                       : <Clock3 className="size-3.5" aria-hidden="true" />}
-                  {auth.loading ? '正在读取账户状态' : !auth.user ? '登录后即可获取二维码' : retrying ? '连接暂时中断，正在重试…' : statusLabel}
+                  {auth.loading ? '正在读取账户状态' : !auth.user ? '登录后即可获取二维码' : authorizationComplete ? progress.summary : retrying ? '连接暂时中断，正在重试…' : statusLabel}
                 </span>
-                {auth.user && remainingSeconds > 0 && !showGetButton && (
+                {auth.user && !authorizationComplete && remainingSeconds > 0 && !showGetButton && (
                   <Badge variant="secondary" className="gap-1.5 font-mono tabular-nums" aria-label={`剩余 ${remainingSeconds} 秒`}>
                     <Clock3 aria-hidden="true" />
                     {countdown}
@@ -283,7 +298,7 @@ export default function App() {
                 )}
               </div>
 
-              {error && (phase === 'failed' || canRetryQuery) && (
+              {!authorizationComplete && error && (phase === 'failed' || canRetryQuery) && (
                 <Alert variant="destructive" className="mt-5">
                   <CircleAlert aria-hidden="true" />
                   <AlertTitle>{canRetryQuery ? '申请状态暂时无法确认' : '本次二维码准备失败'}</AlertTitle>
@@ -291,7 +306,7 @@ export default function App() {
                 </Alert>
               )}
 
-              {!auth.loading && (!auth.user || showGetButton) && <Button
+              {!auth.loading && (!auth.user || showGetButton && (!authorizationComplete || currentRun && isRunTerminal(currentRun.status))) && <Button
                 type="button"
                 size="lg"
                 className="login-action mt-6 h-12 w-full max-w-sm gap-2 text-sm font-semibold"
@@ -303,7 +318,7 @@ export default function App() {
                 {!auth.user ? '登录后获取二维码' : phase === 'idle' ? '生成登录二维码' : '重新生成二维码'}
                 {phase === 'idle' && !auth.loading && <ArrowRight className="ml-1" aria-hidden="true" />}
               </Button>}
-              {canRetryQuery && auth.user && (
+              {!authorizationComplete && canRetryQuery && auth.user && (
                 <Button type="button" variant="outline" size="lg" className="mt-6 h-12 w-full max-w-sm gap-2 bg-white/40"
                   disabled={auth.busy || pending} onClick={() => { void retryQuery(); }}>
                   <RefreshCw aria-hidden="true" />{canResumePending ? '继续本次申请' : '重试查询'}
@@ -319,9 +334,9 @@ export default function App() {
             <CardFooter className="login-card-footer flex-col items-stretch gap-4 border-t px-6 py-5 sm:px-8">
               <Alert className="border-0 bg-transparent p-0 text-muted-foreground">
                 <CircleAlert aria-hidden="true" />
-                <AlertTitle className="text-sm font-medium text-foreground">当前为模拟登录演示</AlertTitle>
+                <AlertTitle className="text-sm font-medium text-foreground">扫码后自动继续执行</AlertTitle>
                 <AlertDescription className="text-sm leading-6">
-                  二维码仅用于预览登录流程，不能授权或登录真实账号。
+                  在手机 QQ 确认授权后，系统会进入游戏并继续执行日常脚本，进度显示在下方。
                 </AlertDescription>
               </Alert>
               {session && (
@@ -399,7 +414,7 @@ export default function App() {
                   <AccordionItem value="simulation">
                     <AccordionTrigger className="text-sm font-medium">现在可以登录游戏吗？</AccordionTrigger>
                     <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                      暂时不可以。当前提供模拟二维码，用于体验申请、等待和显示二维码的完整流程。
+                      执行服务器生成游戏二维码后，使用手机 QQ 扫码并确认授权即可。授权完成后无需再次扫码，系统会继续进入游戏和执行日常脚本。
                     </AccordionContent>
                   </AccordionItem>
                   <AccordionItem value="account">

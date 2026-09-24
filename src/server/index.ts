@@ -84,5 +84,5 @@ server.once('error', (error: NodeJS.ErrnoException) => {
   void shutdown();
 });
 server.listen(config.port, config.host, () => {
-  console.log(`忍者日常客户端 http://${config.host}:${config.port} · 前端/API 共用端口 · ${config.storageDriver} 存储 · 模拟登录`);
+  console.log(`忍者日常客户端 http://${config.host}:${config.port} · 前端/API 共用端口 · ${config.storageDriver} 存储 · 扫码登录`);
 });

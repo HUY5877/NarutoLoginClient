@@ -4,13 +4,14 @@ import type { LoginEvent, LoginEventStore } from './database.js';
 import { ApiError } from './errors.js';
 import type { Status } from './queue.js';
 
-export type RunStatus = 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'waiting_scan'
+export type RunStatus = 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'waiting_scan' | 'finishing_login'
   | 'running_daily' | 'completed' | 'failed' | 'interrupted' | 'expired';
 export interface TaskRun {
   taskId: string;
   status: RunStatus;
   updatedAt: string;
   startedAt: string | null;
+  authorizedAt?: string;
   finishedAt: string | null;
   actionIndex?: number;
   actionTotal?: number;
@@ -43,7 +44,7 @@ export interface RunRedisDriver {
   destroy(): void;
 }
 interface Options { store?: EventReader; createDriver?: () => RunRedisDriver; now?: () => number }
-const runStatuses = new Set<RunStatus>(['starting_emulator', 'opening_game', 'preparing_qr', 'waiting_scan',
+const runStatuses = new Set<RunStatus>(['starting_emulator', 'opening_game', 'preparing_qr', 'waiting_scan', 'finishing_login',
   'running_daily', 'completed', 'failed', 'interrupted', 'expired']);
 const taskIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const streamIdPattern = /^(0|[1-9][0-9]{0,19})-(0|[1-9][0-9]{0,19})$/;
@@ -83,12 +84,14 @@ function parseRun(raw: unknown, taskId: string): TaskRun | null {
   const value = parseObject(raw);
   if (!value || value.taskId !== taskId || !runStatuses.has(value.status as RunStatus) || !timestamp(value.updatedAt)
     || value.startedAt !== null && !timestamp(value.startedAt) || value.finishedAt !== null && !timestamp(value.finishedAt)
+    || value.authorizedAt !== undefined && !timestamp(value.authorizedAt)
     || !validProgress(value)
     || value.errorCode !== undefined && (typeof value.errorCode !== 'string' || !/^[a-z0-9_]{1,64}$/.test(value.errorCode))) {
     throw invalidData();
   }
   return { taskId, status: value.status as RunStatus, updatedAt: value.updatedAt, startedAt: value.startedAt as string | null,
     finishedAt: value.finishedAt as string | null,
+    ...(value.authorizedAt !== undefined ? { authorizedAt: value.authorizedAt as string } : {}),
     ...(value.actionIndex !== undefined ? { actionIndex: value.actionIndex as number } : {}),
     ...(value.actionTotal !== undefined ? { actionTotal: value.actionTotal as number } : {}),
     ...(value.errorCode !== undefined ? { errorCode: value.errorCode as string } : {}) };

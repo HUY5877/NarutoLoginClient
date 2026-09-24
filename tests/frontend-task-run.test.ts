@@ -182,3 +182,13 @@ test('latest without a task stays idle and repeated same-task observations do no
   assert.equal(requests, 2);
   tracker.dispose();
 });
+
+test('run parser preserves authorization through finishing and terminal failure without treating it as daily start', () => {
+  const authorizedAt = new Date(now).toISOString();
+  const finishing = events({ run: { ...events().run!, status: 'finishing_login', authorizedAt, startedAt: null } });
+  assert.equal(parseRunEvents(finishing, task.id, '0-0').run?.authorizedAt, authorizedAt);
+  assert.equal(parseRunEvents(finishing, task.id, '0-0').run?.startedAt, null);
+  const failed = events({ run: { ...finishing.run!, status: 'failed', errorCode: 'login_finish_failed' } });
+  assert.equal(parseRunEvents(failed, task.id, '0-0').run?.authorizedAt, authorizedAt);
+  assert.throws(() => parseRunEvents(events({ run: { ...finishing.run!, authorizedAt: 'invalid' } }), task.id, '0-0'));
+});

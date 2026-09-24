@@ -1,9 +1,10 @@
-export type RunStatus = 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'waiting_scan'
+export type RunStatus = 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'waiting_scan' | 'finishing_login'
   | 'running_daily' | 'completed' | 'failed' | 'interrupted' | 'expired';
 export interface RunTask { id: string; createdAt: string; expiresAt: string; status: string }
 export interface TaskRun {
   taskId: string; status: RunStatus; updatedAt: string;
   startedAt: string | null; finishedAt: string | null;
+  authorizedAt?: string;
   actionIndex?: number; actionTotal?: number; errorCode?: string;
 }
 export interface RunLog {
@@ -22,7 +23,7 @@ export const emptyTaskRun = (): TaskRunView => ({
   task: null, run: null, logs: [], loading: false, polling: false,
   unavailable: false, truncated: false, error: '',
 });
-const statuses: RunStatus[] = ['starting_emulator', 'opening_game', 'preparing_qr', 'waiting_scan',
+const statuses: RunStatus[] = ['starting_emulator', 'opening_game', 'preparing_qr', 'waiting_scan', 'finishing_login',
   'running_daily', 'completed', 'failed', 'interrupted', 'expired'];
 export const isRunTerminal = (status: RunStatus) => ['completed', 'failed', 'interrupted', 'expired'].includes(status);
 const cursorPattern = /^\d+-\d+$/;
@@ -46,6 +47,7 @@ export function parseRunEvents(value: unknown, taskId: string, after: string): R
     || !statuses.includes(value.run.status as RunStatus) || !date(value.run.updatedAt)
     || (value.run.startedAt !== null && !date(value.run.startedAt))
     || (value.run.finishedAt !== null && !date(value.run.finishedAt))
+    || (value.run.authorizedAt !== undefined && !date(value.run.authorizedAt))
     || !action(value.run.actionIndex) || !action(value.run.actionTotal)
     || (value.run.errorCode !== undefined && typeof value.run.errorCode !== 'string'))) throw new Error('invalid task run');
   let previous = after;

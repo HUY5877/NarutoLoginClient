@@ -1,5 +1,5 @@
 import type { Phase, Session } from '../hooks/use-login-session';
-import { emptyTaskRun, type TaskRunView } from './task-run';
+import { emptyTaskRun, type TaskRun, type TaskRunView } from './task-run';
 import { loginFailure, taskFailureMessage } from '../../shared/task-errors';
 
 export type StepState = 'pending' | 'active' | 'completed' | 'failed';
@@ -15,6 +15,9 @@ export interface ProgressInput {
   qrReady: boolean;
   view: TaskRunView;
   awaitingSubmission?: boolean;
+}
+export function hasGameAuthorization(run: TaskRun | null): boolean {
+  return Boolean(run && (run.authorizedAt || run.startedAt || ['finishing_login', 'running_daily'].includes(run.status)));
 }
 export function selectProgressRun({ phase, session, view, awaitingSubmission }: ProgressInput): TaskRunView {
   // A previous task may still be polling while the user submits another request.
@@ -51,7 +54,7 @@ export function deriveTaskProgress(input: ProgressInput) {
   const [submission, qr, script] = steps;
   submission.state = 'completed';
   const scriptStarted = Boolean(run?.startedAt) || run?.status === 'running_daily';
-  if (scriptStarted && run) {
+  if (hasGameAuthorization(run) && run) {
     qr.state = 'completed';
     qr.description = '二维码已获取，扫码登录已确认';
     if (run.status === 'completed') {
@@ -63,6 +66,10 @@ export function deriveTaskProgress(input: ProgressInput) {
       script.description = taskFailureMessage(run.errorCode,
         run.status === 'interrupted' ? '脚本执行已中断，请查看下方执行记录。' : '脚本执行失败，请查看下方执行记录。');
       summary = '脚本执行失败'; tone = 'danger'; hint = script.description;
+    } else if (!scriptStarted) {
+      script.state = 'active';
+      script.description = '扫码授权已完成，正在进入游戏并准备执行日常脚本';
+      summary = '正在进入游戏'; hint = '授权已经完成，无需再次扫码；进入游戏后继续执行日常。';
     } else {
       script.state = 'active';
       script.description = '正在执行日常脚本，关键进度会持续更新';
