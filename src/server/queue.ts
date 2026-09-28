@@ -3,6 +3,7 @@ import { createClient } from 'redis';
 import type { Config } from './config.js';
 import { ApiError } from './errors.js';
 import { loginFailure, type TaskFailureCode } from '../shared/task-errors.js';
+import { parseUserOptions, type UserOptions } from '../shared/user-options.js';
 
 export type Status = 'queued' | 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'qr_ready' | 'failed' | 'expired';
 export interface Task {
@@ -11,10 +12,14 @@ export interface Task {
   createdAt: string;
   expiresAt: string;
   simulation: true;
+  userOptions?: UserOptions;
   error?: string;
   errorCode?: TaskFailureCode;
 }
-export interface Submission { id: string; userId: string; accessToken: string; createdAt: string; expiresAt: string }
+export interface Submission {
+  id: string; userId: string; accessToken: string; createdAt: string; expiresAt: string;
+  userOptions: UserOptions;
+}
 interface StoredTask extends Task { userId?: string; tokenHash: string }
 type QueueConfig = Pick<Config, 'redisUrl' | 'redisQueueKey' | 'timeoutMs' | 'ossPrefix'>;
 interface EvalOptions { keys: string[]; arguments: string[] }
@@ -112,6 +117,11 @@ function parseSession(raw: string, id: string, userId?: string): StoredTask {
     || Date.parse(record.expiresAt) <= Date.parse(record.createdAt)) {
     throw invalidSession();
   }
+  if (record.userOptions !== undefined) {
+    const userOptions = parseUserOptions(record.userOptions);
+    if (!userOptions) throw invalidSession();
+    record.userOptions = userOptions;
+  }
   return record;
 }
 
@@ -182,9 +192,9 @@ export class TaskService {
     const ttl = Date.parse(task.expiresAt) - now;
     if (!Number.isFinite(ttl) || ttl <= 0) throw new ApiError(410, '登录申请已过期，请重新生成二维码。');
     const record = JSON.stringify({ id: task.id, userId: task.userId, status: 'queued', createdAt: task.createdAt,
-      expiresAt: task.expiresAt, simulation: true, tokenHash: hash(task.accessToken) });
+      expiresAt: task.expiresAt, simulation: true, tokenHash: hash(task.accessToken), userOptions: task.userOptions });
     const payload = JSON.stringify({ version: 1, id: task.id, createdAt: task.createdAt,
-      expiresAt: task.expiresAt, objectKey: `${this.config.ossPrefix}/${task.id}/qr.png` });
+      expiresAt: task.expiresAt, objectKey: `${this.config.ossPrefix}/${task.id}/qr.png`, userOptions: task.userOptions });
     const submittedLog = JSON.stringify({ time: task.createdAt, level: 'INFO',
       message: '登录申请已提交，等待执行服务器领取任务。' });
     const result = await this.request((driver, signal) => driver.eval(enqueueScript, {
@@ -232,6 +242,7 @@ export class TaskService {
   private publicTask(record: StoredTask): Task {
     return { id: record.id, status: record.status === 'failed' ? 'failed' : this.now() >= Date.parse(record.expiresAt) ? 'expired' : record.status,
       createdAt: record.createdAt, expiresAt: record.expiresAt, simulation: true,
+      ...(record.userOptions ? { userOptions: record.userOptions } : {}),
       ...(record.status === 'failed' ? loginFailure(record.errorCode) : {}) };
   }
 

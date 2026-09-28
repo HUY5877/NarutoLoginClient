@@ -69,6 +69,7 @@ import { useTaskRun } from '@/hooks/use-task-run';
 import { TaskRunPanel } from '@/components/task-run-panel';
 import { deriveTaskProgress, hasGameAuthorization, isUnclaimedQueueTimeout, selectProgressRun } from '@/lib/task-progress';
 import { isRunTerminal } from '@/lib/task-run';
+import { DEFAULT_USER_OPTIONS, parseUserOptions } from '../shared/user-options';
 
 function LoginHelp() {
   return (
@@ -134,6 +135,9 @@ export default function App() {
     handleQrError,
     acceptedRevision,
     confirmLogin,
+    userOptions,
+    canEditUserOptions,
+    setEquipmentStamina,
   } = useLoginSession(auth.user?.id ?? null, auth.handleUnauthorized);
   const taskRun = useTaskRun(auth.user?.id ?? null, session, auth.handleUnauthorized);
   useEffect(() => { setSubmissionRevision(null); }, [auth.user?.id]);
@@ -150,6 +154,10 @@ export default function App() {
   const authorizedRun = hasGameAuthorization(currentRun) && (session?.id === currentRun?.taskId
     || !session && phase === 'idle' && ['finishing_login', 'running_daily'].includes(currentRun?.status ?? ''));
   const authorizationComplete = phase === 'login_confirmed' || authorizedRun;
+  const restoringAuthorizedRun = !session && authorizedRun;
+  const displayedUserOptions = restoringAuthorizedRun
+    ? parseUserOptions(visibleRun.task?.userOptions) ?? DEFAULT_USER_OPTIONS : userOptions;
+  const canEditShownOptions = canEditUserOptions && !restoringAuthorizedRun;
   const queueTimedOut = phase === 'expired' && isUnclaimedQueueTimeout(session, currentRun);
   const ready = progressInput.qrReady && !authorizationComplete;
   const qrPending = pending && !authorizationComplete;
@@ -306,6 +314,26 @@ export default function App() {
                   <AlertTitle>{canRetryQuery ? '申请状态暂时无法确认' : queueTimedOut ? '排队等待超时' : '本次二维码准备失败'}</AlertTitle>
                   <AlertDescription>{error}</AlertDescription>
                 </Alert>
+              )}
+
+              {auth.user && (
+                <label className="mt-6 flex w-full max-w-sm items-start gap-3 rounded-xl border border-primary/15 bg-white/40 px-4 py-3">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 size-4 shrink-0 accent-primary disabled:cursor-not-allowed"
+                    checked={displayedUserOptions.equipmentStamina}
+                    disabled={auth.busy || !canEditShownOptions}
+                    onChange={event => setEquipmentStamina(event.target.checked)}
+                    aria-labelledby="equipment-stamina-label"
+                    aria-describedby="equipment-stamina-help"
+                  />
+                  <span>
+                    <span id="equipment-stamina-label" className="block text-sm font-medium">装备栏体力刷取</span>
+                    <span id="equipment-stamina-help" className="mt-1 block text-xs leading-5 text-muted-foreground">
+                      {canEditShownOptions ? '开启后，本次日常会进行装备栏体力刷取。' : '本次申请的选择已保存，重新申请时可修改。'}
+                    </span>
+                  </span>
+                </label>
               )}
 
               {!auth.loading && (!auth.user || showGetButton && (!authorizationComplete || currentRun && isRunTerminal(currentRun.status))) && <Button

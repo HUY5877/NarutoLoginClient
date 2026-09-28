@@ -3,6 +3,7 @@ import type { Config } from './config.js';
 import type { LoginEvent, LoginEventStore } from './database.js';
 import { ApiError } from './errors.js';
 import type { Status } from './queue.js';
+import type { UserOptions } from '../shared/user-options.js';
 
 export type RunStatus = 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'waiting_scan' | 'finishing_login'
   | 'running_daily' | 'completed' | 'failed' | 'interrupted' | 'expired';
@@ -25,7 +26,7 @@ export interface TaskLog {
   actionIndex?: number;
   actionTotal?: number;
 }
-export interface RunTask { id: string; createdAt: string; expiresAt: string; status: Status }
+export interface RunTask { id: string; createdAt: string; expiresAt: string; status: Status; userOptions: UserOptions }
 export interface TaskRunEvents {
   task: RunTask;
   run: TaskRun | null;
@@ -146,6 +147,7 @@ export class TaskRunService {
   }
   private publicTask(event: LoginEvent): RunTask {
     return { id: event.id, createdAt: event.createdAt, expiresAt: event.expiresAt,
+      userOptions: { ...event.userOptions },
       status: event.status === 'failed' ? 'failed' : Date.parse(event.expiresAt) <= this.now() ? 'expired' : event.status };
   }
   async getLatest(userId: string): Promise<{ task: RunTask | null }> {

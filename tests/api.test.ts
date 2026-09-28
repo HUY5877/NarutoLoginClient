@@ -478,7 +478,8 @@ test('已认证但未配置 Redis 时申请明确返回 503', async () => {
 test('任务日志接口使用 Cookie 身份，独立于二维码过期且不调用登录申请恢复或 OSS', async () => {
   const unexpected = async (): Promise<never> => assert.fail('run logs must not touch login dispatch or QR storage');
   const calls: unknown[][] = [];
-  const task = { id, status: 'expired' as const, createdAt: baseTask.createdAt, expiresAt: baseTask.createdAt };
+  const task = { id, status: 'expired' as const, createdAt: baseTask.createdAt, expiresAt: baseTask.createdAt,
+    userOptions: { equipmentStamina: false } };
   const result = { task, run: null, logs: [], nextCursor: '123-4', hasMore: false, truncated: false };
   await withApi({ events: events({ create: unexpected, getForUser: unexpected, getActive: unexpected, recordStatus: unexpected }),
     storage: { exists: unexpected, read: unexpected }, runs: {
@@ -515,6 +516,30 @@ test('日志游标拒绝重复参数和非法范围，服务错误仅返回脱�
     assert.equal(response.status, 500);
     assert.doesNotMatch(await response.text(), /secret|redis URL/);
     assert.equal((await fetch(`${base}/api/login-sessions/active`, { headers })).status, 200);
+  });
+});
+
+test('用户选项通过统一 JSON 传入服务，兼容旧请求且严格区分布尔开关', async () => {
+  const received: unknown[] = [];
+  await withApi({ events: events({ create: async (_userId, _requestId, userOptions) => {
+    received.push(userOptions);
+    return { ...baseTask, userOptions };
+  } }) }, async base => {
+    for (const body of [{}, { userOptions: {} }, { userOptions: { equipmentStamina: true } },
+      { userOptions: { equipmentStamina: false } }]) {
+      const response = await fetch(`${base}/api/login-sessions`, { ...post, body: JSON.stringify({ requestId, ...body }) });
+      assert.equal(response.status, 202);
+      assert.deepEqual((await response.json() as Task).userOptions, received.at(-1));
+    }
+    assert.deepEqual(received, [{ equipmentStamina: true }, { equipmentStamina: true },
+      { equipmentStamina: true }, { equipmentStamina: false }]);
+    for (const userOptions of [null, [], 'false', true, { equipmentStamina: 'false' },
+      { equipmentStamina: 0 }, { equipmentStamina: null }, { equipmentStamina: false, workerId: 'forged' }]) {
+      const response = await fetch(`${base}/api/login-sessions`, { ...post, body: JSON.stringify({ requestId, userOptions }) });
+      assert.equal(response.status, 400, JSON.stringify(userOptions));
+      assert.equal((await response.json() as { code: string }).code, 'INVALID_USER_OPTIONS');
+    }
+    assert.equal(received.length, 4, 'invalid options must not reserve or dispatch a task');
   });
 });
 

@@ -21,11 +21,13 @@ function candidate(sequence = 1, userId = owner, offset = 0): LoginEvent {
     userId, requestId: `request-${sequence}`, status: 'queued', accessToken: 'ab'.repeat(32),
     createdAt: date(offset).toISOString(), expiresAt: date(offset + 120000).toISOString(),
     dispatchedAt: null, finishedAt: null,
+    userOptions: { equipmentStamina: true },
   };
 }
 
-type Row = Omit<LoginEvent, 'createdAt' | 'expiresAt' | 'dispatchedAt' | 'finishedAt'> & {
+type Row = Omit<LoginEvent, 'createdAt' | 'expiresAt' | 'dispatchedAt' | 'finishedAt' | 'userOptions'> & {
   createdAt: Date; expiresAt: Date; dispatchedAt: Date | null; finishedAt: Date | null;
+  userOptions: unknown;
 };
 interface Operation { client: number; sql: string; values: unknown[] }
 
@@ -67,6 +69,7 @@ function fixture(t: TestContext) {
       return { rows: [] };
     }
     if (sql.startsWith('SELECT ') && sql.includes('FROM naruto_login.login_events')) {
+      assert.match(sql, /user_options AS "userOptions"/);
       let matches: Row[];
       if (sql.includes('request_id = $2')) matches = [...rows.values()].filter(row => row.userId === values[0] && row.requestId === values[1]);
       else if (sql.includes('WHERE id = $1 AND user_id = $2')) matches = [...rows.values()].filter(row => row.id === values[0] && row.userId === values[1]);
@@ -83,12 +86,14 @@ function fixture(t: TestContext) {
     }
     if (sql.startsWith('INSERT INTO naruto_login.login_events')) {
       assert.ok(releases.has(client), 'the user row must remain locked through insertion');
-      const [id, userId, requestId, status, accessToken, createdAt, expiresAt, dispatchedAt, finishedAt] = values as
-        [string, string, string, LoginEvent['status'], string, Date, Date, Date | null, Date | null];
+      assert.match(sql, /finished_at, user_options\) VALUES \(\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9, \$10::jsonb\)/);
+      const [id, userId, requestId, status, accessToken, createdAt, expiresAt, dispatchedAt, finishedAt, optionsJson] = values as
+        [string, string, string, LoginEvent['status'], string, Date, Date, Date | null, Date | null, string];
       if ([...rows.values()].some(row => row.userId === userId && (row.requestId === requestId || row.finishedAt === null && finishedAt === null))) {
         throw new Error('unique constraint violation');
       }
-      const row: Row = { id, userId, requestId, status, accessToken, createdAt, expiresAt, dispatchedAt, finishedAt };
+      const row: Row = { id, userId, requestId, status, accessToken, createdAt, expiresAt, dispatchedAt, finishedAt,
+        userOptions: JSON.parse(optionsJson) };
       rows.set(id, row);
       return { rows: [{ ...row }] };
     }
@@ -138,7 +143,63 @@ test('事件表保留请求幂等约束和每账号唯一有效事件约束，�
   assert.match(setup[0].sql, /UNIQUE \(user_id, request_id\)/);
   assert.match(setup[0].sql, /CREATE UNIQUE INDEX IF NOT EXISTS \S+ ON naruto_login.login_events \(user_id\) WHERE finished_at IS NULL/);
   assert.match(setup[0].sql, /user_id uuid NOT NULL REFERENCES naruto_login.users\(id\) ON DELETE CASCADE/);
+  assert.match(setup[0].sql, /user_options jsonb NOT NULL DEFAULT '\{\}'::jsonb, CONSTRAINT/);
+  assert.match(setup[0].sql, /ALTER TABLE naruto_login.login_events ADD COLUMN IF NOT EXISTS user_options jsonb NOT NULL DEFAULT '\{\}'::jsonb;/);
   assert.doesNotMatch(setup[0].sql, /DROP |TRUNCATE /);
+});
+
+test('附加参数以 JSONB 参数化保存，新建服务实例仍能恢复原选择', async t => {
+  const { store, rows, operations } = fixture(t);
+  const submission = { ...candidate(), userOptions: { equipmentStamina: false } };
+  const saved = await store.reserve(submission, date());
+  assert.deepEqual(saved.userOptions, { equipmentStamina: false });
+  assert.deepEqual(rows.get(saved.id)?.userOptions, { equipmentStamina: false });
+  const insert = operations.find(operation => operation.sql.startsWith('INSERT INTO naruto_login.login_events'))!;
+  assert.equal(insert.values[9], JSON.stringify(submission.userOptions));
+  assert.doesNotMatch(insert.sql, /equipmentStamina/);
+
+  const restored = new PgAuthStore('postgresql://fixture:fixture@127.0.0.1:5432/fixture');
+  try {
+    assert.deepEqual(await restored.getEvent(saved.id, owner), saved);
+    assert.deepEqual(await restored.getActive(owner, date(1)), saved);
+    assert.deepEqual(await restored.getLatestForUser(owner), saved);
+  } finally { await restored.close(); }
+});
+
+test('重复请求和已有有效任务保留首次选择，后续请求不能覆盖附加参数', async t => {
+  const { store, rows, operations } = fixture(t);
+  const saved = await store.reserve({ ...candidate(), userOptions: { equipmentStamina: false } }, date());
+  const repeated = await store.reserve({ ...candidate(2), requestId: saved.requestId }, date(1));
+  const active = await store.reserve(candidate(3), date(2));
+  for (const event of [repeated, active]) {
+    assert.equal(event.id, saved.id);
+    assert.deepEqual(event.userOptions, { equipmentStamina: false });
+  }
+  const expired = await store.reserve({ ...candidate(4, owner, 120000), requestId: saved.requestId }, date(120000));
+  assert.equal(expired.status, 'expired');
+  assert.deepEqual(expired.userOptions, { equipmentStamina: false });
+  assert.deepEqual(rows.get(saved.id)?.userOptions, { equipmentStamina: false });
+  assert.equal(operations.filter(operation => operation.sql.startsWith('INSERT INTO naruto_login.login_events')).length, 1);
+});
+
+test('旧记录的空 JSON 对象按默认开启读取，不改变已存储内容', async t => {
+  const { store, rows } = fixture(t);
+  const saved = await store.reserve(candidate(), date());
+  rows.get(saved.id)!.userOptions = {};
+  for (const event of [
+    await store.getEvent(saved.id, owner), await store.getActive(owner, date(1)),
+    await store.getLatestForUser(owner), await store.reserve(candidate(2), date(2)),
+  ]) assert.deepEqual(event?.userOptions, { equipmentStamina: true });
+  assert.deepEqual(rows.get(saved.id)?.userOptions, {});
+});
+
+test('非法的数据库附加参数拒绝读取，不静默恢复为默认选择', async t => {
+  const { store, rows } = fixture(t);
+  const saved = await store.reserve(candidate(), date());
+  for (const invalid of [null, false, [], 'invalid', { equipmentStamina: 'false' }, { unexpected: true }]) {
+    rows.get(saved.id)!.userOptions = invalid;
+    await assert.rejects(store.getEvent(saved.id, owner), /Stored login event user options are invalid/);
+  }
 });
 
 test('同账号的八个并发预留在用户行锁后只创建一条事件，返回同一任务和凭据', async t => {

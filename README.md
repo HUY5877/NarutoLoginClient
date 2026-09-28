@@ -74,6 +74,10 @@ TSX 页面每秒 GET /api/login-sessions/{id}
 
 首次打开、刷新、新开页面和切回窗口时，二维码区域保持空闲并显示「生成登录二维码」，不请求登录申请状态，也不因其他页面的本地存储事件自动查询。用户点击后才查 `GET /api/login-sessions/active`：有有效申请则继续轮询并显示原二维码，没有才提交保存的请求编号。查询失败不会当作没有事件，不会据此创建重复任务。网站账号身份读取和独立任务日志查询不受此按需加载策略影响。
 
+生成二维码前可以选择「装备栏体力刷取」，默认开启。用户附加参数统一保存在 `userOptions` JSON 对象中，目前支持布尔字段 `equipmentStamina`；关闭后，配套 Python worker 跳过装备材料扫荡、合成和进阶任务组，其他日常照常执行。提交后选项随申请固定；刷新、网络重试和复用已有有效申请都保留原选择，下一次新申请才能修改。
+
+浏览器待确认申请保存完整的 `{requestId, userOptions, createdAt, expiresAt}`，数据库 `naruto_login.login_events.user_options` 使用单个 JSONB 字段保存所有用户附加参数，投递恢复时读取原记录。已有数据库在初始化时幂等补充该字段；历史请求或记录未提供选项时默认开启。API 对非布尔值及未知选项返回 `400 / INVALID_USER_OPTIONS`，后续扩展选项时统一在 `src/shared/user-options.ts` 与 worker 协议中添加，不拆分为独立数据库列、Redis key 或队列顶层字段。
+
 点击时先同步保存本账号的 `requestId`，再发送请求。刷新发生在请求返回之前时，页面不主动补交；用户再次点击后查询已有申请，如果尚未落库，则用有效期内保存的同一个 `requestId` 补交。点击后的准备进度继续自动轮询，获取二维码后停止；失败或到期在本地结束显示并恢复按钮，不自动重新查询或创建任务。再次点击时仍由服务端确认已有申请。
 
 数据库先保存事件，再投递 Redis；若入队成功但响应丢失，恢复时重发相同 ID 和凭据，Lua 确认已有任务后直接返回成功。已确认投递的事件不会因 Redis 记录丢失而重新入队，原事件在有效期内继续占用账号名额。
@@ -92,17 +96,20 @@ TSX 页面每秒 GET /api/login-sessions/{id}
   "id": "123e4567-e89b-42d3-a456-426614174000",
   "createdAt": "2026-09-23T06:00:00.000Z",
   "expiresAt": "2026-09-23T06:02:00.000Z",
-  "objectKey": "login/123e4567-e89b-42d3-a456-426614174000/qr.png"
+  "objectKey": "login/123e4567-e89b-42d3-a456-426614174000/qr.png",
+  "userOptions": {
+    "equipmentStamina": true
+  }
 }
 ```
 
 Python 消费端需要校验消息版本、UUID 和过期时间，直接丢弃已过期任务，再按 `objectKey` 上传 PNG。开始处理和上传前都应检查过期时间，避免继续处理已失效申请。Redis 会话有 TTL，但列表中的过期任务不会自动消失，必须由消费端丢弃。
 
-会话保存在 `<REDIS_QUEUE_KEY>:sessions:<id>`，默认例如 `naruto:login:tasks:sessions:123e4567-e89b-42d3-a456-426614174000`。值为 JSON，包含 `id`、`userId`、`status`、`createdAt`、`expiresAt`、`simulation: true` 和协议兼容字段 `tokenHash`。账号当前申请保存在 `<REDIS_QUEUE_KEY>:users:<userId>:active`，与申请同时过期。队列消息不含账号密码或网站登录凭证。
+会话保存在 `<REDIS_QUEUE_KEY>:sessions:<id>`，默认例如 `naruto:login:tasks:sessions:123e4567-e89b-42d3-a456-426614174000`。值为 JSON，包含 `id`、`userId`、`status`、`createdAt`、`expiresAt`、`userOptions`、`simulation: true` 和协议兼容字段 `tokenHash`。账号当前申请保存在 `<REDIS_QUEUE_KEY>:users:<userId>:active`，与申请同时过期。队列消息不含账号密码或网站登录凭证。
 
 工作进程可以选择回写 `starting_emulator`、`opening_game`、`preparing_qr` 或 `failed` 等状态。回写时必须保留 `tokenHash`、时间字段和其他会话字段，并保留原 TTL；例如更新既有 JSON 后使用 `SET ... XX KEEPTTL`，不要新建已过期会话或延长申请有效期。不回写中间状态也可以，客户端会继续检查 OSS，文件到达后显示二维码。
 
-Python 项目位于 `E:\code\NarutoDailyADB` 的 `naruto_daily/login_service/`，通过 Redis 消费上述协议。客户端不调用 Python HTTP 接口；本次账户功能不改变队列消息格式，工作进程回写状态时需继续保留 `userId` 等额外字段。
+Python 项目位于 `E:\code\NarutoDailyADB` 的 `naruto_daily/login_service/`，通过 Redis 消费上述协议。客户端不调用 Python HTTP 接口；队列协议保持 `version: 1` 并增加可选的 `userOptions` 对象。配套 worker 将整个对象传入日常执行子进程，旧消息省略时默认开启装备栏体力刷取。工作进程回写状态时需继续保留 `userId`、`userOptions` 等额外字段。
 
 ## 日常执行进度与日志
 
@@ -185,7 +192,7 @@ Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run 
 | `POST /api/auth/logout` | 清除当前浏览器的 JWT Cookie，无需访问数据库 |
 | `GET /api/admin/registration-applications?status=pending` | 管理员查看最近 100 条申请，支持 `pending`、`approved`、`rejected`、`all` |
 | `POST /api/admin/registration-applications/:id/review` | 管理员提交 `{decision: "approved" 或 "rejected", reason?: string}`，审核人与时间由后端确定 |
-| `POST /api/login-sessions` | `{requestId}` 创建或恢复同一事件，返回 `202` 和 `id`、状态、有效时间、`showGetButton` |
+| `POST /api/login-sessions` | `{requestId, userOptions: {equipmentStamina: boolean}}` 创建或恢复同一事件，返回 `202` 和 `id`、状态、有效时间、`userOptions`、`showGetButton`；省略选项默认开启 |
 | `GET /api/login-sessions/active` | `{session, showGetButton}`，用户主动点击后查询当前账号未过期事件 |
 | `GET /api/login-sessions/:id` | 当前账号的事件进度及 `showGetButton`，使用登录 Cookie |
 | `GET /api/login-sessions/:id/qr` | 当前账号的二维码 `image/png`；过期或 Redis 会话失效后不可读取 |

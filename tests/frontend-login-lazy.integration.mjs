@@ -44,6 +44,7 @@ function deferred() {
 }
 const callsToLogin = calls => calls.filter(call => call.path.startsWith('/api/login-sessions'));
 const generate = page => page.getByRole('button', { name: /^(重新)?生成(登录)?二维码$/ });
+const equipmentStamina = page => page.getByRole('checkbox', { name: '装备栏体力刷取', exact: true });
 async function waitFor(predicate, message, timeout = 8_000) {
   const deadline = Date.now() + timeout;
   while (!predicate()) {
@@ -84,12 +85,12 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
     async function fixture() {
       const context = await browser.newContext();
       const state = { user: firstUser, calls: [], errors: [], active: () => ({ session: null, showGetButton: true }),
-        submit: () => session('queued'), detail: () => session(), afterQr: null, qrResponse: null,
+        submit: () => session('queued'), submitStatus: 200, detail: () => session(), afterQr: null, qrResponse: null,
         latest: () => ({ task: { ...session('expired', Date.now() - 60_000), id: latestId } }),
         events: (taskId, url) => {
           const now = new Date().toISOString();
           return { task: { ...session('expired', Date.now() - 60_000), id: taskId },
-            run: { taskId, status: 'running_daily', updatedAt: now, startedAt: now, finishedAt: null, actionIndex: 2, actionTotal: 38 },
+            run: { taskId, status: 'starting_emulator', updatedAt: now, startedAt: null, finishedAt: null },
             logs: [], nextCursor: url.searchParams.get('after') || '0-0', hasMore: false, truncated: false };
         } };
       context.on('page', current => current.on('pageerror', error => state.errors.push(error.message)));
@@ -118,7 +119,8 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           state.errors.push(`Unexpected mocked API: ${request.method()} ${url.pathname}`);
           return route.fulfill({ status: 404, json: {} });
         }
-        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) }).catch(() => {});
+        const status = url.pathname === '/api/login-sessions' && request.method() === 'POST' ? state.submitStatus : 200;
+        return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) }).catch(() => {});
       });
       const page = await context.newPage();
       page.setDefaultTimeout(8_000);
@@ -163,6 +165,108 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         assert.deepEqual(callsToLogin(f.state.calls).map(call => [call.method, call.path]), [
           ['GET', '/api/login-sessions/active'], ['GET', `/api/login-sessions/${sessionId}/qr`],
         ]);
+      } finally { await f.close(); }
+    });
+
+    for (const enabled of [true, false]) {
+      await t.test(`equipment stamina selection submits ${enabled} inside userOptions`, async () => {
+        const f = await fixture();
+        try {
+          f.state.submit = request => ({ ...session('queued'), userOptions: request.postDataJSON().userOptions });
+          f.state.detail = () => ({ ...session(), userOptions: { equipmentStamina: enabled } });
+          await f.open();
+          assert.equal(await equipmentStamina(f.page).isChecked(), true);
+          assert.equal(await equipmentStamina(f.page).isEnabled(), true);
+          await equipmentStamina(f.page).setChecked(enabled);
+          if (!enabled) {
+            await f.page.setViewportSize({ width: 390, height: 844 });
+            const screenshotPath = path.join(repository, '.data/login-lazy-integration/equipment-stamina-mobile.png');
+            await mkdir(path.dirname(screenshotPath), { recursive: true });
+            await f.page.screenshot({ path: screenshotPath, fullPage: true });
+            t.diagnostic(`Equipment stamina selection screenshot: ${screenshotPath}`);
+          }
+          await generate(f.page).click();
+          await f.page.locator('img[src^="blob:"]').waitFor();
+          const posts = callsToLogin(f.state.calls).filter(call => call.method === 'POST');
+          assert.equal(posts.length, 1);
+          assert.deepEqual(posts[0].body.userOptions, { equipmentStamina: enabled });
+          assert.deepEqual(Object.keys(posts[0].body).sort(), ['requestId', 'userOptions']);
+          assert.equal(await equipmentStamina(f.page).isChecked(), enabled);
+          assert.equal(await equipmentStamina(f.page).isDisabled(), true);
+        } finally { await f.close(); }
+      });
+    }
+
+    await t.test('an existing session replaces the new selection with its actual saved options', async () => {
+      const f = await fixture();
+      try {
+        f.state.active = () => ({ session: { ...session(), userOptions: { equipmentStamina: false } }, showGetButton: false });
+        await f.open();
+        assert.equal(await equipmentStamina(f.page).isChecked(), true);
+        await generate(f.page).click();
+        await f.page.locator('img[src^="blob:"]').waitFor();
+        assert.equal(await equipmentStamina(f.page).isChecked(), false);
+        assert.equal(await equipmentStamina(f.page).isDisabled(), true);
+        assert.equal(callsToLogin(f.state.calls).filter(call => call.method === 'POST').length, 0);
+      } finally { await f.close(); }
+    });
+
+    await t.test('pending intent stores selection atomically and restores it locked after reload', async () => {
+      const f = await fixture();
+      const gate = deferred();
+      try {
+        let submissions = 0;
+        f.state.submit = async request => {
+          if (++submissions === 1) await gate.promise;
+          return { ...session('queued'), userOptions: request.postDataJSON().userOptions };
+        };
+        f.state.detail = () => ({ ...session(), userOptions: { equipmentStamina: false } });
+        await f.open();
+        await equipmentStamina(f.page).uncheck();
+        await generate(f.page).click();
+        await waitFor(() => callsToLogin(f.state.calls).some(call => call.method === 'POST'), 'First request should be submitted');
+        const intent = await f.page.evaluate(userId => JSON.parse(localStorage.getItem(`naruto-login:pending:${userId}`)), firstUser.id);
+        assert.deepEqual(intent.userOptions, { equipmentStamina: false });
+        assert.equal(await equipmentStamina(f.page).isDisabled(), true);
+        await f.page.reload({ waitUntil: 'networkidle' });
+        await generate(f.page).waitFor();
+        assert.equal(await equipmentStamina(f.page).isChecked(), false);
+        assert.equal(await equipmentStamina(f.page).isDisabled(), true);
+        assert.equal(callsToLogin(f.state.calls).filter(call => call.method === 'POST').length, 1);
+        await generate(f.page).click();
+        await f.page.locator('img[src^="blob:"]').waitFor();
+        const posts = callsToLogin(f.state.calls).filter(call => call.method === 'POST');
+        assert.equal(posts.length, 2);
+        assert.deepEqual(posts.map(call => call.body), [
+          { requestId: intent.requestId, userOptions: { equipmentStamina: false } },
+          { requestId: intent.requestId, userOptions: { equipmentStamina: false } },
+        ]);
+      } finally { gate.resolve(); await f.close(); }
+    });
+
+    await t.test('automatic and manual retries keep the original options and request ID', async () => {
+      const f = await fixture();
+      try {
+        f.state.submitStatus = 503;
+        f.state.submit = () => ({ error: '模拟网络中断，请重试查询。' });
+        await f.open();
+        await equipmentStamina(f.page).uncheck();
+        await generate(f.page).click();
+        await f.page.getByRole('button', { name: '继续本次申请', exact: true }).waitFor();
+        assert.equal(await equipmentStamina(f.page).isChecked(), false);
+        assert.equal(await equipmentStamina(f.page).isDisabled(), true);
+        const firstPosts = callsToLogin(f.state.calls).filter(call => call.method === 'POST');
+        assert.equal(firstPosts.length, 3);
+        f.state.submitStatus = 200;
+        f.state.submit = request => ({ ...session('queued'), userOptions: request.postDataJSON().userOptions });
+        f.state.detail = () => ({ ...session(), userOptions: { equipmentStamina: false } });
+        await f.page.getByRole('button', { name: '继续本次申请', exact: true }).click();
+        await f.page.locator('img[src^="blob:"]').waitFor();
+        const posts = callsToLogin(f.state.calls).filter(call => call.method === 'POST');
+        assert.equal(posts.length, 4);
+        for (const post of posts) assert.deepEqual(post.body, {
+          requestId: firstPosts[0].body.requestId, userOptions: { equipmentStamina: false },
+        });
       } finally { await f.close(); }
     });
 
@@ -227,6 +331,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       try {
         f.state.active = async () => { await gate.promise; return { session: session(), showGetButton: false }; };
         await f.open();
+        await equipmentStamina(f.page).uncheck();
         await generate(f.page).click();
         await waitFor(() => callsToLogin(f.state.calls).length === 1, 'First account should issue active query');
         f.state.user = secondUser;
@@ -240,6 +345,8 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         assert.equal(await f.page.locator('img[src^="blob:"]').count(), 0);
         assert.deepEqual(callsToLogin(f.state.calls).map(call => call.path), ['/api/login-sessions/active']);
         assert.equal(await generate(f.page).isEnabled(), true);
+        assert.equal(await equipmentStamina(f.page).isChecked(), true);
+        assert.equal(await equipmentStamina(f.page).isEnabled(), true);
       } finally { gate.resolve(); await f.close(); }
     });
 
@@ -253,8 +360,8 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         const logs = [];
         const milestone = message => logs.push({ id: `${logs.length + 1}-0`, time: new Date().toISOString(), level: 'INFO', message });
         f.state.latest = () => ({ task: created ? { ...created, status: qrStatus } : null });
-        f.state.submit = () => {
-          created = session('queued');
+        f.state.submit = request => {
+          created = { ...session('queued'), userOptions: request.postDataJSON().userOptions };
           milestone('登录申请已提交，等待执行。');
           return created;
         };
@@ -270,6 +377,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         };
         await f.open();
         await expectStages(f.page, ['pending', 'pending', 'pending']);
+        await equipmentStamina(f.page).uncheck();
         await generate(f.page).click();
         await expectStages(f.page, ['completed', 'active', 'pending']);
         qrStatus = 'preparing_qr';
@@ -286,6 +394,8 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         startedAt = new Date().toISOString();
         milestone('登录完成，开始执行日常脚本。');
         await expectStages(f.page, ['completed', 'completed', 'active']);
+        assert.equal(await equipmentStamina(f.page).isChecked(), false);
+        assert.equal(await equipmentStamina(f.page).isDisabled(), true);
         const progressCard = f.page.locator('[data-slot="card"]').filter({ has: f.page.getByLabel('任务执行进度', { exact: true }) });
         await progressCard.getByText('脚本执行中', { exact: true }).waitFor();
         const screenshotPath = path.join(repository, '.data/login-lazy-integration/running-daily.png');
@@ -295,7 +405,8 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         const loginCalls = callsToLogin(f.state.calls).length;
         // Move only this isolated page's clock beyond the QR TTL; no fixed wait for the full TTL.
         await f.page.evaluate(() => { const realNow = Date.now; Date.now = () => realNow() + 120_000; });
-        await f.page.getByRole('button', { name: '重新生成二维码', exact: true }).waitFor();
+        await f.page.waitForTimeout(1_100);
+        assert.equal(await generate(f.page).count(), 0, 'Confirmed execution keeps QR generation unavailable');
         await expectStages(f.page, ['completed', 'completed', 'active']);
         assert.equal(await progressCard.getByText('脚本执行中', { exact: true }).isVisible(), true);
         assert.equal(await progressCard.getByText('获取失败', { exact: true }).count(), 0);
@@ -303,13 +414,19 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         qrStatus = 'expired';
         created.expiresAt = new Date(Date.now() - 1_000).toISOString();
         await f.page.reload({ waitUntil: 'networkidle' });
-        await generate(f.page).waitFor();
         await expectStages(f.page, ['completed', 'completed', 'active']);
+        assert.equal(await equipmentStamina(f.page).isChecked(), false, 'Restore the running task options after the pending intent has been cleared');
+        assert.equal(await equipmentStamina(f.page).isDisabled(), true, 'A restored running task cannot change its queued options');
         assert.equal(await f.page.locator('img[src^="blob:"]').count(), 0);
         assert.equal(callsToLogin(f.state.calls).length, loginCalls, 'Restoring script progress must not load the QR');
         runStatus = 'completed';
         milestone('日常脚本执行完成。');
         await expectStages(f.page, ['completed', 'completed', 'completed']);
+        assert.equal(await equipmentStamina(f.page).isEnabled(), true, 'Completed tasks allow configuring the next request');
+        await equipmentStamina(f.page).uncheck();
+        assert.equal(await equipmentStamina(f.page).isChecked(), false);
+        await equipmentStamina(f.page).check();
+        assert.equal(await equipmentStamina(f.page).isChecked(), true);
         await progressCard.getByText('任务已完成', { exact: true }).waitFor();
         const logArea = f.page.getByRole('log', { name: '任务执行日志' });
         for (const entry of logs) assert.equal(await logArea.getByText(entry.message, { exact: true }).isVisible(), true);
@@ -352,7 +469,6 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         };
         await f.open();
         await generate(f.page).click();
-        await f.page.getByRole('button', { name: '重试查询', exact: true }).waitFor();
         await f.page.getByRole('log', { name: '任务执行日志' }).getByText(message, { exact: true }).waitFor();
         await expectStages(f.page, ['completed', 'completed', 'active']);
         assert.equal(callsToLogin(f.state.calls).filter(call => call.method === 'POST').length, 0);

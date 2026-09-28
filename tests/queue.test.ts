@@ -9,7 +9,7 @@ const now = Date.now();
 const config = { redisUrl: 'redis://localhost:6379', redisQueueKey: 'naruto:login:tasks', timeoutMs: 100, ossPrefix: 'login' };
 const task: Submission = { id: '123e4567-e89b-42d3-a456-426614174000',
   userId: '456e7890-e89b-42d3-a456-426614174000', accessToken: 'a'.repeat(64),
-  createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 120000).toISOString() };
+  createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 120000).toISOString(), userOptions: { equipmentStamina: true } };
 const stored = { id: task.id, userId: task.userId, status: 'queued', createdAt: task.createdAt, expiresAt: task.expiresAt,
   simulation: true, tokenHash: createHash('sha256').update(task.accessToken).digest('hex') };
 
@@ -30,10 +30,10 @@ test('原子提交会话与 LPUSH 任务，队列不含浏览器凭证，TTL 只
   const service = new TaskService(config, () => driver({ eval: async (_script, options, signal) => {
     assert.deepEqual(options.keys, [config.redisQueueKey, `${config.redisQueueKey}:sessions:${task.id}`,
       `${config.redisQueueKey}:users:${task.userId}:active`, `${config.redisQueueKey}:logs:${task.id}`]);
-    assert.deepEqual(JSON.parse(options.arguments[0]), stored);
+    assert.deepEqual(JSON.parse(options.arguments[0]), { ...stored, userOptions: task.userOptions });
     assert.equal(options.arguments[1], '119000');
     assert.deepEqual(JSON.parse(options.arguments[2]), { version: 1, id: task.id, createdAt: task.createdAt,
-      expiresAt: task.expiresAt, objectKey: `login/${task.id}/qr.png` });
+      expiresAt: task.expiresAt, objectKey: `login/${task.id}/qr.png`, userOptions: task.userOptions });
     assert.equal(options.arguments[3], new Date(now + 1000).toISOString());
     assert.deepEqual(JSON.parse(options.arguments[4]), { time: task.createdAt, level: 'INFO',
       message: '登录申请已提交，等待执行服务器领取任务。' });
@@ -55,6 +55,22 @@ test('Redis 返回既有会话时视为成功，重复提交保留原申请内�
   assert.deepEqual(calls[0], calls[1]);
   const invalid = new TaskService(config, () => driver({ eval: async () => 'unexpected' }), () => now);
   await assert.rejects(invalid.enqueue(task), { status: 502 });
+});
+
+test('装备体力选择随统一 userOptions JSON 入队，保留 false 且不会拆成独立字段或 key', async () => {
+  for (const equipmentStamina of [true, false]) {
+    const userOptions = { equipmentStamina };
+    const service = new TaskService(config, () => driver({ eval: async (_script, options) => {
+      const payload = JSON.parse(options.arguments[2]);
+      assert.deepEqual(payload.userOptions, userOptions);
+      assert.equal(Object.hasOwn(payload, 'equipmentStamina'), false);
+      assert.deepEqual(JSON.parse(options.arguments[0]).userOptions, userOptions);
+      assert.equal(options.keys.length, 4, 'options share the task payload and session, without another Redis key');
+      return 1;
+    }, get: async () => JSON.stringify({ ...stored, userOptions }) }), () => now);
+    await service.enqueue({ ...task, userOptions });
+    assert.deepEqual((await service.getForUser(task.id, task.userId)).userOptions, userOptions);
+  }
 });
 
 test('Outbox 重发 Lua 契约只核验不可变身份字段，在账户锁检查和任何写入之前幂等返回', async () => {

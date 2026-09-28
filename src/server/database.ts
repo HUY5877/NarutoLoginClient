@@ -1,4 +1,5 @@
 import { Pool, type PoolClient } from 'pg';
+import { parseUserOptions } from '../shared/user-options.js';
 import type { Status, Submission } from './queue.js';
 
 export interface PublicUser { id: string; username: string; isAdmin: boolean }
@@ -67,26 +68,30 @@ function registrationApplication(row: ApplicationRow): RegistrationApplication {
   };
 }
 
-type LoginEventRow = Omit<LoginEvent, 'createdAt' | 'expiresAt' | 'dispatchedAt' | 'finishedAt'> & {
+type LoginEventRow = Omit<LoginEvent, 'createdAt' | 'expiresAt' | 'dispatchedAt' | 'finishedAt' | 'userOptions'> & {
   createdAt: Timestamp;
   expiresAt: Timestamp;
   dispatchedAt: Timestamp | null;
   finishedAt: Timestamp | null;
+  userOptions: unknown;
 };
 
 const eventColumns = `id, user_id AS "userId", request_id AS "requestId", status,
   access_token AS "accessToken", created_at AS "createdAt", expires_at AS "expiresAt",
-  dispatched_at AS "dispatchedAt", finished_at AS "finishedAt"`;
+  dispatched_at AS "dispatchedAt", finished_at AS "finishedAt", user_options AS "userOptions"`;
 const expireEvents = `UPDATE naruto_login.login_events SET status = 'expired', finished_at = $2
   WHERE user_id = $1 AND finished_at IS NULL AND expires_at <= $2`;
 
 function loginEvent(row: LoginEventRow): LoginEvent {
+  const userOptions = parseUserOptions(row.userOptions);
+  if (!userOptions) throw new Error('Stored login event user options are invalid');
   const iso = (value: Timestamp) => new Date(value).toISOString();
   return {
     id: row.id, userId: row.userId, requestId: row.requestId, status: row.status,
     accessToken: row.accessToken, createdAt: iso(row.createdAt), expiresAt: iso(row.expiresAt),
     dispatchedAt: row.dispatchedAt === null ? null : iso(row.dispatchedAt),
     finishedAt: row.finishedAt === null ? null : iso(row.finishedAt),
+    userOptions,
   };
 }
 
@@ -136,8 +141,10 @@ CREATE TABLE IF NOT EXISTS naruto_login.login_events (
   expires_at timestamptz NOT NULL CHECK (expires_at > created_at),
   dispatched_at timestamptz,
   finished_at timestamptz,
+  user_options jsonb NOT NULL DEFAULT '{}'::jsonb,
   CONSTRAINT naruto_login_login_events_user_request_key UNIQUE (user_id, request_id)
 );
+ALTER TABLE naruto_login.login_events ADD COLUMN IF NOT EXISTS user_options jsonb NOT NULL DEFAULT '{}'::jsonb;
 CREATE UNIQUE INDEX IF NOT EXISTS naruto_login_login_events_active_user_idx
   ON naruto_login.login_events (user_id) WHERE finished_at IS NULL;
 CREATE INDEX IF NOT EXISTS naruto_login_login_events_user_expires_idx ON naruto_login.login_events (user_id, expires_at);
@@ -301,12 +308,12 @@ export class PgAuthStore implements AuthStore, LoginEventStore {
       if (active.rows[0]) return loginEvent(active.rows[0]);
       const inserted = await client.query<LoginEventRow>(
         `INSERT INTO naruto_login.login_events
-          (id, user_id, request_id, status, access_token, created_at, expires_at, dispatched_at, finished_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING ${eventColumns}`,
+          (id, user_id, request_id, status, access_token, created_at, expires_at, dispatched_at, finished_at, user_options)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb) RETURNING ${eventColumns}`,
         [candidate.id, candidate.userId, candidate.requestId, candidate.status, candidate.accessToken,
           new Date(candidate.createdAt), new Date(candidate.expiresAt),
           candidate.dispatchedAt === null ? null : new Date(candidate.dispatchedAt),
-          candidate.finishedAt === null ? null : new Date(candidate.finishedAt)],
+          candidate.finishedAt === null ? null : new Date(candidate.finishedAt), JSON.stringify(candidate.userOptions)],
       );
       return loginEvent(inserted.rows[0]);
     });

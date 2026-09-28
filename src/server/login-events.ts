@@ -4,6 +4,7 @@ import type { LoginEvent, LoginEventStore } from './database.js';
 import { ApiError } from './errors.js';
 import type { Status, Task, TaskService } from './queue.js';
 import { loginFailure } from '../shared/task-errors.js';
+import { DEFAULT_USER_OPTIONS, type UserOptions } from '../shared/user-options.js';
 
 interface Options {
   store?: LoginEventStore;
@@ -33,6 +34,7 @@ export class LoginEventService {
   private publicTask(event: LoginEvent): Task {
     const status = event.status === 'failed' ? 'failed' : Date.parse(event.expiresAt) <= this.now() ? 'expired' : event.status;
     return { id: event.id, status, createdAt: event.createdAt, expiresAt: event.expiresAt, simulation: true,
+      userOptions: { ...event.userOptions },
       ...(status === 'failed' ? loginFailure(undefined) : {}) };
   }
 
@@ -59,9 +61,9 @@ export class LoginEventService {
       await this.recordStatus(event.id, event.userId, current.status);
       if (current.status === 'failed') {
         const { error: _error, errorCode, ...publicFields } = current;
-        return { ...publicFields, ...loginFailure(errorCode) };
+        return { ...publicFields, userOptions: task.userOptions, ...loginFailure(errorCode) };
       }
-      return current;
+      return { ...current, userOptions: task.userOptions };
     } catch (error) {
       // A dispatched task must not be submitted again when Redis loses a key.
       // The durable event still owns this user's slot until its original expiry.
@@ -70,7 +72,7 @@ export class LoginEventService {
     }
   }
 
-  async create(userId: string, requestId: string): Promise<Task> {
+  async create(userId: string, requestId: string, userOptions: UserOptions = DEFAULT_USER_OPTIONS): Promise<Task> {
     // Refresh a completed failure before reserving the user's next slot.
     const active = await this.database(store => store.getActive(userId, new Date(this.now())));
     if (active) await this.resume(active);
@@ -78,7 +80,7 @@ export class LoginEventService {
     const candidate: LoginEvent = {
       id: randomUUID(), userId, requestId, accessToken: randomBytes(32).toString('hex'),
       createdAt: new Date(created).toISOString(), expiresAt: new Date(created + this.config.sessionTtlMs).toISOString(),
-      status: 'queued', dispatchedAt: null, finishedAt: null,
+      status: 'queued', dispatchedAt: null, finishedAt: null, userOptions: { ...userOptions },
     };
     const event = await this.database(store => store.reserve(candidate, new Date(this.now())));
     return await this.resume(event);

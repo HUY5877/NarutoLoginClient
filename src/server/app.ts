@@ -7,6 +7,7 @@ import { ApiError } from './errors.js';
 import type { Task } from './queue.js';
 import type { LoginEventService } from './login-events.js';
 import { isStreamCursor, type TaskRunService } from './task-runs.js';
+import { parseUserOptions } from '../shared/user-options.js';
 
 export interface Dependencies {
   events: Pick<LoginEventService, 'create' | 'getForUser' | 'getActive' | 'recordStatus'>;
@@ -107,7 +108,9 @@ export function createApp(config: Config, { events, auth, storage, runs, now = D
     const user = res.locals.user as User;
     const requestId: unknown = req.body?.requestId === undefined ? randomUUID() : req.body.requestId;
     if (typeof requestId !== 'string' || !uuid.test(requestId)) throw new ApiError(400, '无效的申请标识，请重新操作。');
-    const task = await events.create(user.id, requestId);
+    const userOptions = parseUserOptions(req.body?.userOptions);
+    if (!userOptions) throw new ApiError(400, '用户附加参数格式不正确，装备栏体力刷取必须选择开启或关闭。', 'INVALID_USER_OPTIONS');
+    const task = await events.create(user.id, requestId, userOptions);
     res.status(202).json({ ...publicTask(task), pollAfterMs: 1000 });
   });
 

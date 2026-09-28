@@ -7,7 +7,7 @@ const id = '123e4567-e89b-42d3-a456-426614174000';
 const owner = '456e7890-e89b-42d3-a456-426614174000';
 const at = '2026-09-24T01:00:00.000Z';
 const event: LoginEvent = { id, userId: owner, requestId: id, status: 'qr_ready', accessToken: 'ab'.repeat(32),
-  createdAt: at, expiresAt: '2026-09-24T01:02:00.000Z', dispatchedAt: at, finishedAt: null };
+  createdAt: at, expiresAt: '2026-09-24T01:02:00.000Z', dispatchedAt: at, finishedAt: null, userOptions: { equipmentStamina: true } };
 const run = { taskId: id, status: 'running_daily', updatedAt: at, startedAt: at, finishedAt: null,
   actionIndex: 2, actionTotal: 38, workerId: 'private-worker', sequence: 10, accessToken: 'private-token' };
 const log = (sequence: number, payload: unknown = { time: at, level: 'INFO', message: `完成步骤 ${sequence}` }) =>
@@ -47,7 +47,8 @@ function fixture() {
 test('最近任务仅从用户持久记录恢复，二维码过期仍可读取且不访问 Redis 或重新派发', async () => {
   const f = fixture();
   const latest = await f.service.getLatest(owner);
-  assert.deepEqual(latest, { task: { id, createdAt: event.createdAt, expiresAt: event.expiresAt, status: 'expired' } });
+  assert.deepEqual(latest, { task: { id, createdAt: event.createdAt, expiresAt: event.expiresAt, status: 'expired',
+    userOptions: { equipmentStamina: true } } });
   assert.deepEqual(await f.service.getLatest('other-user'), { task: null });
   assert.equal(f.calls, 0);
   assert.equal(f.connections, 0);
@@ -203,6 +204,16 @@ test('未配置 Redis 不影响数据库恢复，超时中止读取并释放连�
   await assert.rejects(slow.getEvents(id, owner), { code: 'TASK_LOGS_UNAVAILABLE' });
   assert.equal(signal?.aborted, true);
   assert.equal(f.destroyed, 1);
+});
+
+test('独立执行记录从数据库恢复原附加参数，二维码过期或 Redis 快照缺省都不改变关闭选择', async () => {
+  const f = fixture();
+  f.records.set(id, { ...event, userOptions: { equipmentStamina: false } });
+  assert.deepEqual((await f.service.getLatest(owner)).task?.userOptions, { equipmentStamina: false });
+  const result = await f.service.getEvents(id, owner);
+  assert.equal(result.task.status, 'expired');
+  assert.equal(result.run?.status, 'running_daily');
+  assert.deepEqual(result.task.userOptions, { equipmentStamina: false });
 });
 
 test('失败任务到二维码有效期后仍保留失败状态与独立运行错误码', async () => {
