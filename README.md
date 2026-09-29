@@ -234,3 +234,7 @@ npm run build
 测试使用模拟数据库、Redis 驱动、OSS 方法和临时目录，不需要真实云端凭据。覆盖注册唯一性、JWT 签发/验签/过期、退出清除 Cookie、实时权限、任务归属、同账号互斥、失败处理、存储就绪判定、过期与 PNG 响应，并检查单端口开发启动。
 
 二维码懒加载的浏览器回归可单独执行 `node --test tests/frontend-login-lazy.integration.mjs`。测试使用真实前端和模拟 API，覆盖刷新、新页面、点击恢复、请求编号复用、过期和账号切换。可用 `PLAYWRIGHT_MODULE` 与 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` 指定现有 Playwright 模块和 Chromium 路径；依赖不可用时明确跳过，不会自动安装。
+
+
+todo:
+1.二维码刷新，增加扫码超时时间
