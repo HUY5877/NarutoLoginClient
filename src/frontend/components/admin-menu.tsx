@@ -162,7 +162,8 @@ export function AdminMenu({ userId, refreshAuth }: { userId: string; refreshAuth
 
   return (
     <>
-      <DropdownMenu>
+      {/* Keep the page scrollbar and fixed background stable while this menu is open. */}
+      <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
           <Button type="button" variant="outline" size="sm" className="gap-1.5 bg-white/45">
             <ShieldCheck aria-hidden="true" />管理员<ChevronDown aria-hidden="true" />
