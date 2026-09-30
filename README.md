@@ -50,7 +50,7 @@ TSX 页面每秒 GET /api/login-sessions/{id}
   → TS 后端 GET OSS 对象并转发 PNG
 ```
 
-浏览器只访问客户端 API。数据库、Redis 连接信息、JWT 签名密钥和 OSS 密钥由 TS 后端读取；登录 JWT 通过 HttpOnly Cookie 保存，有效期为 7 天，前端 JavaScript 无法读取。二维码申请默认有效期为 120 秒，获取成功后仍占用该账号名额，失败或过期才允许重新申请。
+浏览器只访问客户端 API。数据库、Redis 连接信息、JWT 签名密钥和 OSS 密钥由 TS 后端读取；登录 JWT 通过 HttpOnly Cookie 保存，有效期为 7 天，前端 JavaScript 无法读取。二维码申请默认有效期为 5 分钟，从申请创建时开始计算，包含排队、准备二维码和等待扫码的时间；获取成功后仍占用该账号名额，失败或过期才允许重新申请。
 
 ## 网站账号
 
@@ -176,7 +176,7 @@ Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run 
 | --- | --- |
 | `HOST` / `PORT` | `127.0.0.1` / `4300`，本地页面、API 和开发热更新地址 |
 | `REDIS_QUEUE_KEY` | `naruto:login:tasks`，客户端与 Python 共用的队列键 |
-| `SESSION_TTL_MS` | `120000`，申请有效期，支持 5 秒至 10 分钟 |
+| `SESSION_TTL_MS` | `300000`，申请有效期（5 分钟），支持 5 秒至 10 分钟 |
 | `REQUEST_TIMEOUT_MS` | `5000`，Redis 和 OSS 请求超时 |
 | `OSS_KEY_PREFIX` | `login`，二维码对象路径前缀 |
 | `LOCAL_OBJECTS_DIR` | 本仓库 `.data/login-objects`，本地模拟对象目录 |

@@ -58,7 +58,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     host: env.HOST ?? '127.0.0.1', port: integer(env, 'PORT', 4300, 1, 65535),
     redisUrl, redisQueueKey, databaseUrl, jwtSecret,
     localObjectsDir: resolve(env.LOCAL_OBJECTS_DIR ?? resolve(serverRoot, '../../.data/login-objects')),
-    sessionTtlMs: integer(env, 'SESSION_TTL_MS', 120000, 5000, 600000),
+    sessionTtlMs: integer(env, 'SESSION_TTL_MS', 300000, 5000, 600000),
     timeoutMs: integer(env, 'REQUEST_TIMEOUT_MS', 5000, 100, 30000),
     storageDriver, ossPrefix, ossRegion: env.OSS_REGION, ossBucket: env.OSS_BUCKET,
     ossAccessKeyId: env.OSS_ACCESS_KEY_ID, ossAccessKeySecret: env.OSS_ACCESS_KEY_SECRET,

@@ -19,7 +19,7 @@ export interface Session {
 }
 interface ActiveResponse { session: Session | null; showGetButton: boolean }
 interface PendingIntent { requestId: string; createdAt: number; expiresAt: number; userOptions: UserOptions }
-const intentLifetimeMs = 120_000;
+const intentLifetimeMs = 300_000;
 const pendingKey = (userId: string) => `naruto-login:pending:${userId}`;
 const statusLabels: Record<Phase, string> = {
   idle: '等待生成二维码', restoring: '正在查询本账户的登录申请', submitting: '正在提交已保存的登录申请',
