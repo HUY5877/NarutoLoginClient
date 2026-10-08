@@ -53,7 +53,7 @@ const taskIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[
 const streamIdPattern = /^(0|[1-9][0-9]{0,19})-(0|[1-9][0-9]{0,19})$/;
 const maxStreamPart = 18446744073709551615n;
 const pageSize = 100;
-const failureLogLimit = 30;
+const failureLogLimit = 10;
 
 export function isStreamCursor(value: unknown): value is string {
   return typeof value === 'string' && value === value.trim() && streamIdPattern.test(value)

@@ -177,8 +177,8 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
       for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
         const f = await fixture(true, viewport);
         try {
-          f.state.detailResponse.logs = Array.from({ length: 30 }, (_, index) => ({ id: `1000-${index}`, time: task.requestedAt,
-            level: index === 29 ? 'ERROR' : 'WARNING', message: `记录 ${index + 1}：${'装备材料识别失败，重新截图后重试。'.repeat(10)}` }));
+          f.state.detailResponse.logs = Array.from({ length: 10 }, (_, index) => ({ id: `1000-${index}`, time: task.requestedAt,
+            level: index === 9 ? 'ERROR' : 'WARNING', message: `记录 ${index + 1}：${'装备材料识别失败，重新截图后重试。'.repeat(10)}` }));
           f.state.detailResponse.truncated = true;
           await f.open('今日刷日常情况');
           const dialog = f.page.getByRole('dialog', { name: '今日刷日常情况' });

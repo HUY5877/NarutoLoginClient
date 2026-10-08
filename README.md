@@ -66,7 +66,7 @@ TSX 页面每秒 GET /api/login-sessions/{id}
 
 管理员菜单还提供「今日刷日常情况」和「用户管理」，均使用 shadcn/ui 二级弹窗。今日任务按北京时间的申请日期筛选，每次申请展示用户名、申请时间、扫描完成时间、脚本执行完成时间和任务状态，支持刷新及每页 20 条分页。扫码完成时间读取执行快照的 `authorizedAt`；脚本完成时间仅在已开始执行脚本且状态为 `completed` 时显示 `finishedAt`，失败或未完成时显示 `—`。任务状态优先使用执行快照，二维码过期不会覆盖执行中的日常任务；执行快照已丢失且申请过期时显示「执行记录不可用」，不推测结果。
 
-失败状态后保留「详情」入口，悬停或键盘聚焦时按需读取失败步骤、具体异常和最近 30 条执行日志，长日志可在浮层内滚动。该读取仅限管理员，不增加表格列或消耗队列消息。具体异常需要更新后的 Python worker 上报；旧任务只能展示当时已保留的记录，日志过期或缺失时明确提示。
+失败状态后保留「详情」入口，悬停或键盘聚焦时按需读取失败步骤、具体异常和最近 10 条执行日志，长日志可在浮层内滚动。该读取仅限管理员，不增加表格列或消耗队列消息。具体异常需要更新后的 Python worker 上报；旧任务只能展示当时已保留的记录，日志过期或缺失时明确提示。
 
 用户管理支持用户名搜索、分页、新增、查看、编辑与删除，可修改用户名、密码、管理员角色和启用状态。编辑时密码留空表示保留原密码，API 始终不返回密码；管理员新增的启用账号可直接登录。在用户管理中启用待审核账号会在同一事务内通过其待审核申请。删除使用确认弹窗，并按现有外键关系删除该用户的注册及日常申请记录；不能删除、停用或撤销当前登录账号的管理员权限。写操作在事务内再次校验管理员身份，权限变更后已有 Cookie 也不能继续操作。
 
@@ -199,7 +199,7 @@ Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run 
 | `GET /api/admin/registration-applications?status=pending` | 管理员查看最近 100 条申请，支持 `pending`、`approved`、`rejected`、`all` |
 | `POST /api/admin/registration-applications/:id/review` | 管理员提交 `{decision: "approved" 或 "rejected", reason?: string}`，审核人与时间由后端确定 |
 | `GET /api/admin/daily-tasks?page=1` | 管理员查看北京时间今日申请的任务及扫码/脚本完成时间，每页 20 条，返回 `items`、`total`、`page`、`pageSize`、`date`、`timeZone` |
-| `GET /api/admin/daily-tasks/:id/failure-details` | 管理员按需读取具体错误、动作名称与进度、最新 30 条日志及 `truncated` 标记；日志按时间正序返回 |
+| `GET /api/admin/daily-tasks/:id/failure-details` | 管理员按需读取具体错误、动作名称与进度、最新 10 条日志及 `truncated` 标记；日志按时间正序返回 |
 | `GET /api/admin/users?search=&page=1` | 管理员按用户名搜索注册用户，返回 `items`、`total`、`page`、`pageSize`，每页 20 条 |
 | `GET /api/admin/users/:id` | 管理员读取用户详情，不返回密码 |
 | `POST /api/admin/users` | 管理员提交 `{username, password, isAdmin: boolean, isInvalid: boolean}` 创建账号，返回 `201` 和 `{user}` |

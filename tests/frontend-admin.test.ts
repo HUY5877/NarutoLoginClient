@@ -30,7 +30,7 @@ test('failure details validate bounded log history and paired action progress be
   assert.ok(isDailyTaskFailureDetails(details));
   assert.ok(isDailyTaskFailureDetails({ taskId: 'old-task', errorMessage: '未记录具体错误原因。', logs: [], truncated: true }));
   for (const invalid of [{ ...details, errorMessage: {} }, { ...details, actionTotal: undefined },
-    { ...details, actionName: 12 }, { ...details, logs: Array(31).fill(details.logs[0]) },
+    { ...details, actionName: 12 }, { ...details, logs: Array(11).fill(details.logs[0]) },
     { ...details, logs: [{ ...details.logs[0], message: 'x'.repeat(1001) }] },
     { ...details, logs: [{ ...details.logs[0], level: 'DEBUG' }] },
     { ...details, logs: [{ ...details.logs[0], time: 'not-a-date' }] }]) assert.equal(isDailyTaskFailureDetails(invalid), false);

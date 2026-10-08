@@ -76,7 +76,7 @@ function failureFixture(snapshot: unknown = [null, []]) {
     assert.match(script, /redis\.call\('GET', KEYS\[1\]\)/);
     assert.match(script, /redis\.call\('XREVRANGE', KEYS\[2\], '\+', '-', 'COUNT', ARGV\[1\]\)/);
     assert.doesNotMatch(script, /redis\.call\('(SET|DEL|XREADGROUP|XDEL|EXPIRE|LPUSH|BRPOP)'/);
-    assert.deepEqual(options, { keys: [`naruto:login:tasks:runs:${id}`, `naruto:login:tasks:logs:${id}`], arguments: ['31'] });
+    assert.deepEqual(options, { keys: [`naruto:login:tasks:runs:${id}`, `naruto:login:tasks:logs:${id}`], arguments: ['11'] });
     return snapshot;
   };
   // Admin-only reads deliberately bypass the owner-specific database access path.
@@ -106,12 +106,12 @@ test('failure details read a bounded non-consuming tail, preserve chronological 
   f.service.close();
 });
 
-test('failure detail tail returns at most thirty valid logs and explicitly marks omitted or corrupt entries', async () => {
-  const f = failureFixture([null, Array.from({ length: 31 }, (_, index) => log(31 - index))]);
+test('failure detail tail returns at most ten valid logs and explicitly marks omitted or corrupt entries', async () => {
+  const f = failureFixture([null, Array.from({ length: 11 }, (_, index) => log(11 - index))]);
   const details = await f.service.getFailureDetails(id);
-  assert.equal(details.logs.length, 30);
+  assert.equal(details.logs.length, 10);
   assert.equal(details.logs[0].id, '1800000000000-2');
-  assert.equal(details.logs.at(-1)?.id, '1800000000000-31');
+  assert.equal(details.logs.at(-1)?.id, '1800000000000-11');
   assert.equal(details.truncated, true);
   f.setSnapshot([null, [log(3, { time: at, level: 'INFO', message: 'x'.repeat(1001) }),
     log(2, { message: 'invalid' }), log(1)]]);
@@ -155,7 +155,7 @@ test('failure details reject invalid IDs before Redis access and reject cross-ta
   for (const snapshot of [
     [JSON.stringify({ ...run, taskId: owner }), []],
     ['private:not-json', []],
-    [null, Array.from({ length: 32 }, (_, index) => log(32 - index))],
+    [null, Array.from({ length: 12 }, (_, index) => log(12 - index))],
     [null, [log(1), log(2)]],
     [null, [log(2), log(2)]],
     [null, [['bad-id', []]]],

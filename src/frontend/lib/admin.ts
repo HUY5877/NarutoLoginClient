@@ -35,7 +35,7 @@ export function isDailyTaskFailureDetails(value: unknown): value is DailyTaskFai
       && (value.actionIndex as number) >= 0 && (value.actionTotal as number) <= 100000 && (value.actionIndex as number) <= (value.actionTotal as number);
   return object(value) && typeof value.taskId === 'string' && code(value.errorCode) && message(value.errorMessage)
     && progress(value) && (value.actionName === undefined || message(value.actionName))
-    && typeof value.truncated === 'boolean' && Array.isArray(value.logs) && value.logs.length <= 30
+    && typeof value.truncated === 'boolean' && Array.isArray(value.logs) && value.logs.length <= 10
     && value.logs.every(log => object(log) && typeof log.id === 'string' && date(log.time)
       && ['INFO', 'WARNING', 'ERROR'].includes(String(log.level)) && message(log.message) && progress(log));
 }
