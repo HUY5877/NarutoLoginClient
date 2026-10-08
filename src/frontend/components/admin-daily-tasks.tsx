@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { CalendarCheck, RefreshCw } from 'lucide-react';
+import { Tooltip } from 'radix-ui';
 import { dailyStatusLabels, type DailyStatus } from '../../shared/admin';
 import { useAdminData } from '@/hooks/use-admin';
 import { formatAdminDate, isDailyPage } from '@/lib/admin';
@@ -36,6 +37,7 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
       <div className="min-h-0 overflow-y-auto" aria-busy={loading}>
         {loading && !data && <AdminLoading label="正在读取今日任务…" />}
         {data && data.items.length > 0 && <div className="overflow-hidden rounded-xl border bg-white/35">
+          <Tooltip.Provider delayDuration={200}>
           <Table className="min-w-190">
             <TableCaption className="sr-only">今日刷日常情况，所有时间均为北京时间</TableCaption>
             <TableHeader className="bg-secondary/50"><TableRow>
@@ -47,9 +49,29 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
               <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatAdminDate(task.requestedAt)}</TableCell>
               <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatAdminDate(task.scannedAt)}</TableCell>
               <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatAdminDate(task.completedAt)}</TableCell>
-              <TableCell className="pr-4"><Badge variant={statusVariant(task.status)}>{dailyStatusLabels[task.status]}</Badge></TableCell>
+              <TableCell className="pr-4">
+                <span className="inline-flex items-center gap-1.5">
+                  <Badge variant={statusVariant(task.status)}>{dailyStatusLabels[task.status]}</Badge>
+                  {task.status === 'failed' && <Tooltip.Root>
+                    <Tooltip.Trigger asChild>
+                      <button type="button" aria-label={`${task.username}的失败详情`}
+                        className="cursor-help rounded-sm text-xs text-destructive underline decoration-dotted underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2">
+                        详情
+                      </button>
+                    </Tooltip.Trigger>
+                    <Tooltip.Portal>
+                      <Tooltip.Content side="top" align="end" sideOffset={6} collisionPadding={12}
+                        className="z-[60] max-w-[min(22rem,calc(100vw-2rem))] rounded-lg border bg-popover px-3 py-2 text-xs leading-5 text-popover-foreground shadow-md">
+                        <p className="whitespace-pre-wrap break-words">{task.errorMessage?.trim() || '未记录具体错误原因。'}</p>
+                        {task.errorCode && <p className="mt-1 break-all text-muted-foreground">错误码：{task.errorCode}</p>}
+                      </Tooltip.Content>
+                    </Tooltip.Portal>
+                  </Tooltip.Root>}
+                </span>
+              </TableCell>
             </TableRow>)}</TableBody>
           </Table>
+          </Tooltip.Provider>
         </div>}
         {!loading && data?.items.length === 0 && <Empty className="py-12">
           <EmptyHeader><EmptyMedia variant="icon" className="bg-white/40"><CalendarCheck aria-hidden="true" /></EmptyMedia>

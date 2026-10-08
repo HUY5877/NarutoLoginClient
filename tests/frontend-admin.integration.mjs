@@ -41,7 +41,8 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
     async function fixture(isAdmin = true, viewport = { width: 1280, height: 900 }) {
       const context = await browser.newContext({ viewport });
       const page = await context.newPage(); page.setDefaultTimeout(8_000);
-      const state = { users: [structuredClone(admin), structuredClone(user)], mutations: [], adminReads: [], errors: [], access: isAdmin, failDaily: false };
+      const state = { users: [structuredClone(admin), structuredClone(user)], mutations: [], adminReads: [], errors: [], access: isAdmin, failDaily: false,
+        failureDetails: { errorCode: 'daily_timeout', errorMessage: '日常任务执行超时，请查看执行日志。' } };
       page.on('pageerror', error => state.errors.push(error.message));
       await context.route('**/*', async route => {
         const url = new URL(route.request().url());
@@ -58,7 +59,7 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
           if (url.pathname === '/api/admin/daily-tasks') {
             if (state.failDaily) return reply({ error: '任务日志暂时不可用，请稍后重试。' }, 503);
             return reply({ items: [task, { ...task, id: 'running', username: 'Sasuke_02', scannedAt: null, completedAt: null, status: 'running_daily' },
-              { ...task, id: 'failed', username: 'Sakura_03', completedAt: null, status: 'failed' }],
+              { ...task, id: 'failed', username: 'Sakura_03', completedAt: null, status: 'failed', ...state.failureDetails }],
             total: 3, page: 1, pageSize: 20, date: '2026-10-08', timeZone: 'Asia/Shanghai' });
           }
           if (url.pathname === '/api/admin/users' && method === 'GET') {
@@ -98,8 +99,31 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
         assert.deepEqual(await dialog.getByRole('columnheader').allTextContents(), ['用户名', '申请时间', '扫描完成时间', '脚本执行完成时间', '任务状态']);
         assert.match(await dialog.innerText(), /08:02:00/); assert.match(await dialog.innerText(), /08:30:00/);
         assert.match(await dialog.innerText(), /刷日常中/); assert.match(await dialog.innerText(), /失败/);
+        const details = dialog.getByRole('button', { name: 'Sakura_03的失败详情', exact: true });
+        assert.equal(await dialog.getByRole('button', { name: /的失败详情$/ }).count(), 1);
+        assert.match(await details.locator('..').innerText(), /失败\s*详情/);
+        await details.hover();
+        const tooltip = f.page.getByRole('tooltip');
+        await tooltip.waitFor();
+        assert.match(await tooltip.innerText(), /日常任务执行超时，请查看执行日志。/);
+        assert.match(await tooltip.innerText(), /错误码：daily_timeout/);
         await mkdir(path.join(repository, '.data/admin-preview'), { recursive: true });
         await f.page.screenshot({ path: path.join(repository, '.data/admin-preview/daily-desktop.png') });
+        const dismissDetails = async () => {
+          const heading = await dialog.getByRole('heading', { name: '今日刷日常情况' }).boundingBox();
+          await f.page.mouse.move(heading.x + heading.width / 2, heading.y + heading.height / 2, { steps: 10 });
+          await tooltip.waitFor({ state: 'hidden' });
+        };
+        await dismissDetails();
+        await details.focus(); await tooltip.waitFor();
+        await f.page.keyboard.press('Escape'); await tooltip.waitFor({ state: 'hidden' });
+        assert.equal(await dialog.isVisible(), true, 'Escape closes failure details without closing the daily task list');
+        f.state.failureDetails = {};
+        await dialog.getByRole('button', { name: '刷新', exact: true }).click();
+        await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
+        await details.hover(); await tooltip.waitFor();
+        assert.equal(await tooltip.innerText(), '未记录具体错误原因。');
+        await dismissDetails();
         f.state.failDaily = true; await dialog.getByRole('button', { name: '刷新', exact: true }).click();
         await dialog.getByRole('alert').waitFor(); assert.match(await dialog.innerText(), /任务日志暂时不可用/);
         assert.equal(await dialog.getByRole('cell', { name: user.username, exact: true }).count(), 1);

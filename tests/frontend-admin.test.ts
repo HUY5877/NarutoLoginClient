@@ -11,6 +11,10 @@ test('administrator responses validate timestamps, roles, pagination and known t
   const daily = { items: [{ id: 'task', username: 'Naruto', requestedAt: user.createdAt, scannedAt: null, completedAt: null, status: 'running_daily' }],
     page: 1, pageSize: 20, total: 1, date: '2026-10-09', timeZone: 'Asia/Shanghai' };
   assert.ok(isDailyPage(daily));
+  const failed = { ...daily.items[0], status: 'failed', errorCode: 'daily_timeout', errorMessage: '日常任务执行超时。' };
+  assert.ok(isDailyPage({ ...daily, items: [failed] }));
+  assert.equal(isDailyPage({ ...daily, items: [{ ...failed, errorMessage: {} }] }), false);
+  assert.equal(isDailyPage({ ...daily, items: [{ ...failed, errorCode: 'invalid code' }] }), false);
   assert.equal(isDailyPage({ ...daily, items: [{ ...daily.items[0], status: 'unknown' }] }), false);
   assert.equal(isDailyPage({ ...daily, items: [{ ...daily.items[0], completedAt: 'broken' }] }), false);
   assert.equal(isDailyPage({ ...daily, total: -1 }), false);

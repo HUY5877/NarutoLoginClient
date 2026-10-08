@@ -21,6 +21,8 @@ export interface DailyTask {
   scannedAt: string | null;
   completedAt: string | null;
   status: DailyStatus;
+  errorCode?: string;
+  errorMessage?: string;
 }
 export interface PageResult<T> { items: T[]; total: number; page: number; pageSize: number }
 export interface DailyTaskPage extends PageResult<DailyTask> { date: string; timeZone: 'Asia/Shanghai' }

@@ -4,6 +4,7 @@ import { UserManagementError, UsernameTakenError, type AdminStore, type UserChan
 import { ApiError } from './errors.js';
 import type { TaskRunService } from './task-runs.js';
 import type { DailyTask, DailyTaskPage, ManagedUser, PageResult } from '../shared/admin.js';
+import { taskFailureMessage } from '../shared/task-errors.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const pageSize = 20;
@@ -92,12 +93,17 @@ export class AdminService {
     const summaries = await this.options.runs.getSummaries(events.items.map(event => event.id));
     const items: DailyTask[] = events.items.map((event, index) => {
       const run = summaries[index];
+      const status: DailyTask['status'] = run?.status ?? (event.status === 'failed' ? 'failed'
+        : Date.parse(event.expiresAt) <= now ? 'unavailable' : event.status === 'qr_ready' ? 'waiting_scan' : event.status);
       return { id: event.id, username: event.username, requestedAt: event.createdAt,
         scannedAt: run?.authorizedAt ?? null,
         // finishedAt on a failed/expired run does not mean the daily script completed.
         completedAt: run?.status === 'completed' && run.startedAt ? run.finishedAt : null,
-        status: run?.status ?? (event.status === 'failed' ? 'failed' : Date.parse(event.expiresAt) <= now ? 'unavailable'
-          : event.status === 'qr_ready' ? 'waiting_scan' : event.status) };
+        status,
+        ...(status === 'failed' ? {
+          ...(run?.errorCode ? { errorCode: run.errorCode } : {}),
+          errorMessage: taskFailureMessage(run?.errorCode, '未记录具体错误原因。'),
+        } : {}) };
     });
     return { items, total: events.total, page, pageSize, date, timeZone: 'Asia/Shanghai' };
   }

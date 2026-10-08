@@ -23,6 +23,8 @@ export function isDailyPage(value: unknown): value is DailyTaskPage {
     && value.timeZone === 'Asia/Shanghai' && value.items.every(item => object(item)
       && typeof item.id === 'string' && typeof item.username === 'string' && date(item.requestedAt)
       && nullableDate(item.scannedAt) && nullableDate(item.completedAt)
+      && (item.errorCode === undefined || typeof item.errorCode === 'string' && /^[a-z0-9_]{1,64}$/.test(item.errorCode))
+      && (item.errorMessage === undefined || typeof item.errorMessage === 'string')
       && typeof item.status === 'string' && Object.hasOwn(dailyStatusLabels, item.status));
 }
 export class AdminRequestError extends Error {

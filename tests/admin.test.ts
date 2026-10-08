@@ -114,3 +114,36 @@ test('QR expiration never overrides an executing script and failed/mock runs do 
   assert.deepEqual(result.items.map(item => item.completedAt), [null, null, null, null]);
   assert.equal(result.items[3].scannedAt, null);
 });
+
+test('daily failures expose each run error with honest fallbacks without adding errors to other statuses', async () => {
+  const cases = [
+    { status: 'failed', errorCode: 'daily_timeout' },
+    { status: 'failed', errorCode: 'emulator_start_failed' },
+    { status: 'failed', errorCode: 'future_worker_error' },
+    { status: 'failed' },
+    null,
+    { status: 'completed', errorCode: 'daily_failed' },
+    { status: 'running_daily', errorCode: 'daily_failed' },
+    { status: 'interrupted', errorCode: 'command_timeout' },
+  ] satisfies Array<Pick<TaskRun, 'status' | 'errorCode'> | null>;
+  const items: DailyEvent[] = cases.map((_, index) => ({ id: `10000000-0000-4000-8000-0000000000${index + 10}`,
+    username: user.username, createdAt: new Date(now).toISOString(), expiresAt: new Date(now - 1000).toISOString(), status: 'failed' }));
+  const runs = cases.map((value, index) => value ? { ...value, taskId: items[index].id,
+    updatedAt: new Date(now).toISOString(), startedAt: null, finishedAt: null } : null);
+  const f = fixture({ listDailyEvents: async () => ({ items, total: items.length }) }, runs);
+  const result = await f.service.dailyTasks(admin, {});
+  assert.deepEqual(result.items.slice(0, 5).map(({ id, status, errorCode, errorMessage }) => ({ id, status, errorCode, errorMessage })), [
+    { id: items[0].id, status: 'failed', errorCode: 'daily_timeout', errorMessage: '日常任务执行超时，请查看执行日志。' },
+    { id: items[1].id, status: 'failed', errorCode: 'emulator_start_failed', errorMessage: '模拟器启动失败，请稍后重新申请。' },
+    { id: items[2].id, status: 'failed', errorCode: 'future_worker_error', errorMessage: '未记录具体错误原因。' },
+    { id: items[3].id, status: 'failed', errorCode: undefined, errorMessage: '未记录具体错误原因。' },
+    { id: items[4].id, status: 'failed', errorCode: undefined, errorMessage: '未记录具体错误原因。' },
+  ]);
+  for (const item of result.items.slice(3, 5)) assert.equal(Object.hasOwn(item, 'errorCode'), false);
+  assert.deepEqual(result.items.slice(5).map(item => item.status), ['completed', 'running_daily', 'interrupted']);
+  for (const item of result.items.slice(5)) {
+    assert.equal(Object.hasOwn(item, 'errorCode'), false);
+    assert.equal(Object.hasOwn(item, 'errorMessage'), false);
+  }
+  assert.deepEqual(f.calls, [items.map(item => item.id)]);
+});
