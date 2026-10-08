@@ -234,8 +234,9 @@ test('批准在锁定申请的事务内启用账号并记录审批人和时间�
   const reviewClient = operations.find(value => value.sql.endsWith('FOR SHARE'))!.client;
   const steps = operations.filter(value => value.client === reviewClient);
   assert.equal(steps[0].sql, 'BEGIN');
-  assert.match(steps[1].sql, /is_admin = true AND is_invalid = false FOR SHARE$/);
-  assert.match(steps[2].sql, /FOR UPDATE OF a$/);
+  assert.equal(steps[1].sql, 'SELECT pg_advisory_xact_lock(19830527, 1179018069)');
+  assert.match(steps[2].sql, /is_admin = true AND is_invalid = false FOR SHARE$/);
+  assert.match(steps[3].sql, /FOR UPDATE OF a$/);
   assert.equal(steps.at(-1)?.sql, 'COMMIT');
 });
 

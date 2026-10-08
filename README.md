@@ -64,6 +64,10 @@ TSX 页面每秒 GET /api/login-sessions/{id}
 
 新注册的用户固定为 `is_invalid=true`、`is_admin=false`，同时创建一条待审批申请，不签发登录 Cookie。`is_invalid=true` 表示账号尚未获准登录或已停用；审批通过后改为 `false`。`is_admin=true` 表示管理员，页面右上角显示「管理员」菜单，可打开注册申请审核面板，按状态筛选申请并批准或拒绝。审批表保存状态、申请时间、审核人、审核时间和可选备注；同一申请只能审核一次，重复审核返回 `409`。
 
+管理员菜单还提供「今日刷日常情况」和「用户管理」，均使用 shadcn/ui 二级弹窗。今日任务按北京时间的申请日期筛选，每次申请展示用户名、申请时间、扫描完成时间、脚本执行完成时间和任务状态，支持刷新及每页 20 条分页。扫码完成时间读取执行快照的 `authorizedAt`；脚本完成时间仅在已开始执行脚本且状态为 `completed` 时显示 `finishedAt`，失败或未完成时显示 `—`。任务状态优先使用执行快照，二维码过期不会覆盖执行中的日常任务；执行快照已丢失且申请过期时显示「执行记录不可用」，不推测结果。
+
+用户管理支持用户名搜索、分页、新增、查看、编辑与删除，可修改用户名、密码、管理员角色和启用状态。编辑时密码留空表示保留原密码，API 始终不返回密码；管理员新增的启用账号可直接登录。在用户管理中启用待审核账号会在同一事务内通过其待审核申请。删除使用确认弹窗，并按现有外键关系删除该用户的注册及日常申请记录；不能删除、停用或撤销当前登录账号的管理员权限。写操作在事务内再次校验管理员身份，权限变更后已有 Cookie 也不能继续操作。
+
 数据库迁移保留旧用户原有登录资格，旧账号不会自动变成管理员。初始管理员必须由数据库管理员显式指定；公开注册及审核接口都不能设置 `is_admin`。现有数据库已按用户要求设置首个管理员 `HUY1`，密码不写入仓库。每次接口请求都重新检查账号启用状态与角色，禁用账号或撤销管理员角色后，已有 Cookie 也不能绕过权限检查。
 
 未配置数据库时，注册登录返回 `503 / DATABASE_NOT_CONFIGURED`；缺少 JWT 签名密钥时无法签发或验证 JWT，返回 `503 / JWT_NOT_CONFIGURED`；未登录申请二维码返回 `401 / AUTH_REQUIRED`。同账号并发申请通过数据库账号行锁和唯一约束复用当前事件；Redis Lua 负责同任务重试不重复入队。不能通过修改请求中的用户 ID 访问其他账号的二维码。
@@ -192,6 +196,12 @@ Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run 
 | `POST /api/auth/logout` | 清除当前浏览器的 JWT Cookie，无需访问数据库 |
 | `GET /api/admin/registration-applications?status=pending` | 管理员查看最近 100 条申请，支持 `pending`、`approved`、`rejected`、`all` |
 | `POST /api/admin/registration-applications/:id/review` | 管理员提交 `{decision: "approved" 或 "rejected", reason?: string}`，审核人与时间由后端确定 |
+| `GET /api/admin/daily-tasks?page=1` | 管理员查看北京时间今日申请的任务及扫码/脚本完成时间，每页 20 条，返回 `items`、`total`、`page`、`pageSize`、`date`、`timeZone` |
+| `GET /api/admin/users?search=&page=1` | 管理员按用户名搜索注册用户，返回 `items`、`total`、`page`、`pageSize`，每页 20 条 |
+| `GET /api/admin/users/:id` | 管理员读取用户详情，不返回密码 |
+| `POST /api/admin/users` | 管理员提交 `{username, password, isAdmin: boolean, isInvalid: boolean}` 创建账号，返回 `201` 和 `{user}` |
+| `PATCH /api/admin/users/:id` | 管理员提交 `{username, password?: string, isAdmin: boolean, isInvalid: boolean}` 更新账号，密码省略或留空时保留，返回 `{user}` |
+| `DELETE /api/admin/users/:id` | 管理员删除账号及关联记录，返回 `204`；不允许删除当前账号 |
 | `POST /api/login-sessions` | `{requestId, userOptions: {equipmentStamina: boolean}}` 创建或恢复同一事件，返回 `202` 和 `id`、状态、有效时间、`userOptions`、`showGetButton`；省略选项默认开启 |
 | `GET /api/login-sessions/active` | `{session, showGetButton}`，用户主动点击后查询当前账号未过期事件 |
 | `GET /api/login-sessions/:id` | 当前账号的事件进度及 `showGetButton`，使用登录 Cookie |
@@ -234,6 +244,8 @@ npm run build
 测试使用模拟数据库、Redis 驱动、OSS 方法和临时目录，不需要真实云端凭据。覆盖注册唯一性、JWT 签发/验签/过期、退出清除 Cookie、实时权限、任务归属、同账号互斥、失败处理、存储就绪判定、过期与 PNG 响应，并检查单端口开发启动。
 
 二维码懒加载的浏览器回归可单独执行 `node --test tests/frontend-login-lazy.integration.mjs`。测试使用真实前端和模拟 API，覆盖刷新、新页面、点击恢复、请求编号复用、过期和账号切换。可用 `PLAYWRIGHT_MODULE` 与 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` 指定现有 Playwright 模块和 Chromium 路径；依赖不可用时明确跳过，不会自动安装。
+
+管理员浏览器回归执行 `node --test tests/frontend-admin.integration.mjs`，复用上述浏览器依赖配置，覆盖管理员入口、今日任务字段、用户增删改查、权限失效与手机布局，API 使用模拟数据。界面检查截图写入已忽略的 `.data/admin-preview/`。
 
 
 todo:

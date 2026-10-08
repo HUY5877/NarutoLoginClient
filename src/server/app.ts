@@ -8,12 +8,14 @@ import type { Task } from './queue.js';
 import type { LoginEventService } from './login-events.js';
 import { isStreamCursor, type TaskRunService } from './task-runs.js';
 import { parseUserOptions } from '../shared/user-options.js';
+import type { AdminService } from './admin.js';
 
 export interface Dependencies {
   events: Pick<LoginEventService, 'create' | 'getForUser' | 'getActive' | 'recordStatus'>;
   auth: Pick<AuthService, 'register' | 'login' | 'getUser' | 'listApplications' | 'reviewApplication'>;
   storage: ObjectReader;
   runs?: Pick<TaskRunService, 'getLatest' | 'getEvents'>;
+  admin?: Pick<AdminService, 'listUsers' | 'getUser' | 'createUser' | 'updateUser' | 'deleteUser' | 'dailyTasks'>;
   now?: () => number;
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -34,7 +36,7 @@ function cookieOptions(req: Request): CookieOptions {
   return { httpOnly: true, sameSite: 'lax', secure: req.secure, path: '/' };
 }
 
-export function createApp(config: Config, { events, auth, storage, runs, now = Date.now }: Dependencies) {
+export function createApp(config: Config, { events, auth, storage, runs, admin, now = Date.now }: Dependencies) {
   const app = express();
   app.disable('x-powered-by');
   app.use('/api', (_req, res, next) => {
@@ -74,7 +76,7 @@ export function createApp(config: Config, { events, auth, storage, runs, now = D
   app.use('/api/admin', async (req, res, next) => {
     const user = await auth.getUser(sessionToken(req));
     if (!user) throw new ApiError(401, '请先登录管理员账号。', 'AUTH_REQUIRED');
-    if (!user.isAdmin) throw new ApiError(403, '仅管理员可以处理注册申请。', 'ADMIN_REQUIRED');
+    if (!user.isAdmin) throw new ApiError(403, '仅管理员可以访问管理功能。', 'ADMIN_REQUIRED');
     res.locals.user = user;
     next();
   });
@@ -84,6 +86,19 @@ export function createApp(config: Config, { events, auth, storage, runs, now = D
   app.post('/api/admin/registration-applications/:id/review', async (req, res) => {
     const id = sessionId(req);
     res.json(await auth.reviewApplication(res.locals.user as User, id, req.body));
+  });
+  const adminService = () => {
+    if (!admin) throw new ApiError(503, '管理服务尚未配置。', 'ADMIN_UNAVAILABLE');
+    return admin;
+  };
+  app.get('/api/admin/daily-tasks', async (req, res) => res.json(await adminService().dailyTasks(res.locals.user as User, req.query)));
+  app.get('/api/admin/users', async (req, res) => res.json(await adminService().listUsers(res.locals.user as User, req.query)));
+  app.get('/api/admin/users/:id', async (req, res) => res.json(await adminService().getUser(res.locals.user as User, req.params.id as string)));
+  app.post('/api/admin/users', async (req, res) => res.status(201).json(await adminService().createUser(res.locals.user as User, req.body)));
+  app.patch('/api/admin/users/:id', async (req, res) => res.json(await adminService().updateUser(res.locals.user as User, req.params.id as string, req.body)));
+  app.delete('/api/admin/users/:id', async (req, res) => {
+    await adminService().deleteUser(res.locals.user as User, req.params.id as string);
+    res.status(204).end();
   });
 
   app.use(['/api/login-sessions', '/api/task-runs'], async (req, res, next) => {

@@ -53,6 +53,49 @@ async function withApi(deps: Partial<Dependencies>, run: (base: string) => Promi
   finally { server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
 }
 
+test('user management and daily task APIs enforce admin identity, JSON and same-origin before invoking services', async () => {
+  const calls: unknown[][] = [];
+  const managed = { ...user, isInvalid: false, createdAt: new Date(start).toISOString(), applicationStatus: null };
+  const adminService: NonNullable<Dependencies['admin']> = {
+    listUsers: async (actor, query) => { calls.push(['list', actor.id, query]); return { items: [managed], total: 1, page: 1, pageSize: 20 }; },
+    getUser: async (actor, target) => { calls.push(['get', actor.id, target]); return { user: managed }; },
+    createUser: async (actor, body) => { calls.push(['create', actor.id, body]); return { user: managed }; },
+    updateUser: async (actor, target, body) => { calls.push(['update', actor.id, target, body]); return { user: managed }; },
+    deleteUser: async (actor, target) => { calls.push(['delete', actor.id, target]); },
+    dailyTasks: async (actor, query) => { calls.push(['daily', actor.id, query]); return { items: [], total: 0, page: 1, pageSize: 20, date: '2026-10-08', timeZone: 'Asia/Shanghai' }; },
+  };
+  await withApi({ admin: adminService }, async base => {
+    const routes = [{ path: '/api/admin/users', method: 'GET' }, { path: `/api/admin/users/${user.id}`, method: 'GET' },
+      { path: '/api/admin/daily-tasks', method: 'GET' }, { path: '/api/admin/users', method: 'POST' },
+      { path: `/api/admin/users/${user.id}`, method: 'PATCH' }, { path: `/api/admin/users/${user.id}`, method: 'DELETE' }];
+    for (const route of routes) for (const attempt of [{ headers: {}, status: 401 }, { headers, status: 403 }]) {
+      const response = await fetch(`${base}${route.path}`, { method: route.method, headers: { ...jsonHeaders, ...attempt.headers },
+        ...(route.method === 'GET' ? {} : { body: '{}' }) });
+      assert.equal(response.status, attempt.status); assert.equal(response.headers.get('cache-control'), 'no-store');
+    }
+    assert.deepEqual(calls, []);
+    const mutation = { username: 'new-user', password: 'password', isAdmin: false, isInvalid: false, adminId: 'forged' };
+    for (const route of routes) {
+      const options = { method: route.method, headers: { ...adminHeaders, ...jsonHeaders }, ...(route.method === 'GET' ? {} : { body: JSON.stringify(mutation) }) };
+      if (route.method !== 'GET') {
+        assert.equal((await fetch(`${base}${route.path}`, { ...options, headers: { ...options.headers, Origin: 'https://hostile.example' } })).status, 403);
+        assert.equal((await fetch(`${base}${route.path}`, { ...options, headers: { ...adminHeaders, 'Content-Type': 'text/plain' } })).status, 415);
+      }
+      const response = await fetch(`${base}${route.path}`, options);
+      assert.equal(response.status, route.method === 'POST' ? 201 : route.method === 'DELETE' ? 204 : 200);
+    }
+    assert.equal(calls.length, 6);
+    assert.ok(calls.every(call => call[1] === admin.id));
+    assert.deepEqual(calls[3], ['create', admin.id, mutation]);
+    assert.deepEqual(calls[4], ['update', admin.id, user.id, mutation]);
+    assert.deepEqual(calls[5], ['delete', admin.id, user.id]);
+  });
+  await withApi({ admin: adminService, auth: auth({ getUser: async () => ({ ...admin, isAdmin: false }) }) }, async base => {
+    assert.equal((await fetch(`${base}/api/admin/users`, { headers: adminHeaders })).status, 403);
+    assert.equal(calls.length, 6);
+  });
+});
+
 test('事件身份来自 Cookie，请求编号透传服务且不作为事件编号，不返回内部凭证', async () => {
   const submitted: { userId: string; requestId: string }[] = [];
   await withApi({ events: events({ create: async (userId, inputRequestId) => {

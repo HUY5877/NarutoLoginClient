@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, CircleAlert, ClipboardCheck, RefreshCw, ShieldCheck, X } from 'lucide-react';
+import { CalendarCheck, Check, ChevronDown, CircleAlert, ClipboardCheck, RefreshCw, ShieldCheck, Users, X } from 'lucide-react';
+import { AdminDailyTasks } from '@/components/admin-daily-tasks';
+import { AdminUsers } from '@/components/admin-users';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -37,6 +39,8 @@ function validApplication(value: RegistrationApplication) {
 
 export function AdminMenu({ userId, refreshAuth }: { userId: string; refreshAuth: () => Promise<void> }) {
   const [open, setOpen] = useState(false);
+  const [dailyOpen, setDailyOpen] = useState(false);
+  const [usersOpen, setUsersOpen] = useState(false);
   const [filter, setFilter] = useState<Filter>('pending');
   const [applications, setApplications] = useState<RegistrationApplication[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -51,10 +55,14 @@ export function AdminMenu({ userId, refreshAuth }: { userId: string; refreshAuth
   const reviewingRef = useRef(false);
   const mountedRef = useRef(true);
   const openingDialogRef = useRef(false);
+  const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const returnFocus = () => menuTriggerRef.current?.focus();
 
   const loseAccess = useCallback(() => {
     requestRef.current?.abort();
     setOpen(false);
+    setDailyOpen(false);
+    setUsersOpen(false);
     setApplications(null);
     setAccessLost(true);
     void refreshAuth();
@@ -158,14 +166,14 @@ export function AdminMenu({ userId, refreshAuth }: { userId: string; refreshAuth
     }
   }
 
-  if (accessLost) return <span role="alert" className="max-w-36 text-xs leading-5 text-destructive">管理员权限已变更，审核面板已关闭。</span>;
+  if (accessLost) return <span role="alert" className="max-w-36 text-xs leading-5 text-destructive">管理员权限已变更，管理面板已关闭。</span>;
 
   return (
     <>
       {/* Keep the page scrollbar and fixed background stable while this menu is open. */}
       <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
-          <Button type="button" variant="outline" size="sm" className="gap-1.5 bg-white/45">
+          <Button ref={menuTriggerRef} type="button" variant="outline" size="sm" className="gap-1.5 bg-white/45">
             <ShieldCheck aria-hidden="true" />管理员<ChevronDown aria-hidden="true" />
           </Button>
         </DropdownMenuTrigger>
@@ -175,10 +183,17 @@ export function AdminMenu({ userId, refreshAuth }: { userId: string; refreshAuth
           <DropdownMenuItem className="py-2" onSelect={() => { openingDialogRef.current = true; setOpen(true); }}>
             <ClipboardCheck aria-hidden="true" />注册申请审核
           </DropdownMenuItem>
+          <DropdownMenuItem className="py-2" onSelect={() => { openingDialogRef.current = true; setDailyOpen(true); }}>
+            <CalendarCheck aria-hidden="true" />今日刷日常情况
+          </DropdownMenuItem>
+          <DropdownMenuItem className="py-2" onSelect={() => { openingDialogRef.current = true; setUsersOpen(true); }}>
+            <Users aria-hidden="true" />用户管理
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
       <Dialog open={open} onOpenChange={next => { if (!reviewingRef.current) setOpen(next); }}>
-        <DialogContent className="auth-dialog flex max-h-[min(88svh,52rem)] flex-col gap-5 p-5 sm:max-w-3xl sm:p-6">
+        <DialogContent className="auth-dialog flex max-h-[min(88svh,52rem)] flex-col gap-5 p-5 sm:max-w-3xl sm:p-6"
+          onCloseAutoFocus={event => { event.preventDefault(); returnFocus(); }}>
           <DialogHeader className="shrink-0 gap-2 pr-7">
             <DialogTitle className="flex items-center gap-2 text-lg font-semibold"><ClipboardCheck aria-hidden="true" />注册申请审核</DialogTitle>
             <DialogDescription className="leading-6">审核通过后，申请人即可使用注册时的用户名和密码登录。</DialogDescription>
@@ -243,6 +258,8 @@ export function AdminMenu({ userId, refreshAuth }: { userId: string; refreshAuth
           </div>
         </DialogContent>
       </Dialog>
+      {dailyOpen && <AdminDailyTasks open={dailyOpen} onOpenChange={setDailyOpen} onAccessLost={loseAccess} returnFocus={returnFocus} />}
+      {usersOpen && <AdminUsers open={usersOpen} onOpenChange={setUsersOpen} currentUserId={userId} onAccessLost={loseAccess} refreshAuth={refreshAuth} returnFocus={returnFocus} />}
     </>
   );
 }

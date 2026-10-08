@@ -1,6 +1,7 @@
 import { Pool, type PoolClient } from 'pg';
 import { parseUserOptions } from '../shared/user-options.js';
 import type { Status, Submission } from './queue.js';
+import type { ManagedUser } from '../shared/admin.js';
 
 export interface PublicUser { id: string; username: string; isAdmin: boolean }
 export type ApplicationStatus = 'pending' | 'approved' | 'rejected';
@@ -33,6 +34,31 @@ export interface AuthStore {
   reviewRegistration(applicationId: string, adminId: string, decision: 'approved' | 'rejected', reason: string | null, now: Date): Promise<RegistrationApplication>;
   close(): Promise<void>;
 }
+
+export interface UserChanges { username: string; usernameKey: string; password?: string; isInvalid: boolean; isAdmin: boolean }
+export interface DailyEvent {
+  id: string; username: string; createdAt: string; expiresAt: string; status: Status;
+}
+export interface AdminStore {
+  initialize(): Promise<void>;
+  listUsers(search: string, offset: number, limit: number): Promise<{ items: ManagedUser[]; total: number }>;
+  getManagedUser(id: string): Promise<ManagedUser | null>;
+  createUser(adminId: string, user: StoredUser, now: Date): Promise<ManagedUser>;
+  updateUser(adminId: string, id: string, changes: UserChanges, now: Date): Promise<ManagedUser>;
+  deleteUser(adminId: string, id: string): Promise<void>;
+  listDailyEvents(start: Date, end: Date, offset: number, limit: number): Promise<{ items: DailyEvent[]; total: number }>;
+}
+export class UserManagementError extends Error {
+  constructor(public code: 'NOT_FOUND' | 'ADMIN_REQUIRED' | 'SELF_PROTECTED') { super('User management failed'); }
+}
+type ManagedUserRow = Omit<ManagedUser, 'createdAt'> & { createdAt: Timestamp };
+const managedUserColumns = `u.id, u.username, u.is_admin AS "isAdmin", u.is_invalid AS "isInvalid", u.created_at AS "createdAt",
+  (SELECT a.status FROM naruto_login.registration_applications a WHERE a.user_id = u.id
+   ORDER BY a.created_at DESC, a.id DESC LIMIT 1) AS "applicationStatus"`;
+const managedUser = (row: ManagedUserRow): ManagedUser => ({
+  id: row.id, username: row.username, isAdmin: row.isAdmin, isInvalid: row.isInvalid,
+  createdAt: new Date(row.createdAt).toISOString(), applicationStatus: row.applicationStatus,
+});
 
 export interface LoginEvent extends Submission {
   requestId: string;
@@ -149,10 +175,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS naruto_login_login_events_active_user_idx
   ON naruto_login.login_events (user_id) WHERE finished_at IS NULL;
 CREATE INDEX IF NOT EXISTS naruto_login_login_events_user_expires_idx ON naruto_login.login_events (user_id, expires_at);
 CREATE INDEX IF NOT EXISTS naruto_login_login_events_user_created_idx ON naruto_login.login_events (user_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS naruto_login_login_events_created_idx ON naruto_login.login_events (created_at DESC, id DESC);
 `;
 
 // Each application service owns one pool, reused across requests and warm serverless invocations.
-export class PgAuthStore implements AuthStore, LoginEventStore {
+export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
   private readonly pool: Pool;
   private initialization?: Promise<void>;
 
@@ -253,6 +280,94 @@ export class PgAuthStore implements AuthStore, LoginEventStore {
     return result.rows[0] ?? null;
   }
 
+  async listUsers(search: string, offset: number, limit: number) {
+    await this.initialize();
+    return this.transaction(async client => {
+      await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+      // Literal substring search: underscores in valid usernames must not become wildcards.
+      const where = `strpos(lower(u.username), lower($1)) > 0`;
+      const count = await client.query<{ total: number }>(`SELECT count(*)::int AS total FROM naruto_login.users u WHERE ${where}`, [search]);
+      const result = await client.query<ManagedUserRow>(`SELECT ${managedUserColumns} FROM naruto_login.users u
+        WHERE ${where} ORDER BY u.created_at DESC, u.id DESC LIMIT $2 OFFSET $3`, [search, limit, offset]);
+      return { items: result.rows.map(managedUser), total: count.rows[0].total };
+    });
+  }
+
+  async getManagedUser(id: string): Promise<ManagedUser | null> {
+    await this.initialize();
+    const result = await this.pool.query<ManagedUserRow>(`SELECT ${managedUserColumns} FROM naruto_login.users u WHERE u.id = $1`, [id]);
+    return result.rows[0] ? managedUser(result.rows[0]) : null;
+  }
+
+  private async manageUser<T>(adminId: string, run: (client: PoolClient) => Promise<T>): Promise<T> {
+    await this.initialize();
+    try {
+      return await this.transaction(async client => {
+        // Serialize administrator mutations, including cross-admin edits, to avoid lock-order races.
+        await client.query('SELECT pg_advisory_xact_lock(19830527, 1179018069)');
+        const actor = await client.query('SELECT id FROM naruto_login.users WHERE id = $1 AND is_admin = true AND is_invalid = false FOR SHARE', [adminId]);
+        if (!actor.rows.length) throw new UserManagementError('ADMIN_REQUIRED');
+        return run(client);
+      });
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === '23505'
+        && 'constraint' in error && error.constraint === 'naruto_login_users_username_key_key') throw new UsernameTakenError();
+      throw error;
+    }
+  }
+
+  async createUser(adminId: string, user: StoredUser, now: Date): Promise<ManagedUser> {
+    return this.manageUser(adminId, async client => {
+      await client.query(`INSERT INTO naruto_login.users (id, username, username_key, password, is_invalid, is_admin, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)`, [user.id, user.username, user.usernameKey, user.password, user.isInvalid, user.isAdmin, now]);
+      return { id: user.id, username: user.username, isInvalid: user.isInvalid, isAdmin: user.isAdmin,
+        createdAt: now.toISOString(), applicationStatus: null };
+    });
+  }
+
+  async updateUser(adminId: string, id: string, changes: UserChanges, now: Date): Promise<ManagedUser> {
+    return this.manageUser(adminId, async client => {
+      if (id === adminId && (changes.isInvalid || !changes.isAdmin)) throw new UserManagementError('SELF_PROTECTED');
+      // Match registration review's lock order: application first, then its account.
+      await client.query(`SELECT id FROM naruto_login.registration_applications
+        WHERE user_id = $1 AND status = 'pending' ORDER BY id FOR UPDATE`, [id]);
+      const result = await client.query<ManagedUserRow>(`UPDATE naruto_login.users u
+        SET username = $2, username_key = $3, password = COALESCE($4, password), is_invalid = $5, is_admin = $6
+        WHERE u.id = $1 RETURNING ${managedUserColumns}`, [id, changes.username, changes.usernameKey, changes.password ?? null, changes.isInvalid, changes.isAdmin]);
+      if (!result.rows[0]) throw new UserManagementError('NOT_FOUND');
+      // Explicit activation resolves any pending application so a later review cannot undo this edit.
+      if (!changes.isInvalid) await client.query(`UPDATE naruto_login.registration_applications
+        SET status = 'approved', reviewed_at = $2, reviewed_by = $3, reason = '管理员在用户管理中启用账号'
+        WHERE user_id = $1 AND status = 'pending'`, [id, now, adminId]);
+      return managedUser({ ...result.rows[0], applicationStatus: !changes.isInvalid && result.rows[0].applicationStatus === 'pending'
+        ? 'approved' : result.rows[0].applicationStatus });
+    });
+  }
+
+  async deleteUser(adminId: string, id: string): Promise<void> {
+    return this.manageUser(adminId, async client => {
+      if (id === adminId) throw new UserManagementError('SELF_PROTECTED');
+      await client.query('SELECT id FROM naruto_login.registration_applications WHERE user_id = $1 ORDER BY id FOR UPDATE', [id]);
+      const result = await client.query('DELETE FROM naruto_login.users WHERE id = $1 RETURNING id', [id]);
+      if (!result.rows.length) throw new UserManagementError('NOT_FOUND');
+    });
+  }
+
+  async listDailyEvents(start: Date, end: Date, offset: number, limit: number) {
+    await this.initialize();
+    return this.transaction(async client => {
+      await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+      const count = await client.query<{ total: number }>(`SELECT count(*)::int AS total FROM naruto_login.login_events
+        WHERE created_at >= $1 AND created_at < $2`, [start, end]);
+      const result = await client.query<Omit<DailyEvent, 'createdAt' | 'expiresAt'> & { createdAt: Timestamp; expiresAt: Timestamp }>(
+        `SELECT e.id, u.username, e.created_at AS "createdAt", e.expires_at AS "expiresAt", e.status
+         FROM naruto_login.login_events e JOIN naruto_login.users u ON u.id = e.user_id
+         WHERE e.created_at >= $1 AND e.created_at < $2 ORDER BY e.created_at DESC, e.id DESC LIMIT $3 OFFSET $4`, [start, end, limit, offset]);
+      return { items: result.rows.map(row => ({ id: row.id, username: row.username, status: row.status,
+        createdAt: new Date(row.createdAt).toISOString(), expiresAt: new Date(row.expiresAt).toISOString() })), total: count.rows[0].total };
+    });
+  }
+
   async listRegistrationApplications(status: ApplicationStatus | 'all', limit: number): Promise<RegistrationApplication[]> {
     await this.initialize();
     const result = await this.pool.query<ApplicationRow>(
@@ -267,6 +382,7 @@ export class PgAuthStore implements AuthStore, LoginEventStore {
   async reviewRegistration(applicationId: string, adminId: string, decision: 'approved' | 'rejected', reason: string | null, now: Date): Promise<RegistrationApplication> {
     await this.initialize();
     return await this.transaction(async client => {
+      await client.query('SELECT pg_advisory_xact_lock(19830527, 1179018069)');
       // Hold the actor's privileges stable until the decision commits.
       const actor = await client.query(
         'SELECT id FROM naruto_login.users WHERE id = $1 AND is_admin = true AND is_invalid = false FOR SHARE', [adminId],

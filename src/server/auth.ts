@@ -27,7 +27,7 @@ function validClaims(payload: JWTPayload, now: number): boolean {
     && payload.exp > payload.iat && payload.exp - payload.iat <= JWT_TTL_SECONDS;
 }
 
-function credentials(body: unknown): { username: string; usernameKey: string; password: string } {
+export function credentials(body: unknown): { username: string; usernameKey: string; password: string } {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new ApiError(400, '请填写用户名和密码。', 'INVALID_CREDENTIALS');
   const { username: value, password } = body as Record<string, unknown>;
   const username = typeof value === 'string' ? value.trim() : '';

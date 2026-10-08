@@ -155,7 +155,7 @@ export class TaskRunService {
     const event = await this.database(store => store.getLatestForUser(userId));
     return { task: event ? this.publicTask(event) : null };
   }
-  private async snapshot(taskId: string, after: string): Promise<unknown> {
+  private async readRedis(script: string, keys: string[], args: string[]): Promise<unknown> {
     if (!this.config.redisUrl) throw new ApiError(503, 'Redis 未配置，请先配置 REDIS_URL。', 'REDIS_NOT_CONFIGURED');
     let connection: NonNullable<TaskRunService['connection']> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -169,10 +169,7 @@ export class TaskRunService {
       const operation = async () => {
         if (!current.driver.isReady) { current.opening ??= current.driver.connect(); await current.opening; }
         controller.signal.throwIfAborted();
-        return await current.driver.eval(snapshotScript, {
-          keys: [`${this.config.redisQueueKey}:runs:${taskId}`, `${this.config.redisQueueKey}:logs:${taskId}`],
-          arguments: [after, String(pageSize + 1)],
-        }, controller.signal);
+        return await current.driver.eval(script, { keys, arguments: args }, controller.signal);
       };
       return await Promise.race([operation(), deadline]);
     } catch {
@@ -180,13 +177,24 @@ export class TaskRunService {
       throw new ApiError(503, '任务日志暂时不可用，请稍后重试。', 'TASK_LOGS_UNAVAILABLE');
     } finally { if (timer) clearTimeout(timer); }
   }
+  async getSummaries(taskIds: string[]): Promise<Array<TaskRun | null>> {
+    if (!taskIds.length) return [];
+    if (taskIds.length > 100 || taskIds.some(id => !taskIdPattern.test(id))) throw new ApiError(400, '无效的任务编号。');
+    // GET only: the administrator list never dispatches work or reads worker logs.
+    const raw = await this.readRedis(`local results = {}
+      for i, key in ipairs(KEYS) do results[i] = redis.call('GET', key) or false end
+      return results`, taskIds.map(id => `${this.config.redisQueueKey}:runs:${id}`), []);
+    if (!Array.isArray(raw) || raw.length !== taskIds.length) throw invalidData();
+    return raw.map((value, index) => parseRun(value, taskIds[index]));
+  }
   async getEvents(taskId: string, userId: string, after = '0-0'): Promise<TaskRunEvents> {
     if (taskId !== taskId.trim() || !taskIdPattern.test(taskId)) throw new ApiError(400, '无效的任务编号。');
     if (!isStreamCursor(after)) throw new ApiError(400, '无效的日志读取位置。');
     // The durable database owns authorization even after QR/session Redis TTLs expire.
     const event = await this.database(store => store.getEvent(taskId, userId));
     if (!event) throw new ApiError(404, '任务不存在或不属于当前账号。');
-    const raw = await this.snapshot(event.id, after);
+    const raw = await this.readRedis(snapshotScript,
+      [`${this.config.redisQueueKey}:runs:${event.id}`, `${this.config.redisQueueKey}:logs:${event.id}`], [after, String(pageSize + 1)]);
     if (!Array.isArray(raw) || raw.length !== 5 || !Array.isArray(raw[1]) || raw[1].length > pageSize + 1
       || typeof raw[2] !== 'string' || raw[2] !== '' && !isStreamCursor(raw[2])
       || !Number.isSafeInteger(raw[3]) || !Number.isSafeInteger(raw[4])) throw invalidData();

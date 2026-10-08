@@ -1,0 +1,44 @@
+import { dailyStatusLabels, type DailyTaskPage, type ManagedUser, type PageResult } from '../../shared/admin';
+
+const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
+const date = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value));
+const nullableDate = (value: unknown) => value === null || date(value);
+export function isManagedUser(value: unknown): value is ManagedUser {
+  return object(value) && typeof value.id === 'string' && typeof value.username === 'string'
+    && typeof value.isAdmin === 'boolean' && typeof value.isInvalid === 'boolean' && date(value.createdAt)
+    && (value.applicationStatus === null || ['pending', 'approved', 'rejected'].includes(String(value.applicationStatus)));
+}
+export function isUserResponse(value: unknown): value is { user: ManagedUser } {
+  return object(value) && isManagedUser(value.user);
+}
+function isPage(value: unknown): value is PageResult<unknown> {
+  return object(value) && Array.isArray(value.items) && Number.isSafeInteger(value.total) && (value.total as number) >= 0
+    && Number.isSafeInteger(value.page) && (value.page as number) > 0 && Number.isSafeInteger(value.pageSize) && (value.pageSize as number) > 0;
+}
+export function isUsersPage(value: unknown): value is PageResult<ManagedUser> {
+  return isPage(value) && value.items.every(isManagedUser);
+}
+export function isDailyPage(value: unknown): value is DailyTaskPage {
+  return isPage(value) && object(value) && typeof value.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.date)
+    && value.timeZone === 'Asia/Shanghai' && value.items.every(item => object(item)
+      && typeof item.id === 'string' && typeof item.username === 'string' && date(item.requestedAt)
+      && nullableDate(item.scannedAt) && nullableDate(item.completedAt)
+      && typeof item.status === 'string' && Object.hasOwn(dailyStatusLabels, item.status));
+}
+export class AdminRequestError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
+export async function adminRequest(path: string, signal: AbortSignal, method = 'GET', body?: unknown): Promise<unknown> {
+  const response = await fetch(path, { method, credentials: 'same-origin', cache: 'no-store',
+    signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+    ...(method !== 'GET' ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) } : {}) });
+  if (response.status === 204) return null;
+  const result: unknown = await response.json();
+  if (!response.ok) throw new AdminRequestError(response.status,
+    object(result) && typeof result.error === 'string' ? result.error : '操作未完成，请重试。');
+  return result;
+}
+export function formatAdminDate(value: string | null) {
+  return value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—';
+}

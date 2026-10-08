@@ -44,6 +44,30 @@ function fixture() {
     get calls() { return calls; }, get connections() { return connections; }, get destroyed() { return destroyed; } };
 }
 
+test('administrator summary reads use one bounded GET batch and omit worker logs and private fields', async () => {
+  const f = fixture();
+  const otherId = '123e4567-e89b-42d3-a456-426614174001';
+  let calls = 0;
+  f.driver.eval = async (script, options) => {
+    calls++;
+    assert.match(script, /redis.call\('GET', key\)/);
+    assert.doesNotMatch(script, /XRANGE|XINFO|SET|DEL|LPUSH|BRPOP/);
+    assert.deepEqual(options, { keys: [`naruto:login:tasks:runs:${id}`, `naruto:login:tasks:runs:${otherId}`], arguments: [] });
+    return [JSON.stringify({ ...run, authorizedAt: at }), null];
+  };
+  assert.deepEqual(await f.service.getSummaries([]), []); assert.equal(calls, 0);
+  const summaries = await f.service.getSummaries([id, otherId]);
+  assert.equal(calls, 1); assert.equal(summaries[0]?.status, 'running_daily');
+  assert.equal(summaries[0]?.authorizedAt, at); assert.equal(summaries[1], null);
+  assert.doesNotMatch(JSON.stringify(summaries), /private-worker|private-token|workerId|sequence|accessToken/);
+  await assert.rejects(f.service.getSummaries(['invalid']), { status: 400 });
+  await assert.rejects(f.service.getSummaries(Array(101).fill(id)), { status: 400 });
+  assert.equal(calls, 1);
+  f.driver.eval = async () => [JSON.stringify({ ...run, taskId: otherId }), null];
+  await assert.rejects(f.service.getSummaries([id, otherId]), { status: 502 });
+  f.service.close();
+});
+
 test('最近任务仅从用户持久记录恢复，二维码过期仍可读取且不访问 Redis 或重新派发', async () => {
   const f = fixture();
   const latest = await f.service.getLatest(owner);

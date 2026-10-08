@@ -13,6 +13,7 @@ import { releasePort } from './port.js';
 import { createObjectReader } from './storage.js';
 import { TaskService } from './queue.js';
 import { TaskRunService } from './task-runs.js';
+import { AdminService } from './admin.js';
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const serverRoot = existsSync(resolve(moduleDir, 'package.json')) ? moduleDir : resolve(moduleDir, '..');
@@ -31,7 +32,8 @@ const store = config.databaseUrl ? new PgAuthStore(config.databaseUrl, config.ti
 const auth = new AuthService(config, { store });
 const events = new LoginEventService(config, { store, tasks });
 const runs = new TaskRunService(config, { store });
-const app = createApp(config, { events, auth, runs, storage: createObjectReader(config) });
+const admin = new AdminService({ store, runs });
+const app = createApp(config, { events, auth, runs, admin, storage: createObjectReader(config) });
 const server = createServer(app);
 let vite: import('vite').ViteDevServer | undefined;
 
