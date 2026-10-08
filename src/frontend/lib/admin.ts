@@ -1,4 +1,4 @@
-import { dailyStatusLabels, type DailyTaskPage, type ManagedUser, type PageResult } from '../../shared/admin';
+import { dailyStatusLabels, type DailyTaskPage, type DailyTaskFailureDetails, type ManagedUser, type PageResult } from '../../shared/admin';
 
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const date = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value));
@@ -26,6 +26,18 @@ export function isDailyPage(value: unknown): value is DailyTaskPage {
       && (item.errorCode === undefined || typeof item.errorCode === 'string' && /^[a-z0-9_]{1,64}$/.test(item.errorCode))
       && (item.errorMessage === undefined || typeof item.errorMessage === 'string')
       && typeof item.status === 'string' && Object.hasOwn(dailyStatusLabels, item.status));
+}
+export function isDailyTaskFailureDetails(value: unknown): value is DailyTaskFailureDetails {
+  const code = (value: unknown) => value === undefined || typeof value === 'string' && /^[a-z0-9_]{1,64}$/.test(value);
+  const message = (value: unknown) => typeof value === 'string' && value.length > 0 && [...value].length <= 1000;
+  const progress = (value: Record<string, unknown>) => value.actionIndex === undefined && value.actionTotal === undefined
+    || Number.isSafeInteger(value.actionIndex) && Number.isSafeInteger(value.actionTotal)
+      && (value.actionIndex as number) >= 0 && (value.actionTotal as number) <= 100000 && (value.actionIndex as number) <= (value.actionTotal as number);
+  return object(value) && typeof value.taskId === 'string' && code(value.errorCode) && message(value.errorMessage)
+    && progress(value) && (value.actionName === undefined || message(value.actionName))
+    && typeof value.truncated === 'boolean' && Array.isArray(value.logs) && value.logs.length <= 30
+    && value.logs.every(log => object(log) && typeof log.id === 'string' && date(log.time)
+      && ['INFO', 'WARNING', 'ERROR'].includes(String(log.level)) && message(log.message) && progress(log));
 }
 export class AdminRequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }

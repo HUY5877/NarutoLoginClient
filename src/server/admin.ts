@@ -3,7 +3,7 @@ import { credentials, type User } from './auth.js';
 import { UserManagementError, UsernameTakenError, type AdminStore, type UserChanges } from './database.js';
 import { ApiError } from './errors.js';
 import type { TaskRunService } from './task-runs.js';
-import type { DailyTask, DailyTaskPage, ManagedUser, PageResult } from '../shared/admin.js';
+import type { DailyTask, DailyTaskFailureDetails, DailyTaskPage, ManagedUser, PageResult } from '../shared/admin.js';
 import { taskFailureMessage } from '../shared/task-errors.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -35,7 +35,7 @@ function userInput(body: unknown, creating: boolean): UserChanges {
 export class AdminService {
   private readonly now: () => number;
   constructor(private readonly options: {
-    store?: AdminStore; runs: Pick<TaskRunService, 'getSummaries'>; now?: () => number;
+    store?: AdminStore; runs: Pick<TaskRunService, 'getSummaries' | 'getFailureDetails'>; now?: () => number;
   }) { this.now = options.now ?? Date.now; }
 
   private async database<T>(run: (store: AdminStore) => Promise<T>): Promise<T> {
@@ -106,5 +106,9 @@ export class AdminService {
         } : {}) };
     });
     return { items, total: events.total, page, pageSize, date, timeZone: 'Asia/Shanghai' };
+  }
+  async dailyTaskFailureDetails(admin: User, taskId: string): Promise<DailyTaskFailureDetails> {
+    requireAdmin(admin);
+    return await this.options.runs.getFailureDetails(taskId);
   }
 }

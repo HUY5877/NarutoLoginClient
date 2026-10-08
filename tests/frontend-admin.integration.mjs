@@ -42,7 +42,14 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
       const context = await browser.newContext({ viewport });
       const page = await context.newPage(); page.setDefaultTimeout(8_000);
       const state = { users: [structuredClone(admin), structuredClone(user)], mutations: [], adminReads: [], errors: [], access: isAdmin, failDaily: false,
-        failureDetails: { errorCode: 'daily_timeout', errorMessage: '日常任务执行超时，请查看执行日志。' } };
+        failureDetails: { errorCode: 'daily_failed', errorMessage: '日常任务执行失败，请查看执行日志。' }, detailStatus: 200,
+        detailResponse: { taskId: 'failed', errorCode: 'daily_failed', errorMessage: '具体错误：VisualError: 未能识别装备材料页面；执行阶段 daily 失败',
+          actionIndex: 18, actionTotal: 35, actionName: '装备进阶', truncated: false,
+          logs: [
+            { id: '1000-0', time: '2026-10-08T00:20:00.000Z', level: 'INFO', message: '动作 18/35：装备进阶', actionIndex: 18, actionTotal: 35 },
+            { id: '1001-0', time: '2026-10-08T00:20:10.000Z', level: 'WARNING', message: '装备材料识别重试 3 次仍未确认' },
+            { id: '1002-0', time: '2026-10-08T00:20:11.000Z', level: 'ERROR', message: '具体错误：VisualError: 未能识别装备材料页面；执行阶段 daily 失败' },
+          ] } };
       page.on('pageerror', error => state.errors.push(error.message));
       await context.route('**/*', async route => {
         const url = new URL(route.request().url());
@@ -56,6 +63,8 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
           if (!state.access) return reply({ error: '需要管理员权限。' }, 403);
           if (method === 'GET') state.adminReads.push(url.pathname + url.search);
           else state.mutations.push({ path: url.pathname, method, body: route.request().postDataJSON() });
+          if (url.pathname.endsWith('/failure-details')) return reply(state.detailStatus === 200 ? state.detailResponse
+            : { error: '任务日志暂时不可用，请稍后重试。' }, state.detailStatus);
           if (url.pathname === '/api/admin/daily-tasks') {
             if (state.failDaily) return reply({ error: '任务日志暂时不可用，请稍后重试。' }, 503);
             return reply({ items: [task, { ...task, id: 'running', username: 'Sasuke_02', scannedAt: null, completedAt: null, status: 'running_daily' },
@@ -102,16 +111,19 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
         const details = dialog.getByRole('button', { name: 'Sakura_03的失败详情', exact: true });
         assert.equal(await dialog.getByRole('button', { name: /的失败详情$/ }).count(), 1);
         assert.match(await details.locator('..').innerText(), /失败\s*详情/);
+        assert.equal(f.state.adminReads.some(path => path.endsWith('/failure-details')), false, 'list must not fetch logs before hover');
         await details.hover();
         const tooltip = f.page.getByRole('tooltip');
-        await tooltip.waitFor();
-        assert.match(await tooltip.innerText(), /日常任务执行超时，请查看执行日志。/);
-        assert.match(await tooltip.innerText(), /错误码：daily_timeout/);
+        await tooltip.getByText('相关执行日志', { exact: true }).waitFor();
+        assert.match(await tooltip.innerText(), /VisualError: 未能识别装备材料页面/);
+        assert.match(await tooltip.innerText(), /失败步骤：装备进阶（18\/35）/);
+        assert.match(await tooltip.innerText(), /错误码：daily_failed/);
+        assert.deepEqual(await tooltip.getByRole('listitem').locator('p:last-child').allTextContents(), f.state.detailResponse.logs.map(log => log.message));
         await mkdir(path.join(repository, '.data/admin-preview'), { recursive: true });
         await f.page.screenshot({ path: path.join(repository, '.data/admin-preview/daily-desktop.png') });
         const dismissDetails = async () => {
-          const heading = await dialog.getByRole('heading', { name: '今日刷日常情况' }).boundingBox();
-          await f.page.mouse.move(heading.x + heading.width / 2, heading.y + heading.height / 2, { steps: 10 });
+          const close = await dialog.getByRole('button', { name: 'Close', exact: true }).boundingBox();
+          await f.page.mouse.move(close.x + close.width / 2, close.y + close.height / 2, { steps: 10 });
           await tooltip.waitFor({ state: 'hidden' });
         };
         await dismissDetails();
@@ -119,15 +131,69 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
         await f.page.keyboard.press('Escape'); await tooltip.waitFor({ state: 'hidden' });
         assert.equal(await dialog.isVisible(), true, 'Escape closes failure details without closing the daily task list');
         f.state.failureDetails = {};
+        f.state.detailResponse = { taskId: 'failed', errorMessage: '未记录具体错误原因。', logs: [], truncated: false };
         await dialog.getByRole('button', { name: '刷新', exact: true }).click();
         await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
-        await details.hover(); await tooltip.waitFor();
-        assert.equal(await tooltip.innerText(), '未记录具体错误原因。');
+        await details.hover();
+        await tooltip.getByText('未保留执行日志，无法还原具体失败过程。', { exact: true }).waitFor();
+        assert.match(await tooltip.innerText(), /未记录具体错误原因。/);
         await dismissDetails();
         f.state.failDaily = true; await dialog.getByRole('button', { name: '刷新', exact: true }).click();
         await dialog.getByRole('alert').waitFor(); assert.match(await dialog.innerText(), /任务日志暂时不可用/);
         assert.equal(await dialog.getByRole('cell', { name: user.username, exact: true }).count(), 1);
       } finally { await f.close(); }
+    });
+
+    await t.test('failure details reject other tasks, retry temporary errors and close on lost admin access', async () => {
+      const f = await fixture();
+      try {
+        await f.open('今日刷日常情况');
+        const dialog = f.page.getByRole('dialog', { name: '今日刷日常情况' });
+        const details = dialog.getByRole('button', { name: 'Sakura_03的失败详情', exact: true });
+        f.state.detailResponse.taskId = 'another-task';
+        await details.hover();
+        let tooltip = f.page.getByRole('tooltip');
+        await tooltip.getByRole('alert').waitFor();
+        assert.doesNotMatch(await tooltip.innerText(), /VisualError/);
+        await f.page.keyboard.press('Escape'); await tooltip.waitFor({ state: 'hidden' });
+        f.state.detailStatus = 503;
+        await dialog.getByRole('heading').hover(); await details.hover();
+        await tooltip.getByRole('alert').waitFor();
+        assert.match(await tooltip.innerText(), /任务日志暂时不可用/);
+        await f.page.keyboard.press('Escape'); await tooltip.waitFor({ state: 'hidden' });
+        f.state.detailStatus = 200; f.state.detailResponse.taskId = 'failed';
+        await dialog.getByRole('heading').hover(); await details.hover();
+        await tooltip.getByText('相关执行日志', { exact: true }).waitFor();
+        assert.match(await tooltip.innerText(), /VisualError/);
+        await f.page.keyboard.press('Escape'); await tooltip.waitFor({ state: 'hidden' });
+        f.state.access = false;
+        await dialog.getByRole('heading').hover(); await details.hover();
+        await dialog.waitFor({ state: 'hidden' });
+        assert.equal(await f.page.getByRole('tooltip').count(), 0);
+      } finally { await f.close(); }
+    });
+
+    await t.test('long failure logs remain scrollable inside the hover panel on desktop and mobile', async () => {
+      for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+        const f = await fixture(true, viewport);
+        try {
+          f.state.detailResponse.logs = Array.from({ length: 30 }, (_, index) => ({ id: `1000-${index}`, time: task.requestedAt,
+            level: index === 29 ? 'ERROR' : 'WARNING', message: `记录 ${index + 1}：${'装备材料识别失败，重新截图后重试。'.repeat(10)}` }));
+          f.state.detailResponse.truncated = true;
+          await f.open('今日刷日常情况');
+          const dialog = f.page.getByRole('dialog', { name: '今日刷日常情况' });
+          await dialog.getByRole('button', { name: 'Sakura_03的失败详情', exact: true }).hover();
+          const tooltip = f.page.getByRole('tooltip');
+          await tooltip.getByText('相关执行日志', { exact: true }).waitFor();
+          const box = await tooltip.boundingBox();
+          assert.ok(box.x >= 0 && box.x + box.width <= viewport.width);
+          assert.ok(box.y >= 0 && box.y + box.height <= viewport.height);
+          assert.ok(await tooltip.evaluate(el => el.scrollHeight > el.clientHeight));
+          await tooltip.hover(); await f.page.mouse.wheel(0, 300);
+          await f.page.waitForFunction(() => (document.querySelector('[role="tooltip"]')?.scrollTop ?? 0) > 0, null, { timeout: 2000 });
+          assert.equal(await tooltip.isVisible(), true);
+        } finally { await f.close(); }
+      }
     });
 
     await t.test('create, inspect, search, edit and delete users with shadcn dialogs', async () => {

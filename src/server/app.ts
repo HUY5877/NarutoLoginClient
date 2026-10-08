@@ -15,7 +15,7 @@ export interface Dependencies {
   auth: Pick<AuthService, 'register' | 'login' | 'getUser' | 'listApplications' | 'reviewApplication'>;
   storage: ObjectReader;
   runs?: Pick<TaskRunService, 'getLatest' | 'getEvents'>;
-  admin?: Pick<AdminService, 'listUsers' | 'getUser' | 'createUser' | 'updateUser' | 'deleteUser' | 'dailyTasks'>;
+  admin?: Pick<AdminService, 'listUsers' | 'getUser' | 'createUser' | 'updateUser' | 'deleteUser' | 'dailyTasks' | 'dailyTaskFailureDetails'>;
   now?: () => number;
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -92,6 +92,8 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     return admin;
   };
   app.get('/api/admin/daily-tasks', async (req, res) => res.json(await adminService().dailyTasks(res.locals.user as User, req.query)));
+  app.get('/api/admin/daily-tasks/:id/failure-details', async (req, res) =>
+    res.json(await adminService().dailyTaskFailureDetails(res.locals.user as User, sessionId(req))));
   app.get('/api/admin/users', async (req, res) => res.json(await adminService().listUsers(res.locals.user as User, req.query)));
   app.get('/api/admin/users/:id', async (req, res) => res.json(await adminService().getUser(res.locals.user as User, req.params.id as string)));
   app.post('/api/admin/users', async (req, res) => res.status(201).json(await adminService().createUser(res.locals.user as User, req.body)));

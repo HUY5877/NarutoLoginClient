@@ -26,3 +26,20 @@ export interface DailyTask {
 }
 export interface PageResult<T> { items: T[]; total: number; page: number; pageSize: number }
 export interface DailyTaskPage extends PageResult<DailyTask> { date: string; timeZone: 'Asia/Shanghai' }
+export interface DailyTaskFailureDetails {
+  taskId: string;
+  errorCode?: string;
+  errorMessage: string;
+  actionIndex?: number;
+  actionTotal?: number;
+  actionName?: string;
+  logs: Array<{
+    id: string;
+    time: string;
+    level: 'INFO' | 'WARNING' | 'ERROR';
+    message: string;
+    actionIndex?: number;
+    actionTotal?: number;
+  }>;
+  truncated: boolean;
+}

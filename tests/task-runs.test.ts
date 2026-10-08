@@ -68,6 +68,108 @@ test('administrator summary reads use one bounded GET batch and omit worker logs
   f.service.close();
 });
 
+function failureFixture(snapshot: unknown = [null, []]) {
+  const f = fixture();
+  let calls = 0;
+  f.driver.eval = async (script, options) => {
+    calls++;
+    assert.match(script, /redis\.call\('GET', KEYS\[1\]\)/);
+    assert.match(script, /redis\.call\('XREVRANGE', KEYS\[2\], '\+', '-', 'COUNT', ARGV\[1\]\)/);
+    assert.doesNotMatch(script, /redis\.call\('(SET|DEL|XREADGROUP|XDEL|EXPIRE|LPUSH|BRPOP)'/);
+    assert.deepEqual(options, { keys: [`naruto:login:tasks:runs:${id}`, `naruto:login:tasks:logs:${id}`], arguments: ['31'] });
+    return snapshot;
+  };
+  // Admin-only reads deliberately bypass the owner-specific database access path.
+  f.store.initialize = async () => { assert.fail('must not query the database'); };
+  return { service: f.service, setSnapshot(value: unknown) { snapshot = value; }, get calls() { return calls; } };
+}
+
+test('failure details read a bounded non-consuming tail, preserve chronological context and prefer the specific exception over later boilerplate', async () => {
+  const f = failureFixture([JSON.stringify({ ...run, status: 'failed', errorCode: 'daily_failed', finishedAt: at }), [
+    log(5, { time: at, level: 'ERROR', message: 'daily: failed (daily_failed)' }),
+    log(4, { time: at, level: 'ERROR', message: '执行阶段 daily 失败' }),
+    log(3, { time: at, level: 'ERROR', message: '具体错误：VisualError: 未找到挑战按钮', accessToken: 'secret' }),
+    log(2, { time: at, level: 'WARNING', message: '挑战按钮补查仍未确认' }),
+    log(1, { time: at, level: 'INFO', message: '动作 2/38：秘境探险', actionIndex: 2, actionTotal: 38 }),
+  ]]);
+  const details = await f.service.getFailureDetails(id);
+  assert.equal(details.taskId, id);
+  assert.equal(details.errorCode, 'daily_failed');
+  assert.equal(details.errorMessage, '具体错误：VisualError: 未找到挑战按钮');
+  assert.equal(details.actionIndex, 2); assert.equal(details.actionTotal, 38);
+  assert.equal(details.actionName, '秘境探险');
+  assert.deepEqual(details.logs.map(entry => entry.id), [1, 2, 3, 4, 5].map(value => `1800000000000-${value}`));
+  assert.equal(details.truncated, false);
+  assert.doesNotMatch(JSON.stringify(details), /workerId|sequence|accessToken|private-worker|private-token|secret/);
+  assert.deepEqual(await f.service.getFailureDetails(id), details);
+  assert.equal(f.calls, 2);
+  f.service.close();
+});
+
+test('failure detail tail returns at most thirty valid logs and explicitly marks omitted or corrupt entries', async () => {
+  const f = failureFixture([null, Array.from({ length: 31 }, (_, index) => log(31 - index))]);
+  const details = await f.service.getFailureDetails(id);
+  assert.equal(details.logs.length, 30);
+  assert.equal(details.logs[0].id, '1800000000000-2');
+  assert.equal(details.logs.at(-1)?.id, '1800000000000-31');
+  assert.equal(details.truncated, true);
+  f.setSnapshot([null, [log(3, { time: at, level: 'INFO', message: 'x'.repeat(1001) }),
+    log(2, { message: 'invalid' }), log(1)]]);
+  const partial = await f.service.getFailureDetails(id);
+  assert.equal(partial.logs.length, 1); assert.equal(partial.truncated, true);
+  f.service.close();
+});
+
+test('failure details fall back honestly for legacy generic errors and expired history but use substantive older ERROR messages', async () => {
+  const f = failureFixture();
+  assert.deepEqual(await f.service.getFailureDetails(id), {
+    taskId: id, errorMessage: '未记录具体错误原因，执行日志可能尚未上报或已过期。', logs: [], truncated: false,
+  });
+  f.setSnapshot([JSON.stringify({ ...run, status: 'failed', errorCode: 'daily_failed' }), [
+    log(2, { time: at, level: 'ERROR', message: 'daily: failed (daily_failed)' }),
+    log(1, { time: at, level: 'ERROR', message: '执行阶段 daily 失败' }),
+  ]]);
+  assert.equal((await f.service.getFailureDetails(id)).errorMessage, '日常任务执行失败，请查看执行日志。');
+  f.setSnapshot([null, [log(1, { time: at, level: 'ERROR', message: '无法连接模拟器 ADB' })]]);
+  assert.equal((await f.service.getFailureDetails(id)).errorMessage, '无法连接模拟器 ADB');
+  f.service.close();
+});
+
+test('legacy failure details prefer a substantive ERROR over the later Redis terminal and stage summaries', async () => {
+  const f = failureFixture([JSON.stringify({ ...run, status: 'failed', errorCode: 'daily_failed' }), [
+    log(3, { time: at, level: 'ERROR', message: '日常任务执行失败，本次任务已停止。' }),
+    log(2, { time: at, level: 'ERROR', message: '任务执行失败' }),
+    log(1, { time: at, level: 'ERROR', message: 'VisualError: 未找到挑战按钮' }),
+  ]]);
+  const details = await f.service.getFailureDetails(id);
+  assert.equal(details.errorMessage, 'VisualError: 未找到挑战按钮');
+  assert.equal(details.logs.length, 3);
+  f.service.close();
+});
+
+test('failure details reject invalid IDs before Redis access and reject cross-task or malformed snapshots', async () => {
+  const f = failureFixture();
+  for (const invalid of ['invalid', `${id}\n`, ` ${id}`, '../another'])
+    await assert.rejects(f.service.getFailureDetails(invalid), { status: 400 });
+  assert.equal(f.calls, 0);
+  for (const snapshot of [
+    [JSON.stringify({ ...run, taskId: owner }), []],
+    ['private:not-json', []],
+    [null, Array.from({ length: 32 }, (_, index) => log(32 - index))],
+    [null, [log(1), log(2)]],
+    [null, [log(2), log(2)]],
+    [null, [['bad-id', []]]],
+    [null, [], 'extra'],
+  ]) {
+    f.setSnapshot(snapshot);
+    await assert.rejects(f.service.getFailureDetails(id), error => {
+      assert.equal((error as { code: string }).code, 'TASK_RUN_DATA_INVALID');
+      assert.doesNotMatch(String(error), /private/); return true;
+    });
+  }
+  f.service.close();
+});
+
 test('最近任务仅从用户持久记录恢复，二维码过期仍可读取且不访问 Redis 或重新派发', async () => {
   const f = fixture();
   const latest = await f.service.getLatest(owner);

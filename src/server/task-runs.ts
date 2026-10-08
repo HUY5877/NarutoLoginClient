@@ -4,6 +4,8 @@ import type { LoginEvent, LoginEventStore } from './database.js';
 import { ApiError } from './errors.js';
 import type { Status } from './queue.js';
 import type { UserOptions } from '../shared/user-options.js';
+import type { DailyTaskFailureDetails } from '../shared/admin.js';
+import { taskFailureMessage } from '../shared/task-errors.js';
 
 export type RunStatus = 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'waiting_scan' | 'finishing_login'
   | 'running_daily' | 'completed' | 'failed' | 'interrupted' | 'expired';
@@ -51,6 +53,7 @@ const taskIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[
 const streamIdPattern = /^(0|[1-9][0-9]{0,19})-(0|[1-9][0-9]{0,19})$/;
 const maxStreamPart = 18446744073709551615n;
 const pageSize = 100;
+const failureLogLimit = 30;
 
 export function isStreamCursor(value: unknown): value is string {
   return typeof value === 'string' && value === value.trim() && streamIdPattern.test(value)
@@ -125,6 +128,19 @@ if redis.call('EXISTS', KEYS[2]) == 1 then
 end
 return {run, entries, firstId, added, length}
 `;
+// A bounded, non-consuming tail is fetched only when an administrator opens details.
+const failureSnapshotScript = `
+local run = redis.call('GET', KEYS[1])
+local entries = redis.call('XREVRANGE', KEYS[2], '+', '-', 'COUNT', ARGV[1])
+return {run, entries}
+`;
+function isGenericFailure(message: string, errorCode?: string): boolean {
+  return message === taskFailureMessage(errorCode)
+    || message === '日常任务执行失败，本次任务已停止。'
+    || message === '任务执行失败'
+    || /^执行阶段\s+\S+\s+失败[。.!]?$/.test(message)
+    || /^[a-z_]+:\s*failed\s*\([a-z0-9_]+\)$/.test(message);
+}
 function createRedisDriver(config: RunConfig): RunRedisDriver {
   const client = createClient({ url: config.redisUrl,
     socket: { connectTimeout: config.timeoutMs, reconnectStrategy: false },
@@ -186,6 +202,33 @@ export class TaskRunService {
       return results`, taskIds.map(id => `${this.config.redisQueueKey}:runs:${id}`), []);
     if (!Array.isArray(raw) || raw.length !== taskIds.length) throw invalidData();
     return raw.map((value, index) => parseRun(value, taskIds[index]));
+  }
+  async getFailureDetails(taskId: string): Promise<DailyTaskFailureDetails> {
+    if (taskId !== taskId.trim() || !taskIdPattern.test(taskId)) throw new ApiError(400, '无效的任务编号。');
+    const raw = await this.readRedis(failureSnapshotScript,
+      [`${this.config.redisQueueKey}:runs:${taskId}`, `${this.config.redisQueueKey}:logs:${taskId}`], [String(failureLogLimit + 1)]);
+    if (!Array.isArray(raw) || raw.length !== 2 || !Array.isArray(raw[1]) || raw[1].length > failureLogLimit + 1) throw invalidData();
+    const run = parseRun(raw[0], taskId);
+    const newestLogs: TaskLog[] = [];
+    let previous: string | undefined;
+    let truncated = raw[1].length > failureLogLimit;
+    for (const entry of raw[1] as unknown[]) {
+      if (!Array.isArray(entry) || entry.length !== 2 || !isStreamCursor(entry[0])
+        || previous !== undefined && compareIds(entry[0], previous) >= 0) throw invalidData();
+      previous = entry[0];
+      const log = parseLog(entry[0], entry[1]);
+      if (log) newestLogs.push(log); else truncated = true;
+    }
+    const logs = newestLogs.slice(0, failureLogLimit);
+    const failure = logs.find(log => log.level === 'ERROR' && /^具体错误：\s*\S/.test(log.message))
+      ?? logs.find(log => log.level === 'ERROR' && !isGenericFailure(log.message, run?.errorCode));
+    const action = logs.find(log => log.level === 'INFO' && (log.actionIndex ?? 0) > 0 && /^动作\s*\d+\s*\/\s*\d+\s*[：:]/.test(log.message));
+    return { taskId,
+      ...(run?.errorCode ? { errorCode: run.errorCode } : {}),
+      errorMessage: failure?.message ?? taskFailureMessage(run?.errorCode, '未记录具体错误原因，执行日志可能尚未上报或已过期。'),
+      ...(run?.actionIndex !== undefined ? { actionIndex: run.actionIndex, actionTotal: run.actionTotal } : {}),
+      ...(action ? { actionName: action.message.replace(/^动作\s*\d+\s*\/\s*\d+\s*[：:]\s*/, '') } : {}),
+      logs: logs.reverse(), truncated };
   }
   async getEvents(taskId: string, userId: string, after = '0-0'): Promise<TaskRunEvents> {
     if (taskId !== taskId.trim() || !taskIdPattern.test(taskId)) throw new ApiError(400, '无效的任务编号。');

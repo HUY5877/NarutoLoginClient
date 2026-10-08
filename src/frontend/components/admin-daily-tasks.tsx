@@ -5,6 +5,7 @@ import { dailyStatusLabels, type DailyStatus } from '../../shared/admin';
 import { useAdminData } from '@/hooks/use-admin';
 import { formatAdminDate, isDailyPage } from '@/lib/admin';
 import { AdminError, AdminLoading, AdminPagination } from '@/components/admin-common';
+import { AdminTaskFailureDetails } from '@/components/admin-task-failure-details';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -19,9 +20,10 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
   open: boolean; onOpenChange: (open: boolean) => void; onAccessLost: () => void; returnFocus: () => void;
 }) {
   const [page, setPage] = useState(1);
+  const [dialogContent, setDialogContent] = useState<HTMLDivElement | null>(null);
   const { data, loading, error, reload } = useAdminData(open ? `/api/admin/daily-tasks?page=${page}` : null, isDailyPage, onAccessLost);
   return <Dialog open={open} onOpenChange={onOpenChange}>
-    <DialogContent className="auth-dialog flex max-h-[88svh] flex-col gap-5 p-5 sm:max-w-5xl sm:p-6"
+    <DialogContent ref={setDialogContent} className="auth-dialog flex max-h-[88svh] flex-col gap-5 p-5 sm:max-w-5xl sm:p-6"
       onCloseAutoFocus={event => { event.preventDefault(); returnFocus(); }}>
       <DialogHeader className="shrink-0 gap-2 pr-7">
         <DialogTitle className="flex items-center gap-2 text-lg font-semibold"><CalendarCheck className="size-5 text-primary" aria-hidden="true" />今日刷日常情况</DialogTitle>
@@ -52,21 +54,7 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
               <TableCell className="pr-4">
                 <span className="inline-flex items-center gap-1.5">
                   <Badge variant={statusVariant(task.status)}>{dailyStatusLabels[task.status]}</Badge>
-                  {task.status === 'failed' && <Tooltip.Root>
-                    <Tooltip.Trigger asChild>
-                      <button type="button" aria-label={`${task.username}的失败详情`}
-                        className="cursor-help rounded-sm text-xs text-destructive underline decoration-dotted underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2">
-                        详情
-                      </button>
-                    </Tooltip.Trigger>
-                    <Tooltip.Portal>
-                      <Tooltip.Content side="top" align="end" sideOffset={6} collisionPadding={12}
-                        className="z-[60] max-w-[min(22rem,calc(100vw-2rem))] rounded-lg border bg-popover px-3 py-2 text-xs leading-5 text-popover-foreground shadow-md">
-                        <p className="whitespace-pre-wrap break-words">{task.errorMessage?.trim() || '未记录具体错误原因。'}</p>
-                        {task.errorCode && <p className="mt-1 break-all text-muted-foreground">错误码：{task.errorCode}</p>}
-                      </Tooltip.Content>
-                    </Tooltip.Portal>
-                  </Tooltip.Root>}
+                  {task.status === 'failed' && <AdminTaskFailureDetails task={task} onAccessLost={onAccessLost} portalContainer={dialogContent} />}
                 </span>
               </TableCell>
             </TableRow>)}</TableBody>
