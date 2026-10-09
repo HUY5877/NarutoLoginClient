@@ -184,7 +184,7 @@ export function AdminMenu({ userId, refreshAuth, mobileAccount }: {
             <ChevronDown aria-hidden="true" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="min-w-44" onCloseAutoFocus={event => {
+        <DropdownMenuContent align="end" className="village-account-menu min-w-44" onCloseAutoFocus={event => {
           if (openingDialogRef.current) { event.preventDefault(); openingDialogRef.current = false; }
         }}>
           <DropdownMenuItem className="py-2" onSelect={() => { openingDialogRef.current = true; setOpen(true); }}>

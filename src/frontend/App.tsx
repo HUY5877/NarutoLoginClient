@@ -21,6 +21,10 @@ import {
 import { AuthDialog } from '@/components/auth-dialog';
 import { AdminMenu } from '@/components/admin-menu';
 import { VillageParticles } from '@/components/village-particles';
+import { ChakraSeal } from '@/components/chakra-seal';
+import { MobileVillageHero } from '@/components/mobile-village-hero';
+import { MobileTaskSheet } from '@/components/mobile-task-sheet';
+import { TaskProgressCards } from '@/components/task-progress-cards';
 import {
   Accordion,
   AccordionContent,
@@ -88,7 +92,7 @@ function LoginHelp() {
           使用帮助
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="login-help-dialog sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>如何准备登录二维码</DialogTitle>
           <DialogDescription>先登录忍者日常账户，再准备游戏登录二维码。</DialogDescription>
@@ -149,7 +153,7 @@ export default function App() {
     setEquipmentStamina,
   } = useLoginSession(auth.user?.id ?? null, auth.handleUnauthorized);
   const taskRun = useTaskRun(auth.user?.id ?? null, session, auth.handleUnauthorized);
-  useEffect(() => { setSubmissionRevision(null); }, [auth.user?.id]);
+  useEffect(() => { setSubmissionRevision(null); setMobileDetailsOpen(false); }, [auth.user?.id]);
   const awaitingSubmission = submissionRevision !== null && acceptedRevision === submissionRevision;
 
   function openLogin() {
@@ -209,7 +213,7 @@ export default function App() {
                         <UserRound aria-hidden="true" /><span className="max-w-20 truncate">{auth.user.username}</span><ChevronDown aria-hidden="true" />
                       </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="min-w-36">
+                    <DropdownMenuContent align="end" className="village-account-menu min-w-36">
                       <DropdownMenuItem className="py-3" disabled={auth.busy} onSelect={() => { void auth.logout(); }}>
                         <LogOut aria-hidden="true" />退出登录
                       </DropdownMenuItem>
@@ -231,7 +235,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="village-main mx-auto max-w-5xl px-5 py-6 sm:px-8 sm:py-8">
+      <main className="village-main mx-auto max-w-5xl px-5 py-6 sm:px-8 sm:py-8" data-mobile-qr-ready={ready}>
         {auth.error && !authOpen && (
           <Alert variant="destructive" className="village-glass auth-notice mb-5" role="alert">
             <CircleAlert aria-hidden="true" />
@@ -257,9 +261,10 @@ export default function App() {
           <img className="hero-seal" src="/icons/leaf-village.svg" alt="" width="240" height="240" aria-hidden="true" />
           <img className="village-portrait" src="/images/naruto-welcome.webp" alt="鸣人戴着木叶护额，握拳微笑" width="600" height="832" fetchPriority="high" />
         </section>
+        <MobileVillageHero />
 
-        <div className="village-workspace grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6" data-mobile-details={mobileDetailsOpen}>
-          <Card className="village-glass login-card gap-0 overflow-hidden shadow-sm" data-authorized={authorizationComplete}>
+        <div className="village-workspace grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6">
+          <Card className="village-glass login-card gap-0 overflow-hidden shadow-sm" data-authorized={authorizationComplete} data-phase={ready ? 'qr_ready' : authorizationComplete ? 'authorized' : phase}>
             <CardHeader className="gap-2 px-6 pb-6 sm:px-8">
               <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-lg font-semibold">
                 <ScanLine className="size-5 text-primary" aria-hidden="true" />
@@ -280,7 +285,7 @@ export default function App() {
             <Separator />
 
             <CardContent className="flex flex-col items-center px-6 py-8 sm:px-8 sm:py-9">
-              <div className="qr-frame w-full max-w-64" data-ready={ready ? 'true' : undefined} aria-busy={qrPending}>
+              <div key={ready ? 'qr' : authorizationComplete ? 'authorized' : phase} className="qr-frame w-full max-w-64" data-ready={ready ? 'true' : undefined} aria-busy={qrPending}>
                 <div className="qr-content relative aspect-square overflow-hidden rounded-xl border border-dashed border-foreground/20 bg-transparent">
                   {ready && qrUrl ? (
                     <img
@@ -295,6 +300,7 @@ export default function App() {
                       <Empty className="relative h-full gap-4 border-0 p-5 md:p-5">
                         <EmptyHeader className="gap-2.5">
                           <EmptyMedia variant="icon" className={`mb-1 size-16 rounded-2xl ${qrError ? 'bg-destructive/10 text-destructive' : 'qr-emblem text-muted-foreground'}`}>
+                            <ChakraSeal active={qrPending || authorizationComplete} complete={authorizationComplete} />
                             {authorizationComplete ? <CheckCheck className="text-primary" aria-hidden="true" />
                               : qrPending ? <Spinner aria-hidden="true" className="size-6 motion-reduce:animate-none" />
                               : phase === 'expired' ? <TimerOff aria-hidden="true" />
@@ -354,17 +360,21 @@ export default function App() {
 
               {auth.user && (
                 <label className="equipment-options mt-6 flex w-full max-w-sm items-start gap-3 rounded-xl border border-primary/15 bg-white/40 px-4 py-3" data-editable={canEditShownOptions}>
-                  <input
-                    type="checkbox"
-                    className="mt-0.5 size-4 shrink-0 accent-primary disabled:cursor-not-allowed"
-                    checked={displayedUserOptions.equipmentStamina}
-                    disabled={auth.busy || !canEditShownOptions}
-                    onChange={event => setEquipmentStamina(event.target.checked)}
-                    aria-labelledby="equipment-stamina-label"
-                    aria-describedby="equipment-stamina-help"
-                  />
+                  <span className="equipment-switch">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 size-4 shrink-0 accent-primary disabled:cursor-not-allowed"
+                      checked={displayedUserOptions.equipmentStamina}
+                      disabled={auth.busy || !canEditShownOptions}
+                      onChange={event => setEquipmentStamina(event.target.checked)}
+                      aria-labelledby="equipment-stamina-label"
+                      aria-describedby="equipment-stamina-help"
+                    />
+                    <span className="equipment-switch-track" aria-hidden="true" />
+                  </span>
                   <span>
                     <span id="equipment-stamina-label" className="block text-sm font-medium">装备栏体力刷取</span>
+                    <span className="mobile-option-caption" aria-hidden="true">本次任务设置</span>
                     <span id="equipment-stamina-help" className="mt-1 block text-xs leading-5 text-muted-foreground">
                       {canEditShownOptions ? '开启后，本次日常会进行装备栏体力刷取。' : '本次申请的选择已保存，重新申请时可修改。'}
                     </span>
@@ -406,21 +416,23 @@ export default function App() {
                           : currentRun?.status === 'finishing_login' ? '进入游戏' : state === 'completed' ? '已完成' : '清日常';
                     const stateLabel = waitingForScan ? 'active' : state;
                     const StepIcon = stepIcons[id];
-                    return <span key={id} data-state={stateLabel} aria-label={`${title}：${description}`}>
-                      {state === 'failed' ? <CircleAlert aria-hidden="true" />
-                        : waitingForScan ? <QrCode aria-hidden="true" />
-                          : scanned || state === 'completed' ? <Check aria-hidden="true" />
-                            : state === 'active' ? <Spinner aria-hidden="true" className="motion-reduce:animate-none" />
-                              : <StepIcon aria-hidden="true" />}
-                      {label}
+                    return <span key={id} data-stage={id} data-state={stateLabel} aria-label={`${title}：${description}`}>
+                      <span className="progress-step-symbol">
+                        {state === 'failed' ? <CircleAlert aria-hidden="true" />
+                          : waitingForScan ? <QrCode aria-hidden="true" />
+                            : scanned || state === 'completed' ? <Check aria-hidden="true" />
+                              : state === 'active' ? <Spinner aria-hidden="true" className="motion-reduce:animate-none" />
+                                : <StepIcon aria-hidden="true" />}
+                      </span>
+                      <span>{label}</span>
                     </span>;
                   })}
                 </div>
-                <Button type="button" variant="outline" className="mobile-task-toggle mt-3 w-full gap-2 sm:hidden"
-                  aria-expanded={mobileDetailsOpen} aria-controls="login-progress-details task-run-details"
-                  onClick={() => setMobileDetailsOpen(value => !value)}>
-                  <ListChecks aria-hidden="true" />{mobileDetailsOpen ? '收起任务进度' : '查看任务进度'}
-                </Button>
+                <MobileTaskSheet open={mobileDetailsOpen} onOpenChange={setMobileDetailsOpen}>
+                  <div className="task-sheet-progress space-y-4"><TaskProgressCards progress={progress} /></div>
+                  <TaskRunPanel view={visibleRun} retry={taskRun.retry} />
+                  {session && <p className="task-sheet-session">申请编号 <code>{session.id}</code></p>}
+                </MobileTaskSheet>
               </>}
             </CardContent>
 
@@ -453,85 +465,11 @@ export default function App() {
             </CardFooter>
           </Card>
 
-          <div id="login-progress-details" className="village-side-panels space-y-5 lg:space-y-6" data-mobile-open={mobileDetailsOpen}>
-            <Card className="village-glass preparation-card gap-4">
-              <CardHeader className="gap-2">
-                <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base">
-                  <img src="/icons/shuriken.svg" alt="" width="19" height="19" aria-hidden="true" />
-                  任务进度
-                </CardTitle>
-                <CardDescription className="text-sm">二维码准备到哪了、日常跑到哪了，都在这里看。</CardDescription>
-                <CardAction>
-                  <Badge variant={progress.tone === 'danger' ? 'destructive' : 'outline'} className="font-normal" aria-label="任务整体状态">
-                    {progress.summary}
-                  </Badge>
-                </CardAction>
-              </CardHeader>
-              <CardContent>
-                <ItemGroup aria-label="任务执行进度" className="gap-1">
-                  {progress.steps.map(({ id, title, description, state }, index) => {
-                    const StepIcon = stepIcons[id];
-                    const complete = state === 'completed', active = state === 'active', failed = state === 'failed';
-                    return (
-                      <Item key={id} role="listitem" data-stage={id} data-state={state} size="sm" variant={active ? 'muted' : 'default'} className="items-start gap-3 px-2.5 py-3" aria-current={active ? 'step' : undefined}>
-                        <ItemMedia variant="icon" className={`size-8 rounded-lg ${failed ? 'bg-destructive/10 text-destructive' : active || complete ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
-                          {failed ? <CircleAlert aria-hidden="true" />
-                            : complete ? <Check aria-hidden="true" />
-                            : active ? <Spinner aria-hidden="true" className="motion-reduce:animate-none" />
-                              : <StepIcon aria-hidden="true" />}
-                        </ItemMedia>
-                        <ItemContent className="min-w-0 gap-1">
-                          <ItemTitle className={`line-clamp-none text-sm leading-6 ${failed ? 'text-destructive' : active || complete ? '' : 'text-muted-foreground'}`}>
-                            {index + 1}. {title}
-                          </ItemTitle>
-                          <ItemDescription className="line-clamp-none text-sm leading-6">{description}</ItemDescription>
-                        </ItemContent>
-                      </Item>
-                    );
-                  })}
-                </ItemGroup>
-                <Separator className="my-4" />
-                <p className="flex items-start gap-2 text-sm leading-6 text-muted-foreground">
-                  {progress.tone === 'success' ? <CheckCheck className="mt-1 size-4 shrink-0 text-primary" aria-hidden="true" />
-                    : <Clock3 className="mt-1 size-4 shrink-0" aria-hidden="true" />}
-                  {progress.hint}
-                </p>
-              </CardContent>
-            </Card>
-
-            <Card className="village-glass faq-card gap-2">
-              <CardHeader>
-                <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base">
-                  <CircleHelp className="size-4 text-muted-foreground" aria-hidden="true" />
-                  常见问题
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <Accordion type="single" collapsible>
-                  <AccordionItem value="simulation">
-                    <AccordionTrigger className="text-sm font-medium">现在可以登录游戏吗？</AccordionTrigger>
-                    <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                      执行服务器生成游戏二维码后，使用手机 QQ 扫码并确认授权即可。授权完成后无需再次扫码，系统会继续进入游戏和执行日常脚本。
-                    </AccordionContent>
-                  </AccordionItem>
-                  <AccordionItem value="account">
-                    <AccordionTrigger className="text-sm font-medium">多个页面能同时获取二维码吗？</AccordionTrigger>
-                    <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                      同一账户同时只有一个有效申请。每个页面点击「生成登录二维码」后查询并复用已有申请，过期或准备失败后才能重新申请。
-                    </AccordionContent>
-                  </AccordionItem>
-                  <AccordionItem value="expires" className="border-b-0">
-                    <AccordionTrigger className="text-sm font-medium">二维码过期或生成失败怎么办？</AccordionTrigger>
-                    <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                      过期或准备失败后可点击「重新生成二维码」，服务端会先检查已有申请。网络中断时点击「重试查询」，继续查看本次申请。
-                    </AccordionContent>
-                  </AccordionItem>
-                </Accordion>
-              </CardContent>
-            </Card>
+          <div id="login-progress-details" className="village-side-panels space-y-5 lg:space-y-6">
+            <TaskProgressCards progress={progress} />
           </div>
         </div>
-        <div id="task-run-details" className="task-run-details" data-mobile-open={mobileDetailsOpen}>
+        <div id="task-run-details" className="task-run-details">
           {auth.user && <TaskRunPanel view={visibleRun} retry={taskRun.retry} />}
         </div>
       </main>
