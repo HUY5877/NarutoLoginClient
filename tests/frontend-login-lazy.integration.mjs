@@ -45,6 +45,7 @@ function deferred() {
 const callsToLogin = calls => calls.filter(call => call.path.startsWith('/api/login-sessions'));
 const generate = page => page.getByRole('button', { name: /^(重新)?生成(登录)?二维码$/ });
 const equipmentStamina = page => page.getByRole('checkbox', { name: '装备栏体力刷取', exact: true });
+const expandRecords = page => page.getByRole('button', { name: '展开记录', exact: true });
 async function waitFor(predicate, message, timeout = 8_000) {
   const deadline = Date.now() + timeout;
   while (!predicate()) {
@@ -383,6 +384,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         qrStatus = 'preparing_qr';
         runStatus = 'preparing_qr';
         milestone('游戏已打开，正在获取二维码。');
+        await expandRecords(f.page).click();
         await f.page.getByRole('log', { name: '任务执行日志' }).getByText(logs.at(-1).message, { exact: true }).waitFor();
         await expectStages(f.page, ['completed', 'active', 'pending']);
         qrStatus = 'qr_ready';
@@ -428,6 +430,8 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         await equipmentStamina(f.page).check();
         assert.equal(await equipmentStamina(f.page).isChecked(), true);
         await progressCard.getByText('任务已完成', { exact: true }).waitFor();
+        assert.equal(await expandRecords(f.page).getAttribute('aria-expanded'), 'false', 'Reload restores records in the collapsed state');
+        await expandRecords(f.page).click();
         const logArea = f.page.getByRole('log', { name: '任务执行日志' });
         for (const entry of logs) assert.equal(await logArea.getByText(entry.message, { exact: true }).isVisible(), true);
         assert.equal(callsToLogin(f.state.calls).length, loginCalls);
@@ -448,7 +452,16 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         };
         await f.open();
         await expectStages(f.page, ['completed', 'completed', 'failed']);
+        await f.page.getByRole('alert', { name: '任务失败原因' }).waitFor();
+        assert.equal(await expandRecords(f.page).getAttribute('aria-expanded'), 'false');
+        assert.equal(await f.page.getByRole('log', { name: '任务执行日志' }).count(), 0, 'Detailed logs stay out of the initial view');
+        await expandRecords(f.page).click();
         await f.page.getByRole('log', { name: '任务执行日志' }).getByText('错误', { exact: true }).waitFor();
+        await f.page.getByRole('button', { name: '收起记录', exact: true }).click();
+        assert.equal(await f.page.getByRole('log', { name: '任务执行日志' }).count(), 0);
+        assert.equal(await f.page.getByRole('alert', { name: '任务失败原因' }).isVisible(), true, 'Collapsing logs preserves the failure summary');
+        await expandRecords(f.page).click();
+        await f.page.getByRole('log', { name: '任务执行日志' }).getByText('日常脚本执行失败，请检查执行环境后重试。', { exact: true }).waitFor();
         assert.deepEqual(callsToLogin(f.state.calls), []);
       } finally { await f.close(); }
     });
@@ -469,8 +482,9 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         };
         await f.open();
         await generate(f.page).click();
-        await f.page.getByRole('log', { name: '任务执行日志' }).getByText(message, { exact: true }).waitFor();
         await expectStages(f.page, ['completed', 'completed', 'active']);
+        await expandRecords(f.page).click();
+        await f.page.getByRole('log', { name: '任务执行日志' }).getByText(message, { exact: true }).waitFor();
         assert.equal(callsToLogin(f.state.calls).filter(call => call.method === 'POST').length, 0);
       } finally { await f.close(); }
     });
@@ -504,6 +518,8 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         const qrCard = f.page.locator('[data-slot="card"]').filter({ has: f.page.getByRole('heading', { name: '扫码登录', exact: true }) });
         const runCard = f.page.locator('[data-slot="card"]').filter({ has: f.page.getByRole('heading', { name: '任务执行记录', exact: true }) });
         await qrCard.getByText(clockError, { exact: true }).waitFor();
+        await runCard.getByRole('alert', { name: '任务失败原因' }).waitFor();
+        await expandRecords(f.page).click();
         const logArea = f.page.getByRole('log', { name: '任务执行日志' });
         await logArea.getByText(clockError, { exact: true }).waitFor();
         await expectStages(f.page, ['completed', 'failed', 'pending']);
@@ -518,6 +534,8 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         assert.equal(callsToLogin(f.state.calls).length, loginCalls);
         await f.page.reload({ waitUntil: 'networkidle' });
         await generate(f.page).waitFor();
+        await runCard.getByRole('alert', { name: '任务失败原因' }).waitFor();
+        await expandRecords(f.page).click();
         await f.page.getByRole('log', { name: '任务执行日志' }).getByText(clockError, { exact: true }).waitFor();
         assert.equal(callsToLogin(f.state.calls).length, loginCalls, 'Reload must restore run logs without querying QR sessions');
         assert.ok(f.state.calls.filter(call => call.path === '/api/task-runs/latest').length >= 2);
