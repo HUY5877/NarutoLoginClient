@@ -330,10 +330,11 @@
 }
 
 .village-hero {
+  --desktop-hero-height: clamp(20rem, 27vw, 23rem);
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  min-height: 18.5rem;
+  min-height: var(--desktop-hero-height);
   border: 1px solid #ebe0e640;
   border-radius: 1.5rem;
   background: linear-gradient(100deg, #29242df2, #403545bf 52%, #47374640);
@@ -349,7 +350,7 @@
   justify-content: center;
   align-items: flex-start;
   width: 64%;
-  min-height: 18.5rem;
+  min-height: var(--desktop-hero-height);
   padding: 2rem 2.5rem;
 }
 
@@ -381,8 +382,11 @@
   z-index: 1;
   right: 2rem;
   top: 0.5rem;
-  width: clamp(11.5rem, 24vw, 18rem);
-  height: auto;
+  width: auto;
+  max-width: 34%;
+  height: calc(100% - 1rem);
+  object-fit: contain;
+  object-position: right bottom;
   filter: drop-shadow(0 12px 18px #20182180);
   animation: desktop-portrait-enter 700ms ease-out both;
   user-select: none;
