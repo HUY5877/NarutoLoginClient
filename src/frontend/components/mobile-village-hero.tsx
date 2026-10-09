@@ -44,7 +44,7 @@ export function MobileVillageHero() {
       <div className="mobile-character-scene" aria-hidden="true">
         <ChakraSeal active className="hero-chakra-seal" />
         <div className="mobile-chakra-light" />
-        <img className="mobile-naruto" src="/images/naruto-welcome.webp" alt="" width="600" height="832" />
+        <img className="mobile-character" src="/images/konan-welcome.webp" alt="" width="1024" height="1536" fetchPriority="high" />
       </div>
       <div className="mobile-scene-footer">
         <span className="mobile-region"><i />安卓 · QQ 区</span>

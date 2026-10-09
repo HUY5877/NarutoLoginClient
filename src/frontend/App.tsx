@@ -259,7 +259,7 @@ export default function App() {
             </p>
           </div>
           <img className="hero-seal" src="/icons/leaf-village.svg" alt="" width="240" height="240" aria-hidden="true" />
-          <img className="village-portrait" src="/images/naruto-welcome.webp" alt="鸣人戴着木叶护额，握拳微笑" width="600" height="832" fetchPriority="high" />
+          <img className="village-portrait" src="/images/konan-welcome.webp" alt="小南戴着纸花，身穿晓袍，手中停着纸蝶" width="1024" height="1536" fetchPriority="high" />
         </section>
         <MobileVillageHero />
 
