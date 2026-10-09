@@ -1,0 +1,51 @@
+.konan-portrait { aspect-ratio: 2 / 3; }
+.konan-portrait-motion {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-origin: 50% 95%;
+  animation: konan-breath 6.8s ease-in-out infinite;
+}
+.konan-portrait-base { display: block; width: 100%; height: 100%; object-fit: contain; object-position: right bottom; }
+.konan-portrait-art { position: absolute; inset: 0; display: block; width: 100%; height: 100%; overflow: visible; }
+.konan-butterfly-float { animation: konan-butterfly-hover 5s ease-in-out infinite; }
+.konan-butterfly-wing {
+  transform-box: view-box;
+  transform-origin: 0 0;
+  animation: konan-wing-fold 2.4s ease-in-out infinite;
+}
+.konan-butterfly-wing-right { animation-delay: -0.15s; }
+.konan-paper-piece { transform-box: fill-box; transform-origin: center; animation: konan-paper-drift 8s ease-in-out infinite; }
+.konan-paper-piece-two { animation-duration: 10s; animation-delay: -4s; }
+.konan-portrait-motion,
+.konan-butterfly-float,
+.konan-butterfly-wing,
+.konan-paper-piece { animation-play-state: paused; }
+.konan-portrait[data-animated='true'] .konan-portrait-motion,
+.konan-portrait[data-animated='true'] .konan-butterfly-float,
+.konan-portrait[data-animated='true'] .konan-butterfly-wing,
+.konan-portrait[data-animated='true'] .konan-paper-piece { animation-play-state: running; }
+
+@keyframes konan-breath {
+  0%, 100% { transform: translateY(0) scaleY(1) rotate(0); }
+  50% { transform: translateY(-2px) scaleY(1.006) rotate(.12deg); }
+}
+@keyframes konan-butterfly-hover {
+  0%, 100% { transform: translate(0, 0) rotate(-3deg); }
+  50% { transform: translate(10px, -20px) rotate(5deg); }
+}
+@keyframes konan-wing-fold {
+  0%, 100% { transform: scaleX(1); }
+  50% { transform: scaleX(.24); }
+}
+@keyframes konan-paper-drift {
+  0%, 100% { transform: translate(0, 0) rotate(-10deg); opacity: .65; }
+  50% { transform: translate(20px, -45px) rotate(20deg); opacity: .95; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .konan-portrait-motion,
+  .konan-butterfly-float,
+  .konan-butterfly-wing,
+  .konan-paper-piece { animation: none; }
+}

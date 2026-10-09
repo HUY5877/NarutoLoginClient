@@ -23,6 +23,7 @@ import { AdminMenu } from '@/components/admin-menu';
 import { VillageParticles } from '@/components/village-particles';
 import { ChakraSeal } from '@/components/chakra-seal';
 import { MobileVillageHero } from '@/components/mobile-village-hero';
+import { KonanPortrait } from '@/components/konan-portrait';
 import { MobileTaskSheet } from '@/components/mobile-task-sheet';
 import { TaskProgressCards } from '@/components/task-progress-cards';
 import {
@@ -259,7 +260,7 @@ export default function App() {
             </p>
           </div>
           <img className="hero-seal" src="/icons/leaf-village.svg" alt="" width="240" height="240" aria-hidden="true" />
-          <img className="village-portrait" src="/images/konan-welcome.webp" alt="小南戴着纸花，身穿晓袍，手中停着纸蝶" width="1024" height="1536" fetchPriority="high" />
+          <KonanPortrait className="village-portrait" />
         </section>
         <MobileVillageHero />
 

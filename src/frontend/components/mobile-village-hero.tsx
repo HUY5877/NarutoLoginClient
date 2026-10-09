@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { ChakraSeal } from '@/components/chakra-seal';
+import { KonanPortrait } from '@/components/konan-portrait';
 
 export function MobileVillageHero() {
   const scene = useRef<HTMLElement>(null);
@@ -44,7 +45,7 @@ export function MobileVillageHero() {
       <div className="mobile-character-scene" aria-hidden="true">
         <ChakraSeal active className="hero-chakra-seal" />
         <div className="mobile-chakra-light" />
-        <img className="mobile-character" src="/images/konan-welcome.webp" alt="" width="1024" height="1536" fetchPriority="high" />
+        <KonanPortrait className="mobile-character" decorative />
       </div>
       <div className="mobile-scene-footer">
         <span className="mobile-region"><i />安卓 · QQ 区</span>
