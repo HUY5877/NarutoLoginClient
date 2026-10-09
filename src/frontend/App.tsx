@@ -253,7 +253,7 @@ export default function App() {
               <Smartphone className="size-3" aria-hidden="true" />
               火影忍者手游 · 安卓 QQ 区
             </Badge>
-            <h1 id="welcome-title" className="village-title">上号，<br className="sm:hidden" />清日常。</h1>
+            <h1 id="welcome-title" className="village-title">上号，<span className="desktop-hero-accent">清日常。</span></h1>
             <p className="mt-3 max-w-70 text-sm leading-6 text-muted-foreground sm:max-w-none">
               用手机 QQ 扫码登录，<span className="inline-block">日常任务会自动接着跑。</span>
             </p>
