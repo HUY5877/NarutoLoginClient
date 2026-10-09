@@ -3,6 +3,7 @@ import {
   ArrowRight,
   Check,
   CheckCheck,
+  ChevronDown,
   CircleAlert,
   CircleHelp,
   Clock3,
@@ -15,6 +16,7 @@ import {
   ShieldCheck,
   Smartphone,
   TimerOff,
+  UserRound,
 } from 'lucide-react';
 import { AuthDialog } from '@/components/auth-dialog';
 import { AdminMenu } from '@/components/admin-menu';
@@ -26,7 +28,6 @@ import {
   AccordionTrigger,
 } from '@/components/ui/accordion';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { AspectRatio } from '@/components/ui/aspect-ratio';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -63,6 +64,12 @@ import {
 } from '@/components/ui/item';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Spinner } from '@/components/ui/spinner';
 import { useLoginSession } from '@/hooks/use-login-session';
 import { useAuth } from '@/hooks/use-auth';
@@ -116,6 +123,7 @@ function LoginHelp() {
 export default function App() {
   const auth = useAuth();
   const [authOpen, setAuthOpen] = useState(false);
+  const [mobileDetailsOpen, setMobileDetailsOpen] = useState(false);
   const [submissionRevision, setSubmissionRevision] = useState<number | null>(null);
   const {
     phase,
@@ -181,7 +189,7 @@ export default function App() {
         <VillageParticles />
       </div>
       <header className="village-header border-b border-white/50">
-        <div className="mx-auto flex min-h-18 max-w-5xl flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 py-3 sm:px-8">
+        <div className="village-header-inner mx-auto flex min-h-18 max-w-5xl flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 py-3 sm:px-8">
           <div className="flex items-center gap-3" aria-label="忍者日常">
             <span className="headband-mark" aria-hidden="true">
               <img src="/icons/leaf-village.svg" alt="" width="32" height="32" />
@@ -190,12 +198,26 @@ export default function App() {
             <Separator orientation="vertical" className="mx-1 hidden h-5! sm:block" />
             <span className="hidden text-xs text-muted-foreground sm:block">扫码清日常</span>
           </div>
-          <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-3">
+          <div className="village-account flex flex-wrap items-center justify-end gap-1.5 sm:gap-3">
             {auth.loading ? <Spinner aria-label="正在读取账户状态" className="size-4" /> : auth.user ? (
               <>
-                {auth.user.isAdmin === true && <AdminMenu key={auth.user.id} userId={auth.user.id} refreshAuth={auth.refresh} />}
-                <span className="max-w-24 truncate text-sm font-medium sm:max-w-40" title={auth.user.username}>{auth.user.username}</span>
-                <Button variant="ghost" size="sm" disabled={auth.busy} onClick={() => { void auth.logout(); }} className="gap-1.5">
+                {auth.user.isAdmin === true ? <AdminMenu key={auth.user.id} userId={auth.user.id} refreshAuth={auth.refresh}
+                  mobileAccount={{ username: auth.user.username, busy: auth.busy, logout: () => { void auth.logout(); } }} /> : (
+                  <DropdownMenu modal={false}>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" size="sm" className="mobile-account-trigger gap-1.5 sm:hidden" aria-label={`${auth.user.username} 账户菜单`}>
+                        <UserRound aria-hidden="true" /><span className="max-w-20 truncate">{auth.user.username}</span><ChevronDown aria-hidden="true" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="min-w-36">
+                      <DropdownMenuItem className="py-3" disabled={auth.busy} onSelect={() => { void auth.logout(); }}>
+                        <LogOut aria-hidden="true" />退出登录
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+                <span className="hidden max-w-24 truncate text-sm font-medium sm:block sm:max-w-40" title={auth.user.username}>{auth.user.username}</span>
+                <Button variant="ghost" size="sm" disabled={auth.busy} onClick={() => { void auth.logout(); }} className="hidden gap-1.5 sm:inline-flex">
                   <LogOut aria-hidden="true" />退出
                 </Button>
               </>
@@ -209,9 +231,9 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl px-5 py-6 sm:px-8 sm:py-8">
+      <main className="village-main mx-auto max-w-5xl px-5 py-6 sm:px-8 sm:py-8">
         {auth.error && !authOpen && (
-          <Alert variant="destructive" className="village-glass mb-5" role="alert">
+          <Alert variant="destructive" className="village-glass auth-notice mb-5" role="alert">
             <CircleAlert aria-hidden="true" />
             <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
               <span>{auth.error}</span>
@@ -236,14 +258,18 @@ export default function App() {
           <img className="village-portrait" src="/images/naruto-welcome.webp" alt="鸣人戴着木叶护额，握拳微笑" width="600" height="832" fetchPriority="high" />
         </section>
 
-        <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6">
-          <Card className="village-glass login-card gap-0 overflow-hidden shadow-sm">
+        <div className="village-workspace grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6" data-mobile-details={mobileDetailsOpen}>
+          <Card className="village-glass login-card gap-0 overflow-hidden shadow-sm" data-authorized={authorizationComplete}>
             <CardHeader className="gap-2 px-6 pb-6 sm:px-8">
               <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-lg font-semibold">
                 <ScanLine className="size-5 text-primary" aria-hidden="true" />
-                扫码登录
+                <span className="hidden sm:inline">扫码登录</span>
+                <span className="sm:hidden">{authorizationComplete ? '本次登录' : '扫码登录'}</span>
               </CardTitle>
-              <CardDescription className="text-sm">生成二维码后，用手机 QQ 扫一扫。</CardDescription>
+              <CardDescription className="text-sm">
+                <span className="hidden sm:inline">生成二维码后，用手机 QQ 扫一扫。</span>
+                <span className="sm:hidden">{authorizationComplete ? '进入游戏后，日常任务会自动接着跑。' : '用手机 QQ 扫码，再确认登录。'}</span>
+              </CardDescription>
               <CardAction>
                 <Badge variant="secondary" className="gap-1.5 font-normal">
                   <Smartphone aria-hidden="true" />
@@ -255,7 +281,7 @@ export default function App() {
 
             <CardContent className="flex flex-col items-center px-6 py-8 sm:px-8 sm:py-9">
               <div className="qr-frame w-full max-w-64" data-ready={ready ? 'true' : undefined} aria-busy={qrPending}>
-                <AspectRatio ratio={1} className="overflow-hidden rounded-xl border border-dashed border-foreground/20 bg-transparent">
+                <div className="qr-content relative aspect-square overflow-hidden rounded-xl border border-dashed border-foreground/20 bg-transparent">
                   {ready && qrUrl ? (
                     <img
                       className="size-full object-contain"
@@ -275,27 +301,35 @@ export default function App() {
                                 : isError ? <CircleAlert aria-hidden="true" />
                                   : <img src="/icons/leaf-village.svg" alt="" width="42" height="42" aria-hidden="true" />}
                           </EmptyMedia>
-                          <EmptyTitle className="text-base">
-                            {authorizationComplete ? '扫码授权已完成' : queueTimedOut ? '排队超时' : phase === 'expired' ? '二维码已过期'
-                              : canRetryQuery ? '等待查询确认' : isError ? '二维码准备失败'
-                                : phase === 'restoring' ? '正在查询登录申请' : pending ? '正在准备二维码' : '登录二维码'}
-                          </EmptyTitle>
-                          <EmptyDescription className="text-sm leading-6">
-                            {authorizationComplete ? currentRun?.status === 'finishing_login' ? '正在进入游戏，无需再次扫码' : '无需再次扫码，请在执行记录中查看后续进度'
-                              : queueTimedOut ? '本次申请未被领取，请稍后重新生成二维码'
-                              : canRetryQuery ? canResumePending ? '点击「继续本次申请」恢复已保存的申请' : '点击「重试查询」继续查看本次申请'
-                              : isError ? '确认本次申请结束后，可以重新获取'
-                              : pending ? '保持页面打开，二维码准备好后会自动显示'
-                                : auth.user ? '点击下方按钮，生成本次登录二维码' : '先登录忍者日常账户，再获取二维码'}
-                          </EmptyDescription>
+                          <div className="qr-copy">
+                            <EmptyTitle className="text-base">
+                              {authorizationComplete ? <>
+                                <span className="hidden sm:inline">扫码授权已完成</span>
+                                <span className="sm:hidden" role="status" aria-live="polite">{progress.summary}</span>
+                              </> : queueTimedOut ? '排队超时' : phase === 'expired' ? '二维码已过期'
+                                : canRetryQuery ? '等待查询确认' : isError ? '二维码准备失败'
+                                  : phase === 'restoring' ? '正在查询登录申请' : pending ? '正在准备二维码' : '登录二维码'}
+                            </EmptyTitle>
+                            <EmptyDescription className="text-sm leading-6">
+                              {authorizationComplete ? <>
+                                <span className="hidden sm:inline">{currentRun?.status === 'finishing_login' ? '正在进入游戏，无需再次扫码' : '无需再次扫码，请在执行记录中查看后续进度'}</span>
+                                <span className="sm:hidden">{currentRun && isRunTerminal(currentRun.status) ? progress.hint : '扫码已完成，无需再次扫码'}</span>
+                              </>
+                                : queueTimedOut ? '本次申请未被领取，请稍后重新生成二维码'
+                                : canRetryQuery ? canResumePending ? '点击「继续本次申请」恢复已保存的申请' : '点击「重试查询」继续查看本次申请'
+                                : isError ? '确认本次申请结束后，可以重新获取'
+                                : pending ? '保持页面打开，二维码准备好后会自动显示'
+                                  : auth.user ? '点击下方按钮，生成本次登录二维码' : '先登录忍者日常账户，再获取二维码'}
+                            </EmptyDescription>
+                          </div>
                         </EmptyHeader>
                       </Empty>
                     </>
                   )}
-                </AspectRatio>
+                </div>
               </div>
 
-              <div className="mt-5 flex min-h-6 flex-wrap items-center justify-center gap-x-3 gap-y-2 text-sm" role="status" aria-live="polite" aria-atomic="true">
+              <div className="login-status mt-5 flex min-h-6 flex-wrap items-center justify-center gap-x-3 gap-y-2 text-sm" role="status" aria-live="polite" aria-atomic="true">
                 <span className={`inline-flex items-center gap-2 ${qrError ? 'text-destructive' : 'text-muted-foreground'}`}>
                   {qrPending ? <Spinner aria-hidden="true" className="size-3.5 motion-reduce:animate-none" />
                     : ready || authorizationComplete ? <Check className="size-4 text-primary" aria-hidden="true" />
@@ -319,7 +353,7 @@ export default function App() {
               )}
 
               {auth.user && (
-                <label className="mt-6 flex w-full max-w-sm items-start gap-3 rounded-xl border border-primary/15 bg-white/40 px-4 py-3">
+                <label className="equipment-options mt-6 flex w-full max-w-sm items-start gap-3 rounded-xl border border-primary/15 bg-white/40 px-4 py-3" data-editable={canEditShownOptions}>
                   <input
                     type="checkbox"
                     className="mt-0.5 size-4 shrink-0 accent-primary disabled:cursor-not-allowed"
@@ -356,15 +390,42 @@ export default function App() {
                   <RefreshCw aria-hidden="true" />{canResumePending ? '继续本次申请' : '重试查询'}
                 </Button>
               )}
-              {auth.user && ready && <p className="mt-5 text-sm font-medium text-primary">二维码有效，请在倒计时结束前扫码</p>}
-              <p className="mt-3 flex items-start gap-1.5 text-center text-xs leading-5 text-muted-foreground">
+              {auth.user && ready && <p className="qr-ready-note mt-5 text-sm font-medium text-primary">二维码有效，请在倒计时结束前扫码</p>}
+              <p className="qr-sharing-note mt-3 flex items-start gap-1.5 text-center text-xs leading-5 text-muted-foreground">
                 <ShieldCheck className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
                 同一账户的多个页面共用一个有效二维码
               </p>
+              {auth.user && <>
+                <div className="mobile-progress-overview sm:hidden" aria-label="任务进度概览">
+                  {progress.steps.map(({ id, title, description, state }) => {
+                    const waitingForScan = id === 'qr' && ready;
+                    const scanned = id === 'qr' && authorizationComplete;
+                    const label = scanned ? '已扫码' : waitingForScan ? '待扫码'
+                      : id === 'submission' ? state === 'completed' ? '已提交' : '提交申请'
+                        : id === 'qr' ? '二维码'
+                          : currentRun?.status === 'finishing_login' ? '进入游戏' : state === 'completed' ? '已完成' : '清日常';
+                    const stateLabel = waitingForScan ? 'active' : state;
+                    const StepIcon = stepIcons[id];
+                    return <span key={id} data-state={stateLabel} aria-label={`${title}：${description}`}>
+                      {state === 'failed' ? <CircleAlert aria-hidden="true" />
+                        : waitingForScan ? <QrCode aria-hidden="true" />
+                          : scanned || state === 'completed' ? <Check aria-hidden="true" />
+                            : state === 'active' ? <Spinner aria-hidden="true" className="motion-reduce:animate-none" />
+                              : <StepIcon aria-hidden="true" />}
+                      {label}
+                    </span>;
+                  })}
+                </div>
+                <Button type="button" variant="outline" className="mobile-task-toggle mt-3 w-full gap-2 sm:hidden"
+                  aria-expanded={mobileDetailsOpen} aria-controls="login-progress-details task-run-details"
+                  onClick={() => setMobileDetailsOpen(value => !value)}>
+                  <ListChecks aria-hidden="true" />{mobileDetailsOpen ? '收起任务进度' : '查看任务进度'}
+                </Button>
+              </>}
             </CardContent>
 
             <CardFooter className="login-card-footer flex-col items-stretch gap-4 border-t px-6 py-5 sm:px-8">
-              <Alert className="border-0 bg-transparent p-0 text-muted-foreground">
+              <Alert className="login-explanation border-0 bg-transparent p-0 text-muted-foreground">
                 <CircleAlert aria-hidden="true" />
                 <AlertTitle className="text-sm font-medium text-foreground">确认登录后，日常会接着跑</AlertTitle>
                 <AlertDescription className="text-sm leading-6">
@@ -372,7 +433,7 @@ export default function App() {
                 </AlertDescription>
               </Alert>
               {session && (
-                <Accordion type="single" collapsible>
+                <Accordion type="single" collapsible className="login-session-details">
                   <AccordionItem value="session" className="border-b-0 border-t">
                     <AccordionTrigger className="py-3 text-sm font-normal text-muted-foreground">本次申请详情</AccordionTrigger>
                     <AccordionContent className="space-y-3 pb-1 text-sm">
@@ -385,10 +446,14 @@ export default function App() {
                   </AccordionItem>
                 </Accordion>
               )}
+              <div className="mobile-login-help flex flex-wrap items-center justify-center gap-x-2 gap-y-1 sm:hidden">
+                <LoginHelp />
+                {auth.user && !canEditShownOptions && <span className="text-xs text-muted-foreground">{displayedUserOptions.equipmentStamina ? '装备栏体力刷取已开启' : '装备栏体力刷取未开启'}</span>}
+              </div>
             </CardFooter>
           </Card>
 
-          <div className="space-y-5 lg:space-y-6">
+          <div id="login-progress-details" className="village-side-panels space-y-5 lg:space-y-6" data-mobile-open={mobileDetailsOpen}>
             <Card className="village-glass preparation-card gap-4">
               <CardHeader className="gap-2">
                 <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base">
@@ -466,7 +531,9 @@ export default function App() {
             </Card>
           </div>
         </div>
-        {auth.user && <TaskRunPanel view={visibleRun} retry={taskRun.retry} />}
+        <div id="task-run-details" className="task-run-details" data-mobile-open={mobileDetailsOpen}>
+          {auth.user && <TaskRunPanel view={visibleRun} retry={taskRun.retry} />}
+        </div>
       </main>
       <AuthDialog open={authOpen} onOpenChange={setAuthOpen} busy={auth.busy}
         error={auth.error} clearError={auth.clearError} authenticate={auth.authenticate} />

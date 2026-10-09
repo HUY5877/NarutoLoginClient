@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CalendarCheck, Check, ChevronDown, CircleAlert, ClipboardCheck, RefreshCw, ShieldCheck, Users, X } from 'lucide-react';
+import { CalendarCheck, Check, ChevronDown, CircleAlert, ClipboardCheck, LogOut, RefreshCw, ShieldCheck, Users, X } from 'lucide-react';
 import { AdminDailyTasks } from '@/components/admin-daily-tasks';
 import { AdminUsers } from '@/components/admin-users';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -37,7 +37,11 @@ function validApplication(value: RegistrationApplication) {
     ['pending', 'approved', 'rejected'].includes(value.status);
 }
 
-export function AdminMenu({ userId, refreshAuth }: { userId: string; refreshAuth: () => Promise<void> }) {
+export function AdminMenu({ userId, refreshAuth, mobileAccount }: {
+  userId: string;
+  refreshAuth: () => Promise<void>;
+  mobileAccount?: { username: string; busy: boolean; logout: () => void };
+}) {
   const [open, setOpen] = useState(false);
   const [dailyOpen, setDailyOpen] = useState(false);
   const [usersOpen, setUsersOpen] = useState(false);
@@ -173,8 +177,11 @@ export function AdminMenu({ userId, refreshAuth }: { userId: string; refreshAuth
       {/* Keep the page scrollbar and fixed background stable while this menu is open. */}
       <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
-          <Button ref={menuTriggerRef} type="button" variant="outline" size="sm" className="gap-1.5 bg-white/45">
-            <ShieldCheck aria-hidden="true" />管理员<ChevronDown aria-hidden="true" />
+          <Button ref={menuTriggerRef} type="button" variant="outline" size="sm" className="mobile-account-trigger gap-1.5 bg-white/45">
+            <ShieldCheck aria-hidden="true" />
+            <span className={mobileAccount ? 'hidden sm:inline' : undefined}>管理员</span>
+            {mobileAccount && <span className="max-w-20 truncate sm:hidden">{mobileAccount.username}</span>}
+            <ChevronDown aria-hidden="true" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-44" onCloseAutoFocus={event => {
@@ -189,6 +196,12 @@ export function AdminMenu({ userId, refreshAuth }: { userId: string; refreshAuth
           <DropdownMenuItem className="py-2" onSelect={() => { openingDialogRef.current = true; setUsersOpen(true); }}>
             <Users aria-hidden="true" />用户管理
           </DropdownMenuItem>
+          {mobileAccount && <>
+            <DropdownMenuSeparator className="sm:hidden" />
+            <DropdownMenuItem className="py-3 sm:hidden" disabled={mobileAccount.busy} onSelect={mobileAccount.logout}>
+              <LogOut aria-hidden="true" />退出登录
+            </DropdownMenuItem>
+          </>}
         </DropdownMenuContent>
       </DropdownMenu>
       <Dialog open={open} onOpenChange={next => { if (!reviewingRef.current) setOpen(next); }}>
