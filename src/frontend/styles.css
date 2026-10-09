@@ -423,6 +423,29 @@
   border-bottom-right-radius: 1.25rem;
 }
 
+@media (max-width: 767px) {
+  .daily-tasks-dialog {
+    width: calc(100% - 1rem);
+    max-width: none;
+    max-height: calc(100dvh - 1rem);
+    padding: 1rem;
+    gap: 1rem;
+  }
+  .daily-tasks-dialog > [data-slot='dialog-close'] { width: 2.75rem; height: 2.75rem; }
+  .task-failure-dialog {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    max-width: none;
+    height: 92dvh;
+    max-height: calc(100dvh - env(safe-area-inset-top) - 0.5rem);
+    translate: none;
+    border-radius: 1.25rem 1.25rem 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
 @media (max-width: 639px) {
   .village-particle:nth-child(n + 6):nth-child(-n + 10),
   .village-particle:nth-child(n + 20) { display: none; }

@@ -20,10 +20,10 @@ export function AdminPagination({ page, pageSize, total, disabled, onPageChange 
   return <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t pt-3 text-xs text-muted-foreground">
     <span>共 {total} 条 · 第 {page} 页{page <= pages ? ` / ${pages} 页` : ''}</span>
     <div className="flex gap-2">
-      <Button type="button" size="sm" variant="outline" disabled={disabled || page <= 1} onClick={() => onPageChange(page - 1)}>
+      <Button type="button" size="sm" variant="outline" className="min-h-11 px-3 md:min-h-0" disabled={disabled || page <= 1} onClick={() => onPageChange(page - 1)}>
         <ChevronLeft aria-hidden="true" />上一页
       </Button>
-      <Button type="button" size="sm" variant="outline" disabled={disabled || page >= pages} onClick={() => onPageChange(page + 1)}>
+      <Button type="button" size="sm" variant="outline" className="min-h-11 px-3 md:min-h-0" disabled={disabled || page >= pages} onClick={() => onPageChange(page + 1)}>
         下一页<ChevronRight aria-hidden="true" />
       </Button>
     </div>

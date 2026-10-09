@@ -25,7 +25,7 @@ const user = { ...admin, id: '10000000-0000-4000-8000-000000000002', username: '
 const task = { id: '20000000-0000-4000-8000-000000000001', username: user.username,
   requestedAt: '2026-10-08T00:00:00.000Z', scannedAt: '2026-10-08T00:02:00.000Z', completedAt: '2026-10-08T00:30:00.000Z', status: 'completed' };
 
-test('administrator menu, daily tasks and user CRUD', { skip: skip || false, timeout: 90_000 }, async t => {
+test('administrator menu, daily tasks and user CRUD', { skip: skip || false, timeout: 120_000 }, async t => {
   const { createServer } = await import(pathToFileURL(require.resolve('vite')).href);
   const { default: react } = await import(pathToFileURL(require.resolve('@vitejs/plugin-react')).href);
   const { default: tailwindcss } = await import(pathToFileURL(require.resolve('@tailwindcss/vite')).href);
@@ -38,8 +38,8 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
     browser = await chromium.launch({ headless: true,
       ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
-    async function fixture(isAdmin = true, viewport = { width: 1280, height: 900 }) {
-      const context = await browser.newContext({ viewport });
+    async function fixture(isAdmin = true, viewport = { width: 1280, height: 900 }, touch = false) {
+      const context = await browser.newContext({ viewport, hasTouch: touch, isMobile: touch });
       const page = await context.newPage(); page.setDefaultTimeout(8_000);
       const state = { users: [structuredClone(admin), structuredClone(user)], mutations: [], adminReads: [], errors: [], access: isAdmin, failDaily: false,
         failureDetails: { errorCode: 'daily_failed', errorMessage: '日常任务执行失败，请查看执行日志。' }, detailStatus: 200,
@@ -173,8 +173,8 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
       } finally { await f.close(); }
     });
 
-    await t.test('long failure logs remain scrollable inside the hover panel on desktop and mobile', async () => {
-      for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+    await t.test('long failure logs remain scrollable inside the desktop hover panel', async () => {
+      for (const viewport of [{ width: 1280, height: 900 }]) {
         const f = await fixture(true, viewport);
         try {
           f.state.detailResponse.logs = Array.from({ length: 10 }, (_, index) => ({ id: `1000-${index}`, time: task.requestedAt,
@@ -194,6 +194,90 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
           assert.equal(await tooltip.isVisible(), true);
         } finally { await f.close(); }
       }
+    });
+
+    await t.test('touch browsers show readable task cards and tap-to-open scrollable failure details', async () => {
+      for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 430, height: 932 }, { width: 844, height: 390 }]) {
+        const f = await fixture(true, viewport, true);
+        try {
+          f.state.detailResponse.logs = Array.from({ length: 10 }, (_, index) => ({ id: `1000-${index}`, time: task.requestedAt,
+            level: index === 9 ? 'ERROR' : 'WARNING', message: `记录 ${index + 1}：${'request_id=long_unbroken_token_'.repeat(12)}` }));
+          f.state.detailResponse.truncated = true;
+          await f.open('今日刷日常情况');
+          const list = f.page.getByRole('dialog', { name: '今日刷日常情况', exact: true });
+          const trigger = list.getByRole('button', { name: 'Sakura_03的失败详情', exact: true });
+          await trigger.waitFor();
+          if (viewport.width < 768) {
+            assert.equal(await list.getByRole('table').count(), 0);
+            const cards = list.getByRole('list', { name: '今日任务列表' }).getByRole('listitem');
+            assert.equal(await cards.count(), 3);
+            assert.match(await cards.first().innerText(), /Naruto_01[\s\S]*已完成[\s\S]*申请时间[\s\S]*08:00:00[\s\S]*扫码完成[\s\S]*08:02:00[\s\S]*执行完成[\s\S]*08:30:00/);
+          }
+          assert.equal(await list.evaluate(el => el.scrollWidth <= el.clientWidth), true, 'task list must not overflow horizontally');
+          assert.equal(f.state.adminReads.some(path => path.endsWith('/failure-details')), false);
+          await trigger.scrollIntoViewIfNeeded();
+          const triggerBox = await trigger.boundingBox();
+          assert.ok(triggerBox.height >= 44, 'details trigger must be a touch target');
+          if (viewport.width === 390) await f.page.screenshot({ path: path.join(repository, '.data/admin-preview/daily-mobile.png') });
+          await trigger.tap();
+          const detail = f.page.getByRole('dialog', { name: '失败详情', exact: true });
+          await detail.getByText('相关执行日志', { exact: true }).waitFor();
+          await detail.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
+          assert.equal(await f.page.getByRole('tooltip').count(), 0);
+          assert.equal(await detail.getByRole('listitem').count(), 10);
+          assert.match(await detail.innerText(), /失败步骤：装备进阶（18\/35）/);
+          const box = await detail.boundingBox();
+          assert.ok(box.x >= -1 && box.x + box.width <= viewport.width + 1, 'failure sheet stays within viewport width');
+          assert.ok(box.y >= -1 && box.y + box.height <= viewport.height + 1, 'failure sheet stays within viewport height');
+          const scroll = detail.getByRole('region', { name: '失败详情与最近日志' });
+          assert.equal(await scroll.evaluate(el => el.scrollWidth <= el.clientWidth), true, 'long tokens wrap without horizontal scrolling');
+          assert.equal(await scroll.evaluate(el => el.scrollHeight > el.clientHeight), true);
+          const close = detail.getByRole('button', { name: '关闭失败详情' });
+          const closeBox = await close.boundingBox();
+          assert.ok(closeBox.height >= 44 && closeBox.width >= 44, `close touch target: ${JSON.stringify(closeBox)}`);
+          if (viewport.width === 390) await f.page.screenshot({ path: path.join(repository, '.data/admin-preview/failure-mobile.png') });
+          const area = await scroll.boundingBox();
+          const cdp = await f.context.newCDPSession(f.page);
+          const x = area.x + area.width / 2, start = area.y + area.height * 0.8, end = area.y + area.height * 0.2;
+          const scrollFinished = scroll.evaluate(el => new Promise(resolve => el.addEventListener('scrollend', () => resolve(true), { once: true })));
+          await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: start }] });
+          for (let step = 1; step <= 8; step++) await cdp.send('Input.dispatchTouchEvent', {
+            type: 'touchMove', touchPoints: [{ x, y: start + (end - start) * step / 8 }],
+          });
+          await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+          await f.page.waitForFunction(() => (document.querySelector('[data-slot="failure-details-scroll"]')?.scrollTop ?? 0) > 0);
+          await scrollFinished;
+          await cdp.detach();
+          assert.deepEqual(await close.boundingBox(), closeBox, 'close button stays fixed while logs scroll');
+          await close.tap();
+          await detail.waitFor({ state: 'hidden' });
+          assert.equal(await list.isVisible(), true);
+          assert.equal(await trigger.evaluate(el => el === document.activeElement), true, 'closing returns focus to the task');
+          assert.deepEqual(f.state.mutations, [], 'viewing details must never dispatch tasks or change data');
+        } finally { await f.close(); }
+      }
+    });
+
+    await t.test('mobile details can retry read failures and dismiss safely after permission loss', async () => {
+      const f = await fixture(true, { width: 390, height: 844 }, true);
+      try {
+        f.state.detailStatus = 503;
+        await f.open('今日刷日常情况');
+        const list = f.page.getByRole('dialog', { name: '今日刷日常情况', exact: true });
+        await list.getByRole('button', { name: 'Sakura_03的失败详情', exact: true }).tap();
+        const detail = f.page.getByRole('dialog', { name: '失败详情', exact: true });
+        await detail.getByRole('alert').waitFor();
+        f.state.detailStatus = 200;
+        await detail.getByRole('button', { name: '重试读取', exact: true }).tap();
+        await detail.getByText('相关执行日志', { exact: true }).waitFor();
+        assert.equal(await detail.getByRole('listitem').count(), 3);
+        await detail.getByRole('button', { name: '关闭失败详情' }).tap();
+        await detail.waitFor({ state: 'hidden' });
+        f.state.access = false;
+        await list.getByRole('button', { name: 'Sakura_03的失败详情', exact: true }).tap();
+        await list.waitFor({ state: 'hidden' });
+        await detail.waitFor({ state: 'hidden' });
+      } finally { await f.close(); }
     });
 
     await t.test('create, inspect, search, edit and delete users with shadcn dialogs', async () => {
