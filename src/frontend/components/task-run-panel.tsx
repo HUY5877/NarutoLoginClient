@@ -33,7 +33,7 @@ export function TaskRunPanel({ view, retry }: { view: TaskRunView; retry: () => 
         <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base">
           <ListChecks className="size-5 text-primary" aria-hidden="true" />任务执行记录
         </CardTitle>
-        <CardDescription>记录提交申请、二维码准备和脚本执行的关键节点。刷新页面可继续查看。</CardDescription>
+        <CardDescription>本次登录和日常的运行记录，刷新页面也能继续看。</CardDescription>
         <CardAction><Badge variant={bad ? 'destructive' : 'secondary'} className="gap-1.5">
           {view.polling && <Spinner className="size-3 motion-reduce:animate-none" aria-hidden="true" />}{label}
         </Badge></CardAction>

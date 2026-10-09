@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { AuthDialog } from '@/components/auth-dialog';
 import { AdminMenu } from '@/components/admin-menu';
+import { VillageParticles } from '@/components/village-particles';
 import {
   Accordion,
   AccordionContent,
@@ -177,6 +178,7 @@ export default function App() {
           <source media="(max-width: 639px)" srcSet="/images/konoha-background-mobile.webp" />
           <img src="/images/konoha-background.webp" alt="" width="1536" height="1024" fetchPriority="high" />
         </picture>
+        <VillageParticles />
       </div>
       <header className="village-header border-b border-white/50">
         <div className="mx-auto flex min-h-18 max-w-5xl flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 py-3 sm:px-8">
@@ -186,7 +188,7 @@ export default function App() {
             </span>
             <span className="text-base font-bold tracking-wide">忍者日常</span>
             <Separator orientation="vertical" className="mx-1 hidden h-5! sm:block" />
-            <span className="hidden text-xs tracking-widest text-muted-foreground sm:block">木叶登录中心</span>
+            <span className="hidden text-xs text-muted-foreground sm:block">扫码清日常</span>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-3">
             {auth.loading ? <Spinner aria-label="正在读取账户状态" className="size-4" /> : auth.user ? (
@@ -222,12 +224,12 @@ export default function App() {
         <section className="village-hero mb-6" aria-labelledby="welcome-title">
           <div className="village-hero-copy">
             <Badge variant="outline" className="mb-4 gap-1.5 border-primary/20 bg-card/80 px-2.5 py-1 text-xs font-medium text-primary">
-              <img src="/icons/shuriken.svg" alt="" width="12" height="12" aria-hidden="true" />
-              木叶集合 · 安卓 QQ 区
+              <Smartphone className="size-3" aria-hidden="true" />
+              火影忍者手游 · 安卓 QQ 区
             </Badge>
-            <h1 id="welcome-title" className="village-title">准备好，<br className="sm:hidden" />回到木叶。</h1>
+            <h1 id="welcome-title" className="village-title">上号，<br className="sm:hidden" />清日常。</h1>
             <p className="mt-3 max-w-70 text-sm leading-6 text-muted-foreground sm:max-w-none">
-              生成登录二维码，<span className="inline-block">和安卓好友一起出发。</span>
+              用手机 QQ 扫码登录，<span className="inline-block">日常任务会自动接着跑。</span>
             </p>
           </div>
           <img className="hero-seal" src="/icons/leaf-village.svg" alt="" width="240" height="240" aria-hidden="true" />
@@ -241,7 +243,7 @@ export default function App() {
                 <ScanLine className="size-5 text-primary" aria-hidden="true" />
                 扫码登录
               </CardTitle>
-              <CardDescription className="text-sm">火影忍者手游 · 与安卓好友玩</CardDescription>
+              <CardDescription className="text-sm">生成二维码后，用手机 QQ 扫一扫。</CardDescription>
               <CardAction>
                 <Badge variant="secondary" className="gap-1.5 font-normal">
                   <Smartphone aria-hidden="true" />
@@ -276,7 +278,7 @@ export default function App() {
                           <EmptyTitle className="text-base">
                             {authorizationComplete ? '扫码授权已完成' : queueTimedOut ? '排队超时' : phase === 'expired' ? '二维码已过期'
                               : canRetryQuery ? '等待查询确认' : isError ? '二维码准备失败'
-                                : phase === 'restoring' ? '正在查询登录申请' : pending ? '正在准备二维码' : '你的木叶通行证'}
+                                : phase === 'restoring' ? '正在查询登录申请' : pending ? '正在准备二维码' : '登录二维码'}
                           </EmptyTitle>
                           <EmptyDescription className="text-sm leading-6">
                             {authorizationComplete ? currentRun?.status === 'finishing_login' ? '正在进入游戏，无需再次扫码' : '无需再次扫码，请在执行记录中查看后续进度'
@@ -364,9 +366,9 @@ export default function App() {
             <CardFooter className="login-card-footer flex-col items-stretch gap-4 border-t px-6 py-5 sm:px-8">
               <Alert className="border-0 bg-transparent p-0 text-muted-foreground">
                 <CircleAlert aria-hidden="true" />
-                <AlertTitle className="text-sm font-medium text-foreground">扫码后自动继续执行</AlertTitle>
+                <AlertTitle className="text-sm font-medium text-foreground">确认登录后，日常会接着跑</AlertTitle>
                 <AlertDescription className="text-sm leading-6">
-                  在手机 QQ 确认授权后，系统会进入游戏并继续执行日常脚本，进度显示在下方。
+                  在手机 QQ 上确认登录就好。进入游戏后会自动清日常，下方可以查看进度。
                 </AlertDescription>
               </Alert>
               {session && (
@@ -393,7 +395,7 @@ export default function App() {
                   <img src="/icons/shuriken.svg" alt="" width="19" height="19" aria-hidden="true" />
                   任务进度
                 </CardTitle>
-                <CardDescription className="text-sm">提交申请、获取二维码、执行脚本。</CardDescription>
+                <CardDescription className="text-sm">二维码准备到哪了、日常跑到哪了，都在这里看。</CardDescription>
                 <CardAction>
                   <Badge variant={progress.tone === 'danger' ? 'destructive' : 'outline'} className="font-normal" aria-label="任务整体状态">
                     {progress.summary}
