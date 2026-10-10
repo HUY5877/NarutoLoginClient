@@ -68,6 +68,12 @@ export function TaskProgressCards({ progress }: { progress: ReturnType<typeof de
                 同一账户同时只有一个有效申请。每个页面点击「生成登录二维码」后查询并复用已有申请，过期或准备失败后才能重新申请。
               </AccordionContent>
             </AccordionItem>
+            <AccordionItem value="scan-status">
+              <AccordionTrigger className="text-sm font-medium">扫描了二维码，但没有显示扫描完成怎么办？</AccordionTrigger>
+              <AccordionContent className="text-sm leading-6 text-muted-foreground">
+                点击「刷新二维码」即可。
+              </AccordionContent>
+            </AccordionItem>
             <AccordionItem value="expires" className="border-b-0">
               <AccordionTrigger className="text-sm font-medium">二维码过期或生成失败怎么办？</AccordionTrigger>
               <AccordionContent className="text-sm leading-6 text-muted-foreground">
