@@ -25,7 +25,7 @@ export interface Submission {
   id: string; userId: string; accessToken: string; createdAt: string; expiresAt: string;
   userOptions: UserOptions;
 }
-interface StoredTask extends Task { userId?: string; tokenHash: string; loginExpiresAt?: string }
+interface StoredTask extends Task { userId?: string; tokenHash: string; loginExpiresAt?: string; workerId?: string }
 type QueueConfig = Pick<Config, 'redisUrl' | 'redisQueueKey' | 'timeoutMs' | 'ossPrefix'>;
 interface EvalOptions { keys: string[]; arguments: string[] }
 export interface RedisDriver {
@@ -68,8 +68,20 @@ if activeId then
         or type(active.expiresAt) ~= 'string' then
       return redis.error_reply('Invalid active login session')
     end
-    if active.status ~= 'failed' and active.status ~= 'expired' and active.expiresAt > ARGV[4] then
-      return -1
+    local deadline = active.loginExpiresAt or active.expiresAt
+    if type(deadline) ~= 'string' then return redis.error_reply('Invalid active login deadline') end
+    if active.status ~= 'failed' and active.status ~= 'expired' and deadline > ARGV[4] then
+      -- A QR remains qr_ready after the child fails. Check its owning worker's
+      -- execution result atomically before replacing the account lock.
+      local ended = false
+      local runRaw = redis.call('GET', KEYS[1] .. ':runs:' .. activeId)
+      if runRaw and type(active.workerId) == 'string' and active.workerId ~= '' then
+        local ok, run = pcall(cjson.decode, runRaw)
+        ended = ok and type(run) == 'table' and run.taskId == activeId
+          and run.workerId == active.workerId
+          and (run.status == 'failed' or run.status == 'interrupted' or run.status == 'expired')
+      end
+      if not ended then return -1 end
     end
   end
 end
@@ -255,14 +267,14 @@ export class TaskService {
     if (raw === null) throw missingSession();
     const record = parseSession(raw, id);
     if (!timingSafeEqual(Buffer.from(record.tokenHash, 'hex'), Buffer.from(hash(token), 'hex'))) throw missingSession();
-    return this.publicTask(record);
+    return this.executionAwareTask(record);
   }
 
   async getForUser(id: string, userId: string): Promise<Task> {
     const raw = await this.request((driver, signal) => driver.get(this.sessionKey(id), signal));
     if (raw === null) throw missingSession();
     const record = parseSession(raw, id, userId);
-    return this.publicTask(record);
+    return this.executionAwareTask(record);
   }
 
   async getActive(userId: string): Promise<Task | null> {
@@ -274,7 +286,7 @@ export class TaskService {
     if (active === null || active.raw === null) return null;
     const record = parseSession(active.raw, active.id);
     if (record.userId !== userId) return null;
-    const task = this.publicTask(record);
+    const task = await this.executionAwareTask(record);
     // Only enqueue replaces stale locks atomically. Deleting a stale snapshot
     // here could remove a newer request's lock while these two GETs are in flight.
     return task.status === 'failed' || task.status === 'expired' ? null : task;
@@ -296,6 +308,22 @@ export class TaskService {
 
   private sessionKey(id: string) { return `${this.config.redisQueueKey}:sessions:${id}`; }
   private activeKey(userId: string) { return `${this.config.redisQueueKey}:users:${userId}:active`; }
+
+  private async executionAwareTask(record: StoredTask): Promise<Task> {
+    const task = this.publicTask(record);
+    if (['failed', 'expired'].includes(task.status) || typeof record.workerId !== 'string' || !record.workerId) return task;
+    const raw = await this.request((driver, signal) => driver.get(`${this.config.redisQueueKey}:runs:${record.id}`, signal));
+    if (raw === null) return task;
+    let run: Record<string, unknown>;
+    try { run = JSON.parse(raw); } catch { return task; }
+    // Only this task's current worker can end its lease. Missing, malformed or
+    // stale reports never authorize a second emulator. Keep logs/session data
+    // intact; enqueue alone replaces the account lock in its atomic script.
+    if (!run || run.taskId !== record.id || run.workerId !== record.workerId
+      || typeof run.status !== 'string' || !['failed', 'interrupted', 'expired'].includes(run.status)) return task;
+    const { loginAuthorized: _authorized, refreshRequestId: _refresh, ...ended } = task;
+    return { ...ended, status: 'failed', ...loginFailure(run.errorCode) };
+  }
 
   private publicTask(record: StoredTask): Task {
     const expiresAt = record.loginExpiresAt ?? record.expiresAt;

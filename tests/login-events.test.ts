@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import type { LoginEvent, LoginEventStore } from '../src/server/database.js';
 import { ApiError } from '../src/server/errors.js';
 import { LoginEventService } from '../src/server/login-events.js';
-import type { Submission, Task } from '../src/server/queue.js';
+import { TaskService, type Submission, type Task } from '../src/server/queue.js';
 import { loginFailure } from '../src/shared/task-errors.js';
 
 function fixture() {
@@ -129,6 +129,43 @@ test('过期事件停止显示；重放旧requestId仍返回过期，新的reque
   assert.equal(replay.id, task.id); assert.equal(replay.status, 'expired');
   assert.equal(f.submissions.length, 1);
   assert.notEqual((await f.service().create(userId, randomUUID())).id, task.id);
+});
+
+test('关闭模拟器后的失败记录释放持久化占用，再申请创建新任务而不是恢复已授权旧任务', async () => {
+  for (const readActiveFirst of [true, false]) {
+    const f = fixture(), userId = randomUUID(), oldRequest = randomUUID();
+    const prefix = 'restart:tasks', redis = new Map<string, string>(), queued: string[] = [];
+    const tasks = new TaskService({ redisUrl: 'redis://fixture', redisQueueKey: prefix, timeoutMs: 100, ossPrefix: 'login' }, () => ({
+      isReady: true, connect: async () => {}, destroy() {},
+      get: async key => redis.get(key) ?? null,
+      // Lua's atomic account guard is exercised separately against Redis.
+      eval: async (_script, { keys, arguments: args }) => {
+        const value = JSON.parse(args[0]);
+        if (redis.has(keys[1])) return 0;
+        redis.set(keys[1], args[0]); redis.set(keys[2], value.id); queued.push(value.id);
+        return 1;
+      },
+    }));
+    const events = new LoginEventService({ sessionTtlMs: 600_000 }, { store: f.store, tasks });
+    const old = await events.create(userId, oldRequest);
+    const sessionKey = `${prefix}:sessions:${old.id}`, runKey = `${prefix}:runs:${old.id}`;
+    redis.set(sessionKey, JSON.stringify({ ...JSON.parse(redis.get(sessionKey)!), status: 'qr_ready', workerId: 'worker-1', loginAuthorized: true }));
+    redis.set(runKey, JSON.stringify({ taskId: old.id, workerId: 'worker-1', status: 'failed', errorCode: 'login_finish_failed' }));
+    const history = redis.get(runKey);
+    if (readActiveFirst) assert.equal(await events.getActive(userId), null);
+    const next = await events.create(userId, randomUUID());
+    assert.notEqual(next.id, old.id);
+    assert.equal(next.status, 'queued');
+    assert.equal(f.records.get(old.id)?.status, 'failed');
+    assert(f.records.get(old.id)?.finishedAt);
+    assert.equal((await events.getForUser(old.id, userId)).errorCode, 'login_finish_failed');
+    assert.equal((await events.getActive(userId))?.id, next.id);
+    assert.equal((await events.create(userId, randomUUID())).id, next.id);
+    assert.deepEqual(queued, [old.id, next.id]);
+    assert.equal(redis.get(`${prefix}:users:${userId}:active`), next.id);
+    assert.equal(redis.get(runKey), history, 'old execution history must remain readable');
+    await assert.rejects(events.getForUser(old.id, randomUUID()), { status: 404 });
+  }
 });
 
 test('排队期限已过但实例仍有效时复用同一任务，刷新不入队且先验证任务所有权', async () => {
