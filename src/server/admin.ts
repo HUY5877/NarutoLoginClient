@@ -84,13 +84,19 @@ export class AdminService {
     if (id === admin.id) throw new ApiError(409, '不能删除当前登录的管理员账号。', 'USER_SELF_PROTECTED');
     await this.database(store => store.deleteUser(admin.id, id));
   }
-  async dailyTasks(admin: User, query: { page?: unknown }): Promise<DailyTaskPage> {
+  async dailyTasks(admin: User, query: { page?: unknown; date?: unknown }): Promise<DailyTaskPage> {
     requireAdmin(admin);
     const page = pageNumber(query.page), now = this.now();
     const date = new Date(now + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const midnight = new Date(`${date}T00:00:00+08:00`).getTime();
-    const start = new Date(midnight - 6 * 24 * 60 * 60 * 1000), end = new Date(midnight + 24 * 60 * 60 * 1000);
-    const startDate = new Date(start.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const dates = Array.from({ length: 7 }, (_, index) => new Date(midnight + 8 * 60 * 60 * 1000 - index * 24 * 60 * 60 * 1000).toISOString().slice(0, 10));
+    const selectedDate = query.date;
+    if (selectedDate !== undefined && (typeof selectedDate !== 'string' || !dates.includes(selectedDate))) {
+      throw new ApiError(400, '请选择今天或之前六天中的日期。', 'INVALID_DATE');
+    }
+    const startDate = dates[6];
+    const start = new Date(`${selectedDate ?? startDate}T00:00:00+08:00`);
+    const end = new Date((selectedDate ? start.getTime() : midnight) + 24 * 60 * 60 * 1000);
     const events = await this.database(store => store.listDailyEvents(start, end, (page - 1) * pageSize, pageSize));
     const summaries = await this.options.runs.getSummaries(events.items.map(event => event.id));
     const items: DailyTask[] = events.items.map((event, index) => {
@@ -107,7 +113,8 @@ export class AdminService {
           errorMessage: taskFailureMessage(run?.errorCode, '未记录具体错误原因。'),
         } : {}) };
     });
-    return { items, total: events.total, page, pageSize, date, startDate, timeZone: 'Asia/Shanghai' };
+    return { items, total: events.total, page, pageSize, date, startDate,
+      ...(selectedDate ? { selectedDate } : {}), timeZone: 'Asia/Shanghai' };
   }
   async dailyTaskFailureDetails(admin: User, taskId: string): Promise<DailyTaskFailureDetails> {
     requireAdmin(admin);

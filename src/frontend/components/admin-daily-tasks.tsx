@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CalendarCheck, RefreshCw } from 'lucide-react';
 import { Tooltip } from 'radix-ui';
 import { dailyStatusLabels, type DailyStatus } from '../../shared/admin';
@@ -11,6 +11,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Spinner } from '@/components/ui/spinner';
 import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
@@ -21,25 +22,41 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
   open: boolean; onOpenChange: (open: boolean) => void; onAccessLost: () => void; returnFocus: () => void;
 }) {
   const [page, setPage] = useState(1);
+  const [selectedDate, setSelectedDate] = useState('all');
+  const [today, setToday] = useState(() => new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10));
   const [dialogContent, setDialogContent] = useState<HTMLDivElement | null>(null);
   const showTable = useMediaQuery('(min-width: 768px)');
-  const { data, loading, error, reload } = useAdminData(open ? `/api/admin/daily-tasks?page=${page}` : null, isDailyPage, onAccessLost);
+  const { data: response, loading, error, reload } = useAdminData(open
+    ? `/api/admin/daily-tasks?page=${page}${selectedDate === 'all' ? '' : `&date=${selectedDate}`}` : null, isDailyPage, onAccessLost);
+  const data = response?.page === page && (response.selectedDate ?? 'all') === selectedDate ? response : null;
+  useEffect(() => { if (response?.date) setToday(response.date); }, [response?.date]);
+  const dates = Array.from({ length: 7 }, (_, index) => new Date(Date.parse(today) - index * 24 * 60 * 60 * 1000).toISOString().slice(0, 10));
+  const dateLabel = selectedDate === 'all' ? `${dates[6]} — ${today}` : selectedDate;
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent ref={setDialogContent} className="auth-dialog daily-tasks-dialog flex max-h-[88dvh] flex-col gap-5 p-5 sm:max-w-5xl sm:p-6"
       onCloseAutoFocus={event => { event.preventDefault(); returnFocus(); }}>
       <DialogHeader className="shrink-0 gap-2 pr-10">
         <DialogTitle className="flex items-center gap-2 text-lg font-semibold"><CalendarCheck className="size-5 text-primary" aria-hidden="true" />近七天刷日常情况</DialogTitle>
-        <DialogDescription className="leading-6">查看今天及之前六天申请的日常任务，每次申请单独展示。时间均为北京时间。</DialogDescription>
+        <DialogDescription className="leading-6">可选择近七天中的某一天，或查看全部申请。每次申请单独展示，时间均为北京时间。</DialogDescription>
       </DialogHeader>
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
-        <Badge variant="outline" className="max-w-full whitespace-normal bg-white/35 px-3 py-1.5 font-normal leading-5">{data?.startDate ? `${data.startDate} — ${data.date}` : data?.date ?? '近七天'} · {data ? `${data.total} 次申请` : '日常任务'}</Badge>
-        <Button type="button" variant="outline" size="sm" className="min-h-11 px-3 md:min-h-0" disabled={loading} onClick={() => { void reload(); }}>
+        <Select value={selectedDate} onValueChange={value => { setSelectedDate(value); setPage(1); }}>
+          <SelectTrigger aria-label="查看日期" className="min-h-11 w-46 bg-white/35 md:min-h-0"><SelectValue /></SelectTrigger>
+          <SelectContent position="popper" align="start">
+            <SelectItem value="all" className="min-h-11 md:min-h-0">全部七天</SelectItem>
+            {dates.map((date, index) => <SelectItem key={date} value={date} className="min-h-11 md:min-h-0">
+              {date}{index === 0 ? '（今天）' : index === 1 ? '（昨天）' : ''}
+            </SelectItem>)}
+          </SelectContent>
+        </Select>
+        <span className="order-last w-full text-xs text-muted-foreground md:order-none md:w-auto" aria-live="polite">{dateLabel} · {data ? `${data.total} 次申请` : '日常任务'}</span>
+        <Button type="button" variant="outline" size="sm" className="ml-auto min-h-11 px-3 md:min-h-0" disabled={loading} onClick={() => { void reload(); }}>
           {loading ? <Spinner aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}刷新
         </Button>
       </div>
       <AdminError message={error} />
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" aria-busy={loading}>
-        {loading && !data && <AdminLoading label="正在读取近七天任务…" />}
+        {loading && !data && <AdminLoading label={selectedDate === 'all' ? '正在读取近七天任务…' : '正在读取当天任务…'} />}
         {data && data.items.length > 0 && (showTable ? <div className="overflow-hidden rounded-xl border bg-white/35">
           <Tooltip.Provider delayDuration={200}>
           <Table className="min-w-190">
@@ -83,7 +100,7 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
         </ul>)}
         {!loading && data?.items.length === 0 && <Empty className="py-12">
           <EmptyHeader><EmptyMedia variant="icon" className="bg-white/40"><CalendarCheck aria-hidden="true" /></EmptyMedia>
-            <EmptyTitle>{data.total ? '本页暂无任务' : '近七天还没有日常申请'}</EmptyTitle>
+            <EmptyTitle>{data.total ? '本页暂无任务' : selectedDate === 'all' ? '近七天还没有日常申请' : '这一天没有日常申请'}</EmptyTitle>
             <EmptyDescription>{data.total ? '返回上一页查看任务。' : '用户申请后，刷新即可查看扫码与执行情况。'}</EmptyDescription>
           </EmptyHeader>
         </Empty>}

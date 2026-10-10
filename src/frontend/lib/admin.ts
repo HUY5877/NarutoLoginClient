@@ -3,6 +3,8 @@ import { dailyStatusLabels, type DailyTaskPage, type DailyTaskFailureDetails, ty
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const date = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value));
 const nullableDate = (value: unknown) => value === null || date(value);
+const calendarDate = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
+  && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 export function isManagedUser(value: unknown): value is ManagedUser {
   return object(value) && typeof value.id === 'string' && typeof value.username === 'string'
     && typeof value.isAdmin === 'boolean' && typeof value.isInvalid === 'boolean' && date(value.createdAt)
@@ -19,8 +21,10 @@ export function isUsersPage(value: unknown): value is PageResult<ManagedUser> {
   return isPage(value) && value.items.every(isManagedUser);
 }
 export function isDailyPage(value: unknown): value is DailyTaskPage {
-  return isPage(value) && object(value) && typeof value.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.date)
-    && (value.startDate === undefined || typeof value.startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.startDate))
+  return isPage(value) && object(value) && calendarDate(value.date)
+    && (value.startDate === undefined || calendarDate(value.startDate))
+    && (value.selectedDate === undefined || calendarDate(value.selectedDate) && value.selectedDate <= value.date
+      && (value.startDate === undefined || value.selectedDate >= value.startDate))
     && value.timeZone === 'Asia/Shanghai' && value.items.every(item => object(item)
       && typeof item.id === 'string' && typeof item.username === 'string' && date(item.requestedAt)
       && nullableDate(item.scannedAt) && nullableDate(item.completedAt)

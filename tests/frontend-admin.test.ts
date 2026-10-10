@@ -36,6 +36,17 @@ test('failure details validate bounded log history and paired action progress be
     { ...details, logs: [{ ...details.logs[0], time: 'not-a-date' }] }]) assert.equal(isDailyTaskFailureDetails(invalid), false);
 });
 
+test('daily pages validate the selected calendar date within the available history', () => {
+  const page = { items: [], total: 0, page: 1, pageSize: 20, date: '2026-10-09', startDate: '2026-10-03', timeZone: 'Asia/Shanghai' };
+  assert.ok(isDailyPage(page));
+  assert.ok(isDailyPage({ ...page, selectedDate: '2026-10-03' }));
+  assert.ok(isDailyPage({ ...page, selectedDate: '2026-10-09' }));
+  for (const selectedDate of ['2026-10-02', '2026-10-10', '2026-10-9', '', null, ['2026-10-09']]) {
+    assert.equal(isDailyPage({ ...page, selectedDate }), false);
+  }
+  assert.equal(isDailyPage({ ...page, startDate: '2026-02-25', date: '2026-03-02', selectedDate: '2026-02-30' }), false);
+});
+
 test('monthly leaderboard accepts both rankings and rejects malformed counts, days and filters', () => {
   const item = { userId: 'user', username: 'Naruto', rank: 1, requestCount: 9, requestDays: 3 };
   const page = { items: [item], total: 1, page: 1, pageSize: 20, month: '2026-10', sort: 'requests', totalRequests: 9, timeZone: 'Asia/Shanghai' };

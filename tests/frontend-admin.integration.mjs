@@ -41,7 +41,7 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
     async function fixture(isAdmin = true, viewport = { width: 1280, height: 900 }, touch = false) {
       const context = await browser.newContext({ viewport, hasTouch: touch, isMobile: touch });
       const page = await context.newPage(); page.setDefaultTimeout(8_000);
-      const state = { users: [structuredClone(admin), structuredClone(user)], mutations: [], adminReads: [], errors: [], access: isAdmin, failDaily: false,
+      const state = { users: [structuredClone(admin), structuredClone(user)], mutations: [], adminReads: [], errors: [], access: isAdmin, failDaily: false, extraDaily: [],
         failureDetails: { errorCode: 'daily_failed', errorMessage: '日常任务执行失败，请查看执行日志。' }, detailStatus: 200,
         detailResponse: { taskId: 'failed', errorCode: 'daily_failed', errorMessage: '具体错误：VisualError: 未能识别装备材料页面；执行阶段 daily 失败',
           actionIndex: 18, actionTotal: 35, actionName: '装备进阶', truncated: false,
@@ -76,9 +76,12 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
           }
           if (url.pathname === '/api/admin/daily-tasks') {
             if (state.failDaily) return reply({ error: '任务日志暂时不可用，请稍后重试。' }, 503);
-            return reply({ items: [task, { ...task, id: 'running', username: 'Sasuke_02', scannedAt: null, completedAt: null, status: 'running_daily' },
-              { ...task, id: 'failed', username: 'Sakura_03', completedAt: null, status: 'failed', ...state.failureDetails }],
-            total: 3, page: 1, pageSize: 20, startDate: '2026-10-02', date: '2026-10-08', timeZone: 'Asia/Shanghai' });
+            const selectedDate = url.searchParams.get('date'), page = Number(url.searchParams.get('page') || 1);
+            const items = [task, { ...task, id: 'running', username: 'Sasuke_02', scannedAt: null, completedAt: null, status: 'running_daily' },
+              { ...task, id: 'failed', username: 'Sakura_03', completedAt: null, status: 'failed', ...state.failureDetails }, ...state.extraDaily]
+              .filter(item => !selectedDate || new Date(Date.parse(item.requestedAt) + 8 * 60 * 60 * 1000).toISOString().slice(0, 10) === selectedDate);
+            return reply({ items: items.slice((page - 1) * 20, page * 20), total: items.length, page, pageSize: 20,
+              ...(selectedDate ? { selectedDate } : {}), startDate: '2026-10-02', date: '2026-10-08', timeZone: 'Asia/Shanghai' });
           }
           if (url.pathname === '/api/admin/users' && method === 'GET') {
             const filtered = state.users.filter(value => value.username.toLowerCase().includes((url.searchParams.get('search') || '').toLowerCase()));
@@ -129,6 +132,43 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
           f.state.access = false;
           await dialog.getByRole('button', { name: '刷新', exact: true }).click();
           await dialog.waitFor({ state: 'hidden' });
+        } finally { await f.close(); }
+      }
+    });
+
+    await t.test('daily date selection filters server requests, resets pagination and works on desktop and mobile', async () => {
+      for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+        const f = await fixture(true, viewport, viewport.width < 768);
+        try {
+          f.state.extraDaily.push(...Array.from({ length: 21 }, (_, index) => ({ ...task, id: `extra-${index}`, username: `Extra_${index}` })),
+            { ...task, id: 'yesterday', username: 'Yesterday_User', requestedAt: '2026-10-07T00:00:00Z', scannedAt: null, completedAt: null, status: 'waiting_scan' });
+          await f.open('近七天刷日常情况');
+          const dialog = f.page.getByRole('dialog', { name: '近七天刷日常情况' });
+          await dialog.getByText('共 25 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
+          await dialog.getByRole('button', { name: '下一页', exact: true }).click();
+          await dialog.getByText('共 25 条 · 第 2 页 / 2 页', { exact: true }).waitFor();
+          const picker = dialog.getByRole('combobox', { name: '查看日期' });
+          await picker.click();
+          assert.deepEqual(await f.page.getByRole('option').allTextContents(), ['全部七天', '2026-10-08（今天）', '2026-10-07（昨天）',
+            '2026-10-06', '2026-10-05', '2026-10-04', '2026-10-03', '2026-10-02']);
+          await f.page.screenshot({ animations: 'disabled', path: path.join(repository, `.data/admin-preview/date-picker-${viewport.width < 768 ? 'mobile' : 'desktop'}.png`) });
+          await f.page.getByRole('option', { name: '2026-10-07（昨天）', exact: true }).click();
+          await dialog.getByText('2026-10-07 · 1 次申请', { exact: true }).waitFor();
+          assert.match(f.state.adminReads.at(-1), /^\/api\/admin\/daily-tasks\?page=1&date=2026-10-07$/);
+          assert.match(await dialog.innerText(), /Yesterday_User/);
+          assert.doesNotMatch(await dialog.innerText(), /Naruto_01|Sakura_03|Extra_/);
+          assert.equal(await dialog.getByRole('button', { name: '下一页', exact: true }).isDisabled(), true);
+          await dialog.getByRole('button', { name: '刷新', exact: true }).click();
+          await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
+          assert.match(f.state.adminReads.at(-1), /page=1&date=2026-10-07$/);
+          assert.equal(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth), true);
+          await f.page.screenshot({ animations: 'disabled', path: path.join(repository, `.data/admin-preview/daily-filtered-${viewport.width < 768 ? 'mobile' : 'desktop'}.png`) });
+          await picker.click(); await f.page.getByRole('option', { name: '2026-10-06', exact: true }).click();
+          await dialog.getByText('这一天没有日常申请', { exact: true }).waitFor();
+          await picker.click(); await f.page.getByRole('option', { name: '全部七天', exact: true }).click();
+          await dialog.getByText('共 25 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
+          assert.equal(f.state.adminReads.at(-1), '/api/admin/daily-tasks?page=1');
+          assert.deepEqual(f.state.mutations, []);
         } finally { await f.close(); }
       }
     });

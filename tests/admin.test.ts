@@ -111,6 +111,36 @@ test('recent history includes today and six previous Beijing dates with an exclu
   assert.equal((await beforeMidnight.service.dailyTasks(admin, {})).date, '2026-10-08');
 });
 
+test('daily date filters use one Beijing day and retain pagination across calendar boundaries', async () => {
+  for (const [clock, selectedDate, startAt, endAt, earliest] of [
+    [now, '2026-10-09', '2026-10-08T16:00:00.000Z', '2026-10-09T16:00:00.000Z', '2026-10-03'],
+    [now, '2026-10-03', '2026-10-02T16:00:00.000Z', '2026-10-03T16:00:00.000Z', '2026-10-03'],
+    [Date.parse('2024-03-02T00:00:00Z'), '2024-02-29', '2024-02-28T16:00:00.000Z', '2024-02-29T16:00:00.000Z', '2024-02-25'],
+    [Date.parse('2027-01-02T00:00:00Z'), '2026-12-31', '2026-12-30T16:00:00.000Z', '2026-12-31T16:00:00.000Z', '2026-12-27'],
+  ] as const) {
+    const f = fixture({ listDailyEvents: async (start, end, offset, limit) => {
+      assert.equal(start.toISOString(), startAt); assert.equal(end.toISOString(), endAt);
+      assert.equal(offset, 20); assert.equal(limit, 20);
+      return { items: [], total: 21 };
+    } }, [], clock);
+    const result = await f.service.dailyTasks(admin, { date: selectedDate, page: '2' });
+    assert.equal(result.selectedDate, selectedDate); assert.equal(result.startDate, earliest);
+    assert.equal(result.page, 2); assert.equal(result.total, 21);
+  }
+});
+
+test('daily date filters reject invalid and out-of-range dates before accessing storage', async () => {
+  const f = fixture({ initialize: fail });
+  for (const date of ['2026-10-02', '2026-10-10', '2026-10-9', '2026-13-01', '2026-10-09T00:00:00Z', '', 'all',
+    ['2026-10-09'], { date: '2026-10-09' }, 20261009, null]) {
+    await assert.rejects(f.service.dailyTasks(admin, { date }), errorIs(400, 'INVALID_DATE'));
+  }
+  const march = fixture({ initialize: fail }, [], Date.parse('2026-03-02T00:00:00Z'));
+  await assert.rejects(march.service.dailyTasks(admin, { date: '2026-02-30' }), errorIs(400, 'INVALID_DATE'));
+  const beforeMidnight = fixture({ initialize: fail }, [], now - 1);
+  await assert.rejects(beforeMidnight.service.dailyTasks(admin, { date: '2026-10-09' }), errorIs(400, 'INVALID_DATE'));
+});
+
 test('QR expiration never overrides an executing script and failed/mock runs do not report script completion', async () => {
   const statuses = ['running_daily', 'failed', 'completed', null] as const;
   const items: DailyEvent[] = statuses.map((_, index) => ({ id: `10000000-0000-4000-8000-00000000000${index + 2}`,
