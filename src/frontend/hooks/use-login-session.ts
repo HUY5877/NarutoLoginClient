@@ -16,6 +16,11 @@ export interface Session {
   pollAfterMs?: number;
   showGetButton?: boolean;
   userOptions?: UserOptions;
+  loginStartedAt?: string;
+  loginAuthorized?: boolean;
+  refreshSupported?: boolean;
+  refreshRequestId?: string;
+  qrRevision?: string;
 }
 interface ActiveResponse { session: Session | null; showGetButton: boolean }
 interface PendingIntent { requestId: string; createdAt: number; expiresAt: number; userOptions: UserOptions }
@@ -137,8 +142,9 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     setShowGetButton(available);
   }, []);
 
-  const run = useCallback(async (mode: 'recover' | 'query') => {
+  const run = useCallback(async (mode: 'recover' | 'query' | 'refresh') => {
     if (!userId || runningRef.current) return;
+    const requestedTaskId = mode === 'refresh' ? sessionRef.current?.id : null;
     runningRef.current = true;
     controllerRef.current?.abort();
     const controller = new AbortController();
@@ -235,9 +241,26 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
       }
       if (!active()) return;
       if (!current) { showInactive(result); return; }
+      if (mode === 'refresh') {
+        if (current.id !== requestedTaskId) throw new RequestError('当前任务已变化，请重新查询后再刷新二维码。');
+        const response = await request(`/api/login-sessions/${encodeURIComponent(current.id)}/refresh`, controller.signal, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        const refreshed = await response.json() as Session;
+        if (!validSession(refreshed) || refreshed.id !== current.id) throw new RequestError('刷新状态暂时无法确认，请重试查询。');
+        if (!active()) return;
+        current = refreshed;
+      }
 
       while (active()) {
         current = accept(current);
+        if (current.loginAuthorized) {
+          confirmedTaskRef.current = current.id;
+          setConfirmedTaskId(current.id);
+          setPhase('login_confirmed');
+          setRetrying(false);
+          return;
+        }
         if (!isLive(current)) {
           const ended = expireLoginSession(current);
           accept(ended);
@@ -251,8 +274,17 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
         const sessionId = current.id;
         setPhase(current.status === 'qr_ready' ? 'preparing_qr' : current.status);
         setRetrying(false);
-        if (current.status === 'qr_ready') {
-          const response = await retryRead(`${path}/qr`, controller.signal, onRetry);
+        if (current.status === 'qr_ready' && !current.refreshRequestId) {
+          let response: Response;
+          try { response = await retryRead(`${path}/qr`, controller.signal, onRetry); }
+          catch (caught) {
+            if (!(caught instanceof RequestError) || caught.status !== 409) throw caught;
+            await delay(500, controller.signal);
+            const updated = await (await retryRead(path, controller.signal, onRetry)).json() as Session;
+            if (!validSession(updated) || updated.id !== sessionId) throw new RequestError('二维码状态暂时无法确认，请重试查询。');
+            current = updated;
+            continue;
+          }
           if (!(response.headers.get('content-type') ?? '').toLowerCase().startsWith('image/png')) {
             throw new RequestError('二维码图片暂时无法读取，请重试查询。');
           }
@@ -348,6 +380,12 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     controllerRef.current?.abort();
     runningRef.current = false;
     replaceQr(null);
+    if (sessionRef.current && !['failed', 'expired'].includes(sessionRef.current.status)) {
+      // The worker may have claimed a queued task just before its queue deadline.
+      // Re-read its authoritative occupancy deadline before marking it expired.
+      void run('query');
+      return;
+    }
     if (sessionRef.current) {
       const ended = expireLoginSession(sessionRef.current);
       sessionRef.current = ended;
@@ -358,7 +396,7 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     setError(sessionRef.current?.errorCode === 'queue_timeout' ? loginFailure('queue_timeout').error : '');
     setRetrying(false);
     updateAvailability(true);
-  }, [userId, ownerId, expiry, now, replaceQr, updateAvailability]);
+  }, [userId, ownerId, expiry, now, replaceQr, updateAvailability, run]);
 
   function startLogin() {
     if (!userId || !canCreateRef.current || runningRef.current) return;
@@ -401,6 +439,24 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     setError('');
     setRetrying(false);
   }, [userId, replaceQr, updateAvailability]);
+  useEffect(() => {
+    if (!userId || ownerId !== userId || phase !== 'qr_ready' || !session) return;
+    const controller = new AbortController();
+    let checking = false;
+    const timer = window.setInterval(async () => {
+      if (checking || runningRef.current) return;
+      checking = true;
+      try {
+        const response = await request(`/api/login-sessions/${encodeURIComponent(session.id)}`, controller.signal);
+        const next = await response.json() as Session;
+        if (controller.signal.aborted || !validSession(next) || next.id !== session.id) return;
+        if (next.loginAuthorized) confirmLogin(next.id);
+        else if (next.refreshRequestId || next.qrRevision !== session.qrRevision || !isLive(next)) void run('query');
+      } catch { /* Existing task/log polling and the deadline remain active. */ }
+      finally { checking = false; }
+    }, 2000);
+    return () => { controller.abort(); clearInterval(timer); };
+  }, [userId, ownerId, phase, session, confirmLogin, run]);
   const currentOwner = Boolean(userId && ownerId === userId);
   const visiblePhase = currentOwner ? phase : 'idle';
   const visibleSession = currentOwner ? session : null;
@@ -415,7 +471,8 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     error: currentOwner ? error : '', retrying: currentOwner && retrying, pending,
     showGetButton: currentOwner && showGetButton, canRetryQuery: currentOwner && visiblePhase === 'query_failed', canResumePending,
     remainingSeconds, countdown, isError: ['failed', 'expired', 'query_failed'].includes(visiblePhase),
-    statusLabel: statusLabels[visiblePhase], startLogin, confirmLogin,
+    statusLabel: pending && visibleSession?.refreshRequestId ? '正在刷新二维码，请稍候' : statusLabels[visiblePhase], startLogin, confirmLogin,
+    refreshQr: () => run('refresh'),
     userOptions: currentOwner ? userOptions : DEFAULT_USER_OPTIONS, canEditUserOptions,
     setEquipmentStamina: (equipmentStamina: boolean) => {
       if (canEditUserOptions && !runningRef.current) setUserOptions(previous => ({ ...previous, equipmentStamina }));

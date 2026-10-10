@@ -74,7 +74,7 @@ export interface LoginEventStore {
   getEvent(id: string, userId: string): Promise<LoginEvent | null>;
   getLatestForUser(userId: string): Promise<LoginEvent | null>;
   markDispatched(id: string, userId: string, now: Date): Promise<void>;
-  updateStatus(id: string, userId: string, status: Status, now: Date): Promise<void>;
+  updateStatus(id: string, userId: string, status: Status, now: Date, expiresAt?: string): Promise<void>;
 }
 
 type Timestamp = Date | string;
@@ -470,15 +470,17 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
     return result.rows[0] ? loginEvent(result.rows[0]) : null;
   }
 
-  async updateStatus(id: string, userId: string, status: Status, now: Date): Promise<void> {
+  async updateStatus(id: string, userId: string, status: Status, now: Date, expiresAt?: string): Promise<void> {
     await this.initialize();
-    // Ready work can still fail; only failed/expired events are finished and cannot revive.
+    // A verified worker lease can outlive the queue reservation. Preserve hard
+    // failures and monotonic ready status; only time-expired reservations revive.
     await this.pool.query(`UPDATE naruto_login.login_events
-      SET status = CASE WHEN expires_at <= $4 THEN 'expired' ELSE $3 END,
-          finished_at = CASE WHEN expires_at <= $4 OR $3 IN ('failed', 'expired') THEN $4 ELSE NULL END
-      WHERE id = $1 AND user_id = $2 AND finished_at IS NULL
-        AND (expires_at <= $4 OR status NOT IN ('qr_ready', 'failed', 'expired') OR $3 IN ('failed', 'expired'))`,
-    [id, userId, status, now]);
+      SET status = CASE WHEN GREATEST(expires_at, COALESCE($5::timestamptz, expires_at)) <= $4 THEN 'expired' ELSE $3 END,
+          expires_at = GREATEST(expires_at, COALESCE($5::timestamptz, expires_at)),
+          finished_at = CASE WHEN GREATEST(expires_at, COALESCE($5::timestamptz, expires_at)) <= $4 OR $3 IN ('failed', 'expired') THEN $4 ELSE NULL END
+      WHERE id = $1 AND user_id = $2 AND (finished_at IS NULL OR (status = 'expired' AND $5::timestamptz > $4))
+        AND (expires_at <= $4 OR status NOT IN ('qr_ready', 'failed', 'expired') OR $3 IN ('failed', 'expired') OR $5::timestamptz > expires_at)`,
+    [id, userId, status, now, expiresAt ?? null]);
   }
 
   async close(): Promise<void> { await this.pool.end(); }

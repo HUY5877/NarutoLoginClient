@@ -41,13 +41,13 @@ export function deriveTaskProgress(input: ProgressInput) {
   const steps: ProgressStep[] = [
     { id: 'submission', title: '提交登录申请', state: task ? 'completed' : resolving ? 'active' : 'pending',
       description: task ? '登录申请已提交' : resolving ? phase === 'submitting' ? '正在提交本次登录申请' : '正在检查本账户的有效申请'
-        : phase === 'query_failed' ? '申请状态尚未确认，请重试查询' : '点击生成登录二维码后提交本次申请' },
+        : phase === 'query_failed' ? '申请状态尚未确认，请重试查询' : '点击启动模拟器获取二维码后提交本次申请' },
     { id: 'qr', title: '二维码获取状态', state: 'pending', description: '提交申请后开始获取二维码' },
     { id: 'script', title: '执行脚本', state: 'pending', description: '扫码登录成功后开始执行日常脚本' },
   ];
   let summary = task ? '获取二维码中' : resolving ? '提交中' : phase === 'query_failed' ? '待确认' : '待开始';
   let tone: 'default' | 'success' | 'danger' = 'default';
-  let hint = '点击「生成登录二维码」后才加载二维码；执行记录可独立恢复。';
+  let hint = '点击「启动模拟器获取二维码」后才加载二维码；执行记录可独立恢复。';
   if (!task) {
     if (phase === 'expired') {
       steps[0].state = 'failed'; steps[0].description = '本次申请确认已超时，请点击重新生成二维码';
@@ -83,7 +83,11 @@ export function deriveTaskProgress(input: ProgressInput) {
     return { steps, summary, tone, hint, taskId: task.id };
   }
 
-  if (isUnclaimedQueueTimeout(session, run)) {
+  if (phase === 'login_confirmed' || session?.loginAuthorized) {
+    qr.state = 'completed'; qr.description = '扫码授权已完成';
+    script.state = 'active'; script.description = '正在进入游戏并准备执行日常';
+    summary = '正在进入游戏'; hint = '授权已经完成，无需再次扫码。';
+  } else if (isUnclaimedQueueTimeout(session, run)) {
     qr.state = 'failed'; qr.description = taskFailureMessage('queue_timeout');
     script.description = '申请排队超时，脚本尚未开始';
     summary = '排队超时'; tone = 'danger'; hint = qr.description;
@@ -108,9 +112,13 @@ export function deriveTaskProgress(input: ProgressInput) {
     qr.state = 'failed'; qr.description = '二维码已过期，请重新申请';
     script.description = '尚未确认扫码登录，脚本未开始';
     summary = '等待登录超时'; tone = 'danger'; hint = '再次点击生成二维码时，会先检查已有申请。';
+  } else if (session?.refreshRequestId) {
+    qr.state = 'active'; qr.description = '正在当前模拟器中刷新二维码';
+    script.description = '等待扫码登录，登录成功后开始执行';
+    summary = '刷新二维码'; hint = '新二维码上传完成后会自动显示，实例占用期限保持不变。';
   } else if (qrReady || run?.status === 'waiting_scan' || task.status === 'qr_ready') {
     qr.state = 'completed';
-    qr.description = qrReady ? '二维码已显示，请在有效期内扫码' : '二维码已生成，点击生成登录二维码可查看';
+    qr.description = qrReady ? '二维码已显示，请在有效期内扫码' : '二维码已生成，点击启动模拟器获取二维码可查看';
     script.description = '等待扫码登录，登录成功后开始执行';
     summary = '等待扫码'; hint = '扫码登录成功后，第三阶段会显示脚本执行进度。';
   } else {

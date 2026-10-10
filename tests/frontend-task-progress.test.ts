@@ -17,6 +17,15 @@ function input(status?: RunStatus, patch: Partial<ProgressInput> = {}): Progress
 }
 const states = (value: ProgressInput) => deriveTaskProgress(value).steps.map(step => step.state);
 
+test('refresh pending overrides an older waiting_scan snapshot, while authorization wins without waiting for logs', () => {
+  const refreshing = input('waiting_scan', { phase: 'preparing_qr', session: { ...session, refreshRequestId: 'pending' } });
+  assert.deepEqual(states(refreshing), ['completed', 'active', 'pending']);
+  assert.equal(deriveTaskProgress(refreshing).summary, '刷新二维码');
+  const authorized = input('waiting_scan', { phase: 'login_confirmed', session: { ...session, loginAuthorized: true } });
+  assert.deepEqual(states(authorized), ['completed', 'completed', 'active']);
+  assert.equal(deriveTaskProgress(authorized).summary, '正在进入游戏');
+});
+
 test('unclaimed expiry reports capacity pressure only without execution evidence for this task', () => {
   const expired = expireLoginSession(session);
   const waiting = input(undefined, { phase: 'expired', session: expired });

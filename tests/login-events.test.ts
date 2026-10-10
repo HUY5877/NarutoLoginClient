@@ -131,6 +131,39 @@ test('过期事件停止显示；重放旧requestId仍返回过期，新的reque
   assert.notEqual((await f.service().create(userId, randomUUID())).id, task.id);
 });
 
+test('排队期限已过但实例仍有效时复用同一任务，刷新不入队且先验证任务所有权', async () => {
+  const f = fixture(), userId = randomUUID();
+  const task = await f.service().create(userId, randomUUID());
+  const leased = { ...task, status: 'qr_ready' as const, expiresAt: new Date(Date.parse(task.createdAt) + 660000).toISOString() };
+  f.queue.set(task.id, leased);
+  f.advance(130000);
+  let refreshCalls = 0;
+  const service = new LoginEventService({ sessionTtlMs: 120000 }, { store: f.store,
+    tasks: { ...f.tasks, getActive: async () => leased, requestRefresh: async () => { refreshCalls++; return leased; } },
+    now: () => Date.parse(task.createdAt) + 130000 });
+  assert.equal((await service.create(userId, randomUUID())).id, task.id);
+  assert.equal((await service.getActive(userId))?.id, task.id);
+  assert.equal((await service.refresh(task.id, userId)).id, task.id);
+  await assert.rejects(service.refresh(task.id, randomUUID()), { status: 404 });
+  assert.equal(refreshCalls, 1); assert.equal(f.submissions.length, 1); assert.equal(f.records.size, 1);
+});
+
+test('数据库分发确认丢失且原排队期限已过时，恢复工作进程租期而不重复入队', async () => {
+  const f = fixture(), userId = randomUUID();
+  const mark = f.store.markDispatched;
+  f.store.markDispatched = async () => { throw new Error('database temporarily unavailable'); };
+  await assert.rejects(f.service().create(userId, randomUUID()), { status: 503 });
+  const event = [...f.records.values()][0];
+  assert.equal(event.dispatchedAt, null);
+  f.queue.set(event.id, { ...f.queue.get(event.id)!, status: 'qr_ready',
+    expiresAt: new Date(Date.parse(event.createdAt) + 660000).toISOString() });
+  f.store.markDispatched = mark;
+  f.advance(130000);
+  assert.equal((await f.service().getForUser(event.id, userId)).status, 'qr_ready');
+  assert(f.records.get(event.id)?.dispatchedAt);
+  assert.equal(f.submissions.length, 1);
+});
+
 test('工作进程失败会持久化并释放当前事件，用户可发起下一次申请', async () => {
   const f = fixture(), userId = randomUUID();
   const task = await f.service().create(userId, randomUUID());

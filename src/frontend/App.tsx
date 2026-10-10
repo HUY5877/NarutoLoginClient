@@ -100,7 +100,7 @@ function LoginHelp() {
         </DialogHeader>
         <ItemGroup className="py-1">
           {[
-            ['登录并获取二维码', '注册申请审批通过后，登录账户并点击「生成登录二维码」。同账户的多个页面共用一份有效申请。'],
+            ['启动模拟器', '登录账户并点击「启动模拟器获取二维码」。同账户的多个页面共用一个实例。'],
             ['等待准备完成', '保持页面打开，页面会自动更新准备进度和二维码。'],
             ['扫码授权并执行', '使用手机 QQ 扫描二维码并确认授权；进入游戏后自动继续执行日常脚本。'],
           ].map(([title, description], index) => (
@@ -117,8 +117,8 @@ function LoginHelp() {
         </ItemGroup>
         <Alert>
           <Clock3 aria-hidden="true" />
-          <AlertTitle>二维码过期后可以重新生成</AlertTitle>
-          <AlertDescription>刷新后点击「生成登录二维码」再查询；已有有效申请会继续使用。连接中断时可重试查询。</AlertDescription>
+          <AlertTitle>二维码失效后，点击「刷新二维码」</AlertTitle>
+          <AlertDescription>实例分配后保留 10 分钟供扫码，刷新不会延长占用时间。超时未扫码成功会自动关闭实例；扫码成功后继续执行日常。</AlertDescription>
         </Alert>
       </DialogContent>
     </Dialog>
@@ -145,6 +145,7 @@ export default function App() {
     isError,
     statusLabel,
     startLogin,
+    refreshQr,
     retryQuery,
     handleQrError,
     acceptedRevision,
@@ -383,17 +384,23 @@ export default function App() {
                 </label>
               )}
 
-              {!auth.loading && (!auth.user || showGetButton && (!authorizationComplete || currentRun && isRunTerminal(currentRun.status))) && <Button
+              {!auth.loading && <Button
                 type="button"
                 size="lg"
                 className="login-action mt-6 h-12 w-full max-w-sm gap-2 text-sm font-semibold"
                 onClick={() => { if (auth.user) { setSubmissionRevision(acceptedRevision); void startLogin(); } else openLogin(); }}
-                disabled={auth.busy || pending}
+                disabled={auth.busy || pending || Boolean(auth.user && (!showGetButton || authorizationComplete && !(currentRun && isRunTerminal(currentRun.status))))}
               >
                 {!auth.user ? <LogIn aria-hidden="true" /> : phase === 'idle' ? <QrCode aria-hidden="true" />
                     : <RefreshCw aria-hidden="true" />}
-                {!auth.user ? '登录后获取二维码' : phase === 'idle' ? '生成登录二维码' : '重新生成二维码'}
+                {!auth.user ? '登录后获取二维码' : '启动模拟器获取二维码'}
                 {phase === 'idle' && !auth.loading && <ArrowRight className="ml-1" aria-hidden="true" />}
+              </Button>}
+              {!auth.loading && auth.user && <Button type="button" variant="outline" size="lg"
+                className="qr-refresh-action mt-3 h-11 w-full max-w-sm gap-2"
+                disabled={auth.busy || pending || !session || !['qr_ready', 'query_failed'].includes(phase) || authorizationComplete || remainingSeconds <= 0}
+                onClick={() => { void refreshQr(); }}>
+                <RefreshCw aria-hidden="true" />刷新二维码
               </Button>}
               {!authorizationComplete && canRetryQuery && auth.user && (
                 <Button type="button" variant="outline" size="lg" className="mt-6 h-12 w-full max-w-sm gap-2 bg-white/40"
@@ -401,10 +408,10 @@ export default function App() {
                   <RefreshCw aria-hidden="true" />{canResumePending ? '继续本次申请' : '重试查询'}
                 </Button>
               )}
-              {auth.user && ready && <p className="qr-ready-note mt-5 text-sm font-medium text-primary">二维码有效，请在倒计时结束前扫码</p>}
+              {auth.user && ready && <p className="qr-ready-note mt-5 text-sm font-medium text-primary">请用手机 QQ 扫码，二维码失效可刷新</p>}
               <p className="qr-sharing-note mt-3 flex items-start gap-1.5 text-center text-xs leading-5 text-muted-foreground">
                 <ShieldCheck className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-                同一账户的多个页面共用一个有效二维码
+                {session?.loginStartedAt ? '实例保留 10 分钟供扫码，刷新不会延长占用' : '同一账户共用一个实例，分配后有 10 分钟扫码时间'}
               </p>
               {auth.user && <>
                 <div className="mobile-progress-overview sm:hidden" aria-label="任务进度概览">
@@ -454,7 +461,7 @@ export default function App() {
                         <p className="text-muted-foreground">申请编号</p>
                         <code className="block break-all rounded-md border bg-background px-3 py-2 font-mono text-xs leading-5">{session.id}</code>
                       </div>
-                      <p className="leading-6 text-muted-foreground">刷新或重新打开后，点击「生成登录二维码」继续查看已有有效申请；过期后可重新生成。</p>
+                      <p className="leading-6 text-muted-foreground">重新打开页面后，点击「启动模拟器获取二维码」可恢复当前实例。二维码失效时点击「刷新二维码」；占用超时后再启动新实例。</p>
                     </AccordionContent>
                   </AccordionItem>
                 </Accordion>

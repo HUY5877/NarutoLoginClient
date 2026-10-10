@@ -8,7 +8,7 @@ import { DEFAULT_USER_OPTIONS, type UserOptions } from '../shared/user-options.j
 
 interface Options {
   store?: LoginEventStore;
-  tasks: Pick<TaskService, 'enqueue' | 'getForUser'>;
+  tasks: Pick<TaskService, 'enqueue' | 'getForUser'> & Partial<Pick<TaskService, 'getActive' | 'requestRefresh'>>;
   now?: () => number;
 }
 
@@ -40,7 +40,21 @@ export class LoginEventService {
 
   private async resume(event: LoginEvent): Promise<Task> {
     const task = this.publicTask(event);
-    if (task.status === 'expired') return task;
+    if (task.status === 'expired' && !event.dispatchedAt) {
+      // The worker may have claimed the Redis outbox while PostgreSQL's
+      // dispatched acknowledgement was unavailable. Recover that live lease
+      // without replaying an envelope whose original queue deadline has passed.
+      try {
+        const current = await this.options.tasks.getForUser(event.id, event.userId);
+        if (['failed', 'expired'].includes(current.status) || Date.parse(current.expiresAt) <= this.now()) return task;
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return task;
+        throw error;
+      }
+      const dispatchedAt = new Date(this.now());
+      await this.database(store => store.markDispatched(event.id, event.userId, dispatchedAt));
+      event = { ...event, dispatchedAt: dispatchedAt.toISOString() };
+    }
     if (task.status === 'failed') {
       // The database remembers failure, while Redis retains its safe reason.
       // Never replay a failed job or revive it from a stale Redis status.
@@ -57,8 +71,9 @@ export class LoginEventService {
       await this.database(store => store.markDispatched(event.id, event.userId, new Date(this.now())));
     }
     try {
-      const current = await this.options.tasks.getForUser(event.id, event.userId);
-      await this.recordStatus(event.id, event.userId, current.status);
+      let current = await this.options.tasks.getForUser(event.id, event.userId);
+      if (current.status !== 'failed' && Date.parse(current.expiresAt) <= this.now()) current = { ...current, status: 'expired' };
+      await this.database(store => store.updateStatus(event.id, event.userId, current.status, new Date(this.now()), current.expiresAt));
       if (current.status === 'failed') {
         const { error: _error, errorCode, ...publicFields } = current;
         return { ...publicFields, userOptions: task.userOptions, ...loginFailure(errorCode) };
@@ -73,6 +88,10 @@ export class LoginEventService {
   }
 
   async create(userId: string, requestId: string, userOptions: UserOptions = DEFAULT_USER_OPTIONS): Promise<Task> {
+    // A claimed worker has a separate ten-minute lease. Consult its account lock
+    // before expiring the original queue reservation in PostgreSQL.
+    const live = await this.liveActive(userId);
+    if (live && !['failed', 'expired'].includes(live.status)) return live;
     // Refresh a completed failure before reserving the user's next slot.
     const active = await this.database(store => store.getActive(userId, new Date(this.now())));
     if (active) await this.resume(active);
@@ -83,10 +102,28 @@ export class LoginEventService {
       status: 'queued', dispatchedAt: null, finishedAt: null, userOptions: { ...userOptions },
     };
     const event = await this.database(store => store.reserve(candidate, new Date(this.now())));
-    return await this.resume(event);
+    try { return await this.resume(event); }
+    catch (error) {
+      if (error instanceof ApiError && error.code === 'ACTIVE_LOGIN_SESSION') {
+        // A claim can race the reservation above. Discard only this undispatched
+        // candidate and resume the task that still owns Redis's account lock.
+        await this.recordStatus(event.id, userId, 'failed');
+        const current = await this.liveActive(userId);
+        if (current) return current;
+      }
+      throw error;
+    }
+  }
+
+  private async liveActive(userId: string): Promise<Task | null> {
+    const task = await this.options.tasks.getActive?.(userId);
+    if (!task) return null;
+    return this.getForUser(task.id, userId);
   }
 
   async getActive(userId: string): Promise<Task | null> {
+    const live = await this.liveActive(userId);
+    if (live && !['failed', 'expired'].includes(live.status)) return live;
     const event = await this.database(store => store.getActive(userId, new Date(this.now())));
     if (!event) return null;
     const task = await this.resume(event);
@@ -101,5 +138,11 @@ export class LoginEventService {
 
   async recordStatus(id: string, userId: string, status: Status): Promise<void> {
     await this.database(store => store.updateStatus(id, userId, status, new Date(this.now())));
+  }
+
+  async refresh(id: string, userId: string): Promise<Task> {
+    await this.getForUser(id, userId);
+    if (!this.options.tasks.requestRefresh) throw new ApiError(503, '二维码刷新服务尚未配置。');
+    return this.options.tasks.requestRefresh(id, userId);
   }
 }

@@ -50,7 +50,7 @@ TSX 页面每秒 GET /api/login-sessions/{id}
   → TS 后端 GET OSS 对象并转发 PNG
 ```
 
-浏览器只访问客户端 API。数据库、Redis 连接信息、JWT 签名密钥和 OSS 密钥由 TS 后端读取；登录 JWT 通过 HttpOnly Cookie 保存，有效期为 7 天，前端 JavaScript 无法读取。二维码申请默认有效期为 5 分钟，从申请创建时开始计算，包含排队、准备二维码和等待扫码的时间；获取成功后仍占用该账号名额，失败或过期才允许重新申请。
+浏览器只访问客户端 API。数据库、Redis 连接信息、JWT 签名密钥和 OSS 密钥由 TS 后端读取；登录 JWT 通过 HttpOnly Cookie 保存，有效期为 7 天，前端 JavaScript 无法读取。排队申请默认等待 5 分钟（SESSION_TTL_MS）。新协议由执行端领取任务、分配实例时开始独立的 10 分钟扫码占用期，包含启动模拟器与游戏的时间；刷新二维码不会延长占用，超时未授权会立即关闭实例。扫码授权成功后的登录收尾和日常使用独立的执行期限。
 
 ## 网站账号
 
@@ -96,11 +96,12 @@ TSX 页面每秒 GET /api/login-sessions/{id}
 
 设置 `REDIS_URL` 为已有 Redis 的连接地址，支持 `redis://` 和 `rediss://`。云端和 Python 所在机器都必须能访问该实例；暂时没有 Redis 时保持未配置，不要填写伪地址。
 
-默认队列键为 `naruto:login:tasks`。TS 后端使用 `LPUSH` 投递 JSON 字符串，Python 使用 `BRPOP` 按先后顺序消费。消息示例：
+默认队列键为 `naruto:login:tasks`。TS 后端使用 `LPUSH` 投递 JSON 字符串，Python 用 Lua 原子领取队尾任务并登记所属 worker。消息示例：
 
 ```json
 {
   "version": 1,
+  "loginTimeoutSeconds": 600,
   "id": "123e4567-e89b-42d3-a456-426614174000",
   "createdAt": "2026-09-23T06:00:00.000Z",
   "expiresAt": "2026-09-23T06:02:00.000Z",
@@ -115,9 +116,19 @@ Python 消费端需要校验消息版本、UUID 和过期时间，直接丢弃�
 
 会话保存在 `<REDIS_QUEUE_KEY>:sessions:<id>`，默认例如 `naruto:login:tasks:sessions:123e4567-e89b-42d3-a456-426614174000`。值为 JSON，包含 `id`、`userId`、`status`、`createdAt`、`expiresAt`、`userOptions`、`simulation: true` 和协议兼容字段 `tokenHash`。账号当前申请保存在 `<REDIS_QUEUE_KEY>:users:<userId>:active`，与申请同时过期。队列消息不含账号密码或网站登录凭证。
 
+普通阶段更新必须保留既有 TTL。领取带 `loginTimeoutSeconds: 600` 的任务时，worker 仅在这一步写入 `loginStartedAt`、`loginExpiresAt`，同步会话与账号锁 TTL；保留原始 `createdAt`/`expiresAt` 供队列身份核验。API 对外的 `expiresAt` 使用当前扫码截止时间，并同步 PostgreSQL 事件期限。
+
 工作进程可以选择回写 `starting_emulator`、`opening_game`、`preparing_qr` 或 `failed` 等状态。回写时必须保留 `tokenHash`、时间字段和其他会话字段，并保留原 TTL；例如更新既有 JSON 后使用 `SET ... XX KEEPTTL`，不要新建已过期会话或延长申请有效期。不回写中间状态也可以，客户端会继续检查 OSS，文件到达后显示二维码。
 
 Python 项目位于 `E:\code\NarutoDailyADB` 的 `naruto_daily/login_service/`，通过 Redis 消费上述协议。客户端不调用 Python HTTP 接口；队列协议保持 `version: 1` 并增加可选的 `userOptions` 对象。配套 worker 将整个对象传入日常执行子进程，旧消息省略时默认开启装备栏体力刷取。工作进程回写状态时需继续保留 `userId`、`userOptions` 等额外字段。
+
+## 同一实例刷新二维码
+
+页面提供「启动模拟器获取二维码」和「刷新二维码」两个按钮。启动会恢复当前账号已有实例；刷新仅提交页面当前任务 ID，不创建另一项任务。客户端与配套 Python worker 需一起更新，旧 worker 的任务会明确返回 `REFRESH_UNSUPPORTED`。
+
+刷新接口原子写入 `<REDIS_QUEUE_KEY>:refresh:<taskId>`，JSON 包含 `taskId`、随机 `requestId`、`requestedAt`，TTL 固定 600 秒。多页面并发请求共用尚未消费的指令；会话用 `refreshRequestId` 标记等待状态，不改变登录截止时间。子进程只轮询自身任务的 key，先检查扫码成功标志；QQ 授权页（包含失效页）返回一次后重新点击 QQ 安卓按钮，已在游戏登录页则直接点击。背景图片不参与登录按钮识别。
+
+子进程通过原 JSON 行通道交回新图，父进程先上传同一 OSS 对象，再用任务归属和请求 ID 做原子确认：写入 `qrRevision`、清除待刷新标记并删除已消费 key。上传期间 API 不返回旧 OSS 图；浏览器观察版本变化后重新读取图片，其他已打开页面也会同步。若刷新期间已授权，直接交接后续流程并取消待刷新指令。
 
 ## 日常执行进度与日志
 
@@ -184,7 +195,7 @@ Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run 
 | --- | --- |
 | `HOST` / `PORT` | `127.0.0.1` / `4300`，本地页面、API 和开发热更新地址 |
 | `REDIS_QUEUE_KEY` | `naruto:login:tasks`，客户端与 Python 共用的队列键 |
-| `SESSION_TTL_MS` | `300000`，申请有效期（5 分钟），支持 5 秒至 10 分钟 |
+| `SESSION_TTL_MS` | `300000`，排队等待期限（5 分钟），支持 5 秒至 10 分钟；领取后的扫码占用固定为 10 分钟 |
 | `REQUEST_TIMEOUT_MS` | `5000`，Redis 和 OSS 请求超时 |
 | `OSS_KEY_PREFIX` | `login`，二维码对象路径前缀 |
 | `LOCAL_OBJECTS_DIR` | 本仓库 `.data/login-objects`，本地模拟对象目录 |
@@ -208,6 +219,7 @@ Vercel 项目以本仓库根目录为 Root Directory，构建命令为 `npm run 
 | `PATCH /api/admin/users/:id` | 管理员提交 `{username, password?: string, isAdmin: boolean, isInvalid: boolean}` 更新账号，密码省略或留空时保留，返回 `{user}` |
 | `DELETE /api/admin/users/:id` | 管理员删除账号及关联记录，返回 `204`；不允许删除当前账号 |
 | `POST /api/login-sessions` | `{requestId, userOptions: {equipmentStamina: boolean}}` 创建或恢复同一事件，返回 `202` 和 `id`、状态、有效时间、`userOptions`、`showGetButton`；省略选项默认开启 |
+| `POST /api/login-sessions/:id/refresh` | 在当前实例刷新二维码，返回 `202`；仅任务所属用户可调用，不投递新任务 |
 | `GET /api/login-sessions/active` | `{session, showGetButton}`，用户主动点击后查询当前账号未过期事件 |
 | `GET /api/login-sessions/:id` | 当前账号的事件进度及 `showGetButton`，使用登录 Cookie |
 | `GET /api/login-sessions/:id/qr` | 当前账号的二维码 `image/png`；过期或 Redis 会话失效后不可读取 |

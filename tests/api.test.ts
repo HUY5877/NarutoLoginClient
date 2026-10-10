@@ -53,6 +53,42 @@ async function withApi(deps: Partial<Dependencies>, run: (base: string) => Promi
   finally { server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
 }
 
+test('刷新接口使用 Cookie 账户与路径任务 ID，拒绝匿名、跨站及其他用户任务', async () => {
+  const calls: string[] = [];
+  await withApi({ events: events({ refresh: async (taskId, ownerId) => {
+    if (ownerId !== user.id) throw new ApiError(404, 'missing');
+    assert.equal(taskId, id); calls.push(taskId);
+    return { ...baseTask, status: 'preparing_qr', refreshRequestId: requestId };
+  } }) }, async base => {
+    const path = `${base}/api/login-sessions/${id}/refresh`;
+    assert.equal((await fetch(path, { ...post, headers: jsonHeaders })).status, 401);
+    assert.equal((await fetch(path, { ...post, headers: { ...post.headers, Origin: 'https://hostile.example' } })).status, 403);
+    assert.equal((await fetch(path, { ...post, headers: { ...otherHeaders, ...jsonHeaders } })).status, 404);
+    const response = await fetch(path, post);
+    assert.equal(response.status, 202);
+    assert.equal((await response.json()).refreshRequestId, requestId);
+    assert.deepEqual(calls, [id]);
+  });
+});
+
+test('刷新上传未确认、授权完成时不使用 OSS 旧图，读取期间发生刷新也不能返回旧图', async () => {
+  for (const flags of [{ refreshRequestId: requestId }, { loginAuthorized: true }]) {
+    await withApi({ events: events({ getForUser: async () => ({ ...baseTask, ...flags }) }),
+      storage: { exists: async () => assert.fail('must not HEAD old QR'), read: async () => assert.fail('must not read old QR') },
+    }, async base => {
+      assert.equal((await fetch(`${base}/api/login-sessions/${id}`, { headers })).status, 200);
+      assert.equal((await fetch(`${base}/api/login-sessions/${id}/qr`, { headers })).status, 409);
+    });
+  }
+  let refreshed = false;
+  await withApi({ events: events({ getForUser: async () => ({ ...baseTask, ...(refreshed ? { qrRevision: requestId } : {}) }) }),
+    storage: { exists: async () => true, read: async () => { refreshed = true; return png; } },
+  }, async base => {
+    const response = await fetch(`${base}/api/login-sessions/${id}/qr`, { headers });
+    assert.equal(response.status, 409); assert.equal((await response.json()).code, 'QR_CHANGED');
+  });
+});
+
 test('user management and daily task APIs enforce admin identity, JSON and same-origin before invoking services', async () => {
   const calls: unknown[][] = [];
   const managed = { ...user, isInvalid: false, createdAt: new Date(start).toISOString(), applicationStatus: null };

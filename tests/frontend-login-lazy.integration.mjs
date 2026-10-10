@@ -43,7 +43,7 @@ function deferred() {
   return { promise, resolve };
 }
 const callsToLogin = calls => calls.filter(call => call.path.startsWith('/api/login-sessions'));
-const generate = page => page.getByRole('button', { name: /^(重新)?生成(登录)?二维码$/ });
+const generate = page => page.getByRole('button', { name: '启动模拟器获取二维码', exact: true });
 const equipmentStamina = page => page.getByRole('checkbox', { name: '装备栏体力刷取', exact: true });
 const expandRecords = page => page.getByRole('button', { name: '展开记录', exact: true });
 async function waitFor(predicate, message, timeout = 8_000) {
@@ -308,21 +308,22 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       } finally { await f.close(); }
     });
 
-    await t.test('QR expiry is local; active is queried again only after the next click', async () => {
+    await t.test('QR expiry checks once for a claimed occupancy lease before ending', async () => {
       const f = await fixture();
       try {
-        f.state.active = () => ({ session: session('qr_ready', Date.now() + 1_800), showGetButton: false });
+        const expiring = session('qr_ready', Date.now() + 1_800);
+        f.state.active = () => ({ session: expiring, showGetButton: false });
         await f.open();
         await generate(f.page).click();
         await f.page.locator('img[src^="blob:"]').waitFor();
-        const before = callsToLogin(f.state.calls).length;
-        await f.page.getByRole('button', { name: '重新生成二维码', exact: true }).waitFor();
+        await f.page.getByText('二维码已过期', { exact: true }).first().waitFor();
         assert.ok(await f.page.getByText('二维码已过期', { exact: true }).count());
         assert.equal(await f.page.locator('img[src^="blob:"]').count(), 0);
-        assert.equal(callsToLogin(f.state.calls).length, before);
+        assert.equal(callsToLogin(f.state.calls).filter(call => call.path.endsWith('/active')).length, 2);
+        f.state.active = () => ({ session: session('qr_ready', Date.now() + 60_000), showGetButton: false });
         await generate(f.page).click();
         await f.page.locator('img[src^="blob:"]').waitFor();
-        assert.equal(callsToLogin(f.state.calls).filter(call => call.path.endsWith('/active')).length, 2);
+        assert.equal(callsToLogin(f.state.calls).filter(call => call.path.endsWith('/active')).length, 3);
       } finally { await f.close(); }
     });
 
@@ -408,7 +409,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         // Move only this isolated page's clock beyond the QR TTL; no fixed wait for the full TTL.
         await f.page.evaluate(() => { const realNow = Date.now; Date.now = () => realNow() + 120_000; });
         await f.page.waitForTimeout(1_100);
-        assert.equal(await generate(f.page).count(), 0, 'Confirmed execution keeps QR generation unavailable');
+        assert.equal(await generate(f.page).isEnabled(), false, 'Confirmed execution keeps QR generation unavailable');
         await expectStages(f.page, ['completed', 'completed', 'active']);
         assert.equal(await progressCard.getByText('脚本执行中', { exact: true }).isVisible(), true);
         assert.equal(await progressCard.getByText('获取失败', { exact: true }).count(), 0);

@@ -13,6 +13,34 @@ const task: Submission = { id: '123e4567-e89b-42d3-a456-426614174000',
 const stored = { id: task.id, userId: task.userId, status: 'queued', createdAt: task.createdAt, expiresAt: task.expiresAt,
   simulation: true, tokenHash: createHash('sha256').update(task.accessToken).digest('hex') };
 
+test('实例租期独立于排队期限，刷新状态只暴露公开字段', async () => {
+  const lease = { ...stored, loginStartedAt: new Date(now + 60_000).toISOString(),
+    loginExpiresAt: new Date(now + 660_000).toISOString(), refreshSupported: true,
+    refreshRequestId: task.id, qrRevision: task.userId, workerId: 'private-worker' };
+  const service = new TaskService(config, () => driver({ get: async () => JSON.stringify(lease) }), () => now + 150_000);
+  const result = await service.getForUser(task.id, task.userId);
+  assert.equal(result.status, 'queued');
+  assert.equal(result.expiresAt, lease.loginExpiresAt);
+  assert.equal(result.refreshRequestId, task.id);
+  assert.equal(result.refreshSupported, true);
+  assert(!('tokenHash' in result)); assert(!('workerId' in result)); assert(!('loginExpiresAt' in result));
+});
+
+test('刷新写入绑定任务与账户，返回相同任务，执行服务器不支持或已结束时明确拒绝', async () => {
+  const service = new TaskService(config, () => driver({ eval: async (_script, options) => {
+    assert.deepEqual(options.keys, [`${config.redisQueueKey}:sessions:${task.id}`, `${config.redisQueueKey}:refresh:${task.id}`, `${config.redisQueueKey}:runs:${task.id}`]);
+    assert.deepEqual(options.arguments.slice(0, 3), [task.id, task.userId, new Date(now).toISOString()]);
+    const command = JSON.parse(options.arguments[3]);
+    assert.equal(command.taskId, task.id); assert.equal(command.requestId, options.arguments[4]);
+    return JSON.stringify({ ...stored, status: 'preparing_qr', refreshRequestId: command.requestId });
+  } }), () => now);
+  assert.equal((await service.requestRefresh(task.id, task.userId)).status, 'preparing_qr');
+  for (const [result, status] of [[-1, 404], [-2, 410], [-3, 409], [-4, 409]]) {
+    const rejected = new TaskService(config, () => driver({ eval: async () => result }), () => now);
+    await assert.rejects(rejected.requestRefresh(task.id, task.userId), { status });
+  }
+});
+
 function driver(overrides: Partial<RedisDriver> = {}): RedisDriver {
   return { isReady: true, connect: async () => {}, eval: async () => 1,
     get: async () => JSON.stringify(stored), destroy() {}, ...overrides };
@@ -33,7 +61,7 @@ test('原子提交会话与 LPUSH 任务，队列不含浏览器凭证，TTL 只
     assert.deepEqual(JSON.parse(options.arguments[0]), { ...stored, userOptions: task.userOptions });
     assert.equal(options.arguments[1], '119000');
     assert.deepEqual(JSON.parse(options.arguments[2]), { version: 1, id: task.id, createdAt: task.createdAt,
-      expiresAt: task.expiresAt, objectKey: `login/${task.id}/qr.png`, userOptions: task.userOptions });
+      expiresAt: task.expiresAt, objectKey: `login/${task.id}/qr.png`, userOptions: task.userOptions, loginTimeoutSeconds: 600 });
     assert.equal(options.arguments[3], new Date(now + 1000).toISOString());
     assert.deepEqual(JSON.parse(options.arguments[4]), { time: task.createdAt, level: 'INFO',
       message: '登录申请已提交，等待执行服务器领取任务。' });

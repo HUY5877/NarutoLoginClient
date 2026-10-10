@@ -104,15 +104,17 @@ function fixture(t: TestContext) {
       return { rows: [] };
     }
     if (sql.startsWith('UPDATE naruto_login.login_events SET status = CASE')) {
-      assert.match(sql, /WHERE id = \$1 AND user_id = \$2 AND finished_at IS NULL/);
+      assert.match(sql, /WHERE id = \$1 AND user_id = \$2 AND \(finished_at IS NULL/);
       assert.match(sql, /status NOT IN \('qr_ready', 'failed', 'expired'\)/);
-      assert.match(sql, /OR \$3 IN \('failed', 'expired'\)\)$/);
-      assert.doesNotMatch(sql, /SET[\s\S]*expires_at\s*=/);
+      assert.match(sql, /OR \$3 IN \('failed', 'expired'\)/);
+      assert.match(sql, /expires_at = GREATEST\(expires_at, COALESCE\(\$5::timestamptz, expires_at\)\)/);
       const row = rows.get(String(values[0]));
       const status = values[2] as LoginEvent['status'];
       const at = values[3] as Date;
-      if (row && row.userId === values[1] && row.finishedAt === null &&
-        (row.expiresAt <= at || !['qr_ready', 'failed', 'expired'].includes(row.status) || ['failed', 'expired'].includes(status))) {
+      const lease = values[4] ? new Date(String(values[4])) : null;
+      if (row && row.userId === values[1] && (row.finishedAt === null || row.status === 'expired' && lease && lease > at) &&
+        (row.expiresAt <= at || !['qr_ready', 'failed', 'expired'].includes(row.status) || ['failed', 'expired'].includes(status) || lease && lease > row.expiresAt)) {
+        if (lease && lease > row.expiresAt) row.expiresAt = lease;
         row.status = row.expiresAt <= at ? 'expired' : status;
         row.finishedAt = row.expiresAt <= at || ['failed', 'expired'].includes(status) ? at : null;
       }
@@ -286,6 +288,20 @@ test('就绪事件不能回退到排队或准备状态，到期标记结束后�
   assert.equal(expired?.status, 'expired');
   assert.equal(expired?.finishedAt, date(120000).toISOString());
   assert.equal(expired?.expiresAt, first.expiresAt);
+});
+
+test('已领取实例的有效租期可同步超过原排队期限，刷新不会再延长，失败记录不能复活', async t => {
+  const { store } = fixture(t);
+  const first = await store.reserve(candidate(), date());
+  await store.getActive(owner, date(120001));
+  await store.updateStatus(first.id, owner, 'qr_ready', date(120002), date(660000).toISOString());
+  assert.equal((await store.getActive(owner, date(130000)))?.id, first.id);
+  assert.equal((await store.reserve(candidate(2), date(130000))).id, first.id);
+  await store.updateStatus(first.id, owner, 'qr_ready', date(140000), date(660000).toISOString());
+  assert.equal((await store.getEvent(first.id, owner))?.expiresAt, date(660000).toISOString());
+  await store.updateStatus(first.id, owner, 'failed', date(150000));
+  await store.updateStatus(first.id, owner, 'qr_ready', date(160000), date(670000).toISOString());
+  assert.equal((await store.getEvent(first.id, owner))?.status, 'failed');
 });
 
 test('就绪事件收到工作进程失败状态后结束，释放有效事件唯一约束以便立即重试', async t => {

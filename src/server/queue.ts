@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createClient } from 'redis';
 import type { Config } from './config.js';
 import { ApiError } from './errors.js';
@@ -15,12 +15,17 @@ export interface Task {
   userOptions?: UserOptions;
   error?: string;
   errorCode?: TaskFailureCode;
+  loginStartedAt?: string;
+  loginAuthorized?: boolean;
+  refreshSupported?: boolean;
+  refreshRequestId?: string;
+  qrRevision?: string;
 }
 export interface Submission {
   id: string; userId: string; accessToken: string; createdAt: string; expiresAt: string;
   userOptions: UserOptions;
 }
-interface StoredTask extends Task { userId?: string; tokenHash: string }
+interface StoredTask extends Task { userId?: string; tokenHash: string; loginExpiresAt?: string }
 type QueueConfig = Pick<Config, 'redisUrl' | 'redisQueueKey' | 'timeoutMs' | 'ossPrefix'>;
 interface EvalOptions { keys: string[]; arguments: string[] }
 export interface RedisDriver {
@@ -101,6 +106,37 @@ return 1
 `;
 
 const statuses = new Set<Status>(['queued', 'starting_emulator', 'opening_game', 'preparing_qr', 'qr_ready', 'failed', 'expired']);
+// Coalesce clicks across tabs. Only the owning worker acknowledges this command
+// after the replacement image has been uploaded; reads never consume it.
+const refreshScript = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return -1 end
+local s = cjson.decode(raw)
+if s.id ~= ARGV[1] or s.userId ~= ARGV[2] then return -1 end
+if s.status == 'failed' or s.status == 'expired' then return -2 end
+local deadline = s.loginExpiresAt or s.expiresAt
+if deadline <= ARGV[3] or redis.call('PTTL', KEYS[1]) <= 0 then return -2 end
+local runRaw = redis.call('GET', KEYS[3])
+if runRaw then
+  local ok, run = pcall(cjson.decode, runRaw)
+  if ok and type(run) == 'table' and run.taskId == s.id then
+    if run.status == 'failed' or run.status == 'interrupted' or run.status == 'completed' then return -2 end
+    if type(run.authorizedAt) == 'string' or type(run.startedAt) == 'string' or run.status == 'finishing_login' or run.status == 'running_daily' then
+      s.loginAuthorized = true
+    end
+  end
+end
+if s.loginAuthorized == true then return cjson.encode(s) end
+if s.refreshSupported ~= true then return -3 end
+if s.status ~= 'qr_ready' and not s.refreshRequestId then return -4 end
+if not redis.call('GET', KEYS[2]) then
+  redis.call('SET', KEYS[2], ARGV[4], 'EX', 600)
+  s.refreshRequestId = ARGV[5]
+end
+s.status = 'preparing_qr'
+redis.call('SET', KEYS[1], cjson.encode(s), 'KEEPTTL')
+return cjson.encode(s)
+`;
 const hash = (token: string) => createHash('sha256').update(token).digest('hex');
 const missingSession = () => new ApiError(404, '登录申请不存在或已失效，请重新生成二维码。');
 const invalidSession = () => new ApiError(502, '登录申请数据无效，请重新生成二维码。');
@@ -121,6 +157,13 @@ function parseSession(raw: string, id: string, userId?: string): StoredTask {
     const userOptions = parseUserOptions(record.userOptions);
     if (!userOptions) throw invalidSession();
     record.userOptions = userOptions;
+  }
+  if (record.loginExpiresAt !== undefined && (typeof record.loginExpiresAt !== 'string'
+    || !Number.isFinite(Date.parse(record.loginExpiresAt))
+    || typeof record.loginStartedAt !== 'string' || !Number.isFinite(Date.parse(record.loginStartedAt))
+    || Date.parse(record.loginExpiresAt) - Date.parse(record.loginStartedAt) !== 600_000)) throw invalidSession();
+  for (const value of [record.refreshRequestId, record.qrRevision]) {
+    if (value !== undefined && (typeof value !== 'string' || !/^[0-9a-f-]{36}$/.test(value))) throw invalidSession();
   }
   return record;
 }
@@ -194,7 +237,8 @@ export class TaskService {
     const record = JSON.stringify({ id: task.id, userId: task.userId, status: 'queued', createdAt: task.createdAt,
       expiresAt: task.expiresAt, simulation: true, tokenHash: hash(task.accessToken), userOptions: task.userOptions });
     const payload = JSON.stringify({ version: 1, id: task.id, createdAt: task.createdAt,
-      expiresAt: task.expiresAt, objectKey: `${this.config.ossPrefix}/${task.id}/qr.png`, userOptions: task.userOptions });
+      expiresAt: task.expiresAt, objectKey: `${this.config.ossPrefix}/${task.id}/qr.png`, userOptions: task.userOptions,
+      loginTimeoutSeconds: 600 });
     const submittedLog = JSON.stringify({ time: task.createdAt, level: 'INFO',
       message: '登录申请已提交，等待执行服务器领取任务。' });
     const result = await this.request((driver, signal) => driver.eval(enqueueScript, {
@@ -236,12 +280,32 @@ export class TaskService {
     return task.status === 'failed' || task.status === 'expired' ? null : task;
   }
 
+  async requestRefresh(id: string, userId: string): Promise<Task> {
+    const requestId = randomUUID(), requestedAt = new Date(this.now()).toISOString();
+    const result = await this.request((driver, signal) => driver.eval(refreshScript, {
+      keys: [this.sessionKey(id), `${this.config.redisQueueKey}:refresh:${id}`, `${this.config.redisQueueKey}:runs:${id}`],
+      arguments: [id, userId, requestedAt, JSON.stringify({ taskId: id, requestId, requestedAt }), requestId],
+    }, signal));
+    if (result === -1) throw missingSession();
+    if (result === -2) throw new ApiError(410, '本次模拟器占用已结束，请重新启动模拟器。');
+    if (result === -3) throw new ApiError(409, '执行服务器尚不支持刷新二维码，请更新并重启执行服务。', 'REFRESH_UNSUPPORTED');
+    if (result === -4) throw new ApiError(409, '模拟器正在准备二维码，请稍候。', 'QR_NOT_READY');
+    if (typeof result !== 'string') throw invalidSession();
+    return this.publicTask(parseSession(result, id, userId));
+  }
+
   private sessionKey(id: string) { return `${this.config.redisQueueKey}:sessions:${id}`; }
   private activeKey(userId: string) { return `${this.config.redisQueueKey}:users:${userId}:active`; }
 
   private publicTask(record: StoredTask): Task {
-    return { id: record.id, status: record.status === 'failed' ? 'failed' : this.now() >= Date.parse(record.expiresAt) ? 'expired' : record.status,
-      createdAt: record.createdAt, expiresAt: record.expiresAt, simulation: true,
+    const expiresAt = record.loginExpiresAt ?? record.expiresAt;
+    return { id: record.id, status: record.status === 'failed' ? 'failed' : this.now() >= Date.parse(expiresAt) ? 'expired' : record.status,
+      createdAt: record.createdAt, expiresAt, simulation: true,
+      ...(record.loginStartedAt ? { loginStartedAt: record.loginStartedAt } : {}),
+      ...(record.loginAuthorized === true ? { loginAuthorized: true } : {}),
+      ...(record.refreshSupported === true ? { refreshSupported: true } : {}),
+      ...(record.refreshRequestId ? { refreshRequestId: record.refreshRequestId } : {}),
+      ...(record.qrRevision ? { qrRevision: record.qrRevision } : {}),
       ...(record.userOptions ? { userOptions: record.userOptions } : {}),
       ...(record.status === 'failed' ? loginFailure(record.errorCode) : {}) };
   }
