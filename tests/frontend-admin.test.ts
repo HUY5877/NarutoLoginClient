@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isDailyPage, isDailyTaskFailureDetails, isUserResponse, isUsersPage, formatAdminDate } from '../src/frontend/lib/admin.js';
+import { isMonthlyStatsPage, isDailyPage, isDailyTaskFailureDetails, isUserResponse, isUsersPage, formatAdminDate } from '../src/frontend/lib/admin.js';
 
 const user = { id: 'user', username: 'Naruto', isAdmin: false, isInvalid: false, createdAt: '2026-10-08T16:00:00.000Z', applicationStatus: null };
 test('administrator responses validate timestamps, roles, pagination and known task states', () => {
@@ -34,4 +34,15 @@ test('failure details validate bounded log history and paired action progress be
     { ...details, logs: [{ ...details.logs[0], message: 'x'.repeat(1001) }] },
     { ...details, logs: [{ ...details.logs[0], level: 'DEBUG' }] },
     { ...details, logs: [{ ...details.logs[0], time: 'not-a-date' }] }]) assert.equal(isDailyTaskFailureDetails(invalid), false);
+});
+
+test('monthly leaderboard accepts both rankings and rejects malformed counts, days and filters', () => {
+  const item = { userId: 'user', username: 'Naruto', rank: 1, requestCount: 9, requestDays: 3 };
+  const page = { items: [item], total: 1, page: 1, pageSize: 20, month: '2026-10', sort: 'requests', totalRequests: 9, timeZone: 'Asia/Shanghai' };
+  assert.ok(isMonthlyStatsPage(page));
+  assert.ok(isMonthlyStatsPage({ ...page, sort: 'days' }));
+  assert.ok(isMonthlyStatsPage({ ...page, items: [], total: 0, totalRequests: 0 }));
+  for (const invalid of [{ ...page, month: '2026-13' }, { ...page, sort: 'other' }, { ...page, totalRequests: -1 },
+    { ...page, items: [{ ...item, requestDays: 10 }] }, { ...page, items: [{ ...item, requestCount: 1.5 }] },
+    { ...page, items: [{ ...item, rank: 0 }] }]) assert.equal(isMonthlyStatsPage(invalid), false);
 });

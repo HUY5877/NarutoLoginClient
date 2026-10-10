@@ -1,4 +1,4 @@
-import { dailyStatusLabels, type DailyTaskPage, type DailyTaskFailureDetails, type ManagedUser, type PageResult } from '../../shared/admin';
+import { dailyStatusLabels, type DailyTaskPage, type DailyTaskFailureDetails, type ManagedUser, type PageResult, type MonthlyStatsPage } from '../../shared/admin';
 
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const date = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value));
@@ -20,12 +20,22 @@ export function isUsersPage(value: unknown): value is PageResult<ManagedUser> {
 }
 export function isDailyPage(value: unknown): value is DailyTaskPage {
   return isPage(value) && object(value) && typeof value.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.date)
+    && (value.startDate === undefined || typeof value.startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.startDate))
     && value.timeZone === 'Asia/Shanghai' && value.items.every(item => object(item)
       && typeof item.id === 'string' && typeof item.username === 'string' && date(item.requestedAt)
       && nullableDate(item.scannedAt) && nullableDate(item.completedAt)
       && (item.errorCode === undefined || typeof item.errorCode === 'string' && /^[a-z0-9_]{1,64}$/.test(item.errorCode))
       && (item.errorMessage === undefined || typeof item.errorMessage === 'string')
       && typeof item.status === 'string' && Object.hasOwn(dailyStatusLabels, item.status));
+}
+export function isMonthlyStatsPage(value: unknown): value is MonthlyStatsPage {
+  const positive = (number: unknown) => Number.isSafeInteger(number) && (number as number) > 0;
+  return isPage(value) && object(value) && typeof value.month === 'string' && /^[2-9]\d{3}-(0[1-9]|1[0-2])$/.test(value.month)
+    && value.timeZone === 'Asia/Shanghai' && ['requests', 'days'].includes(String(value.sort))
+    && Number.isSafeInteger(value.totalRequests) && (value.totalRequests as number) >= 0
+    && value.items.every(item => object(item) && typeof item.userId === 'string' && typeof item.username === 'string'
+      && positive(item.rank) && positive(item.requestCount) && positive(item.requestDays)
+      && (item.requestDays as number) <= 31 && (item.requestDays as number) <= (item.requestCount as number));
 }
 export function isDailyTaskFailureDetails(value: unknown): value is DailyTaskFailureDetails {
   const code = (value: unknown) => value === undefined || typeof value === 'string' && /^[a-z0-9_]{1,64}$/.test(value);

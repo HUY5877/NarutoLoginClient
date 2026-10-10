@@ -25,7 +25,14 @@ export interface DailyTask {
   errorMessage?: string;
 }
 export interface PageResult<T> { items: T[]; total: number; page: number; pageSize: number }
-export interface DailyTaskPage extends PageResult<DailyTask> { date: string; timeZone: 'Asia/Shanghai' }
+export interface DailyTaskPage extends PageResult<DailyTask> { date: string; startDate?: string; timeZone: 'Asia/Shanghai' }
+export type MonthlySort = 'requests' | 'days';
+export interface MonthlyUserStats {
+  userId: string; username: string; rank: number; requestCount: number; requestDays: number;
+}
+export interface MonthlyStatsPage extends PageResult<MonthlyUserStats> {
+  month: string; timeZone: 'Asia/Shanghai'; sort: MonthlySort; totalRequests: number;
+}
 export interface DailyTaskFailureDetails {
   taskId: string;
   errorCode?: string;

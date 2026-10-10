@@ -1,7 +1,7 @@
 import { Pool, type PoolClient } from 'pg';
 import { parseUserOptions } from '../shared/user-options.js';
 import type { Status, Submission } from './queue.js';
-import type { ManagedUser } from '../shared/admin.js';
+import type { ManagedUser, MonthlySort, MonthlyUserStats } from '../shared/admin.js';
 
 export interface PublicUser { id: string; username: string; isAdmin: boolean }
 export type ApplicationStatus = 'pending' | 'approved' | 'rejected';
@@ -47,6 +47,7 @@ export interface AdminStore {
   updateUser(adminId: string, id: string, changes: UserChanges, now: Date): Promise<ManagedUser>;
   deleteUser(adminId: string, id: string): Promise<void>;
   listDailyEvents(start: Date, end: Date, offset: number, limit: number): Promise<{ items: DailyEvent[]; total: number }>;
+  listMonthlyStats(start: Date, end: Date, sort: MonthlySort, offset: number, limit: number): Promise<{ items: MonthlyUserStats[]; total: number; totalRequests: number }>;
 }
 export class UserManagementError extends Error {
   constructor(public code: 'NOT_FOUND' | 'ADMIN_REQUIRED' | 'SELF_PROTECTED') { super('User management failed'); }
@@ -377,6 +378,32 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
       [status, limit],
     );
     return result.rows.map(registrationApplication);
+  }
+
+  async listMonthlyStats(start: Date, end: Date, sort: MonthlySort, offset: number, limit: number) {
+    await this.initialize();
+    // One durable event is one request; retries/QR refreshes reuse its ID.
+    // Aggregate all statuses, independently of Redis execution-log retention.
+    const primary = sort === 'days' ? 'request_days' : 'request_count';
+    const secondary = sort === 'days' ? 'request_count' : 'request_days';
+    return this.transaction(async client => {
+      await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+      const count = await client.query<{ total: number; totalRequests: number }>(
+        `SELECT count(DISTINCT user_id)::int AS total, count(*)::int AS "totalRequests"
+         FROM naruto_login.login_events WHERE created_at >= $1 AND created_at < $2`, [start, end]);
+      const result = await client.query<MonthlyUserStats>(
+        `WITH stats AS (
+           SELECT user_id, count(*)::int AS request_count,
+             count(DISTINCT (created_at AT TIME ZONE 'Asia/Shanghai')::date)::int AS request_days
+           FROM naruto_login.login_events WHERE created_at >= $1 AND created_at < $2 GROUP BY user_id
+         )
+         SELECT s.user_id AS "userId", u.username, s.request_count AS "requestCount", s.request_days AS "requestDays",
+           dense_rank() OVER (ORDER BY ${primary} DESC)::int AS rank
+         FROM stats s JOIN naruto_login.users u ON u.id = s.user_id
+         ORDER BY ${primary} DESC, ${secondary} DESC, s.user_id ASC LIMIT $3 OFFSET $4`, [start, end, limit, offset]);
+      return { items: result.rows.map(row => ({ userId: row.userId, username: row.username, rank: row.rank,
+        requestCount: row.requestCount, requestDays: row.requestDays })), ...count.rows[0] };
+    });
   }
 
   async reviewRegistration(applicationId: string, adminId: string, decision: 'approved' | 'rejected', reason: string | null, now: Date): Promise<RegistrationApplication> {

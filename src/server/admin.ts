@@ -3,7 +3,7 @@ import { credentials, type User } from './auth.js';
 import { UserManagementError, UsernameTakenError, type AdminStore, type UserChanges } from './database.js';
 import { ApiError } from './errors.js';
 import type { TaskRunService } from './task-runs.js';
-import type { DailyTask, DailyTaskFailureDetails, DailyTaskPage, ManagedUser, PageResult } from '../shared/admin.js';
+import type { DailyTask, DailyTaskFailureDetails, DailyTaskPage, ManagedUser, PageResult, MonthlyStatsPage } from '../shared/admin.js';
 import { taskFailureMessage } from '../shared/task-errors.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -88,7 +88,9 @@ export class AdminService {
     requireAdmin(admin);
     const page = pageNumber(query.page), now = this.now();
     const date = new Date(now + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    const start = new Date(`${date}T00:00:00+08:00`), end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    const midnight = new Date(`${date}T00:00:00+08:00`).getTime();
+    const start = new Date(midnight - 6 * 24 * 60 * 60 * 1000), end = new Date(midnight + 24 * 60 * 60 * 1000);
+    const startDate = new Date(start.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const events = await this.database(store => store.listDailyEvents(start, end, (page - 1) * pageSize, pageSize));
     const summaries = await this.options.runs.getSummaries(events.items.map(event => event.id));
     const items: DailyTask[] = events.items.map((event, index) => {
@@ -105,10 +107,24 @@ export class AdminService {
           errorMessage: taskFailureMessage(run?.errorCode, '未记录具体错误原因。'),
         } : {}) };
     });
-    return { items, total: events.total, page, pageSize, date, timeZone: 'Asia/Shanghai' };
+    return { items, total: events.total, page, pageSize, date, startDate, timeZone: 'Asia/Shanghai' };
   }
   async dailyTaskFailureDetails(admin: User, taskId: string): Promise<DailyTaskFailureDetails> {
     requireAdmin(admin);
     return await this.options.runs.getFailureDetails(taskId);
+  }
+  async monthlyStats(admin: User, query: { month?: unknown; sort?: unknown; page?: unknown }): Promise<MonthlyStatsPage> {
+    requireAdmin(admin);
+    const month = query.month ?? new Date(this.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 7);
+    if (typeof month !== 'string' || !/^[2-9]\d{3}-(0[1-9]|1[0-2])$/.test(month)) {
+      throw new ApiError(400, '请选择有效月份。', 'INVALID_MONTH');
+    }
+    const sort = query.sort ?? 'requests';
+    if (sort !== 'requests' && sort !== 'days') throw new ApiError(400, '无效的排行榜类型。', 'INVALID_SORT');
+    const page = pageNumber(query.page), [year, number] = month.split('-').map(Number);
+    const start = new Date(Date.UTC(year, number - 1, 1) - 8 * 60 * 60 * 1000);
+    const end = new Date(Date.UTC(year, number, 1) - 8 * 60 * 60 * 1000);
+    return { ...await this.database(store => store.listMonthlyStats(start, end, sort, (page - 1) * pageSize, pageSize)),
+      month, sort, page, pageSize, timeZone: 'Asia/Shanghai' };
   }
 }

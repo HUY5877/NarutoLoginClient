@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CalendarCheck, Check, ChevronDown, CircleAlert, ClipboardCheck, LogOut, RefreshCw, ShieldCheck, Users, X } from 'lucide-react';
+import { CalendarCheck, Check, ChevronDown, CircleAlert, ClipboardCheck, LogOut, RefreshCw, ShieldCheck, Trophy, Users, X } from 'lucide-react';
+import { AdminMonthlyStats } from '@/components/admin-monthly-stats';
 import { AdminDailyTasks } from '@/components/admin-daily-tasks';
 import { AdminUsers } from '@/components/admin-users';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -44,6 +45,7 @@ export function AdminMenu({ userId, refreshAuth, mobileAccount }: {
 }) {
   const [open, setOpen] = useState(false);
   const [dailyOpen, setDailyOpen] = useState(false);
+  const [monthlyOpen, setMonthlyOpen] = useState(false);
   const [usersOpen, setUsersOpen] = useState(false);
   const [filter, setFilter] = useState<Filter>('pending');
   const [applications, setApplications] = useState<RegistrationApplication[] | null>(null);
@@ -66,6 +68,7 @@ export function AdminMenu({ userId, refreshAuth, mobileAccount }: {
     requestRef.current?.abort();
     setOpen(false);
     setDailyOpen(false);
+    setMonthlyOpen(false);
     setUsersOpen(false);
     setApplications(null);
     setAccessLost(true);
@@ -191,7 +194,10 @@ export function AdminMenu({ userId, refreshAuth, mobileAccount }: {
             <ClipboardCheck aria-hidden="true" />注册申请审核
           </DropdownMenuItem>
           <DropdownMenuItem className="py-2" onSelect={() => { openingDialogRef.current = true; setDailyOpen(true); }}>
-            <CalendarCheck aria-hidden="true" />今日刷日常情况
+            <CalendarCheck aria-hidden="true" />近七天刷日常情况
+          </DropdownMenuItem>
+          <DropdownMenuItem className="py-2" onSelect={() => { openingDialogRef.current = true; setMonthlyOpen(true); }}>
+            <Trophy aria-hidden="true" />月度排行榜
           </DropdownMenuItem>
           <DropdownMenuItem className="py-2" onSelect={() => { openingDialogRef.current = true; setUsersOpen(true); }}>
             <Users aria-hidden="true" />用户管理
@@ -272,6 +278,7 @@ export function AdminMenu({ userId, refreshAuth, mobileAccount }: {
         </DialogContent>
       </Dialog>
       {dailyOpen && <AdminDailyTasks open={dailyOpen} onOpenChange={setDailyOpen} onAccessLost={loseAccess} returnFocus={returnFocus} />}
+      {monthlyOpen && <AdminMonthlyStats open={monthlyOpen} onOpenChange={setMonthlyOpen} onAccessLost={loseAccess} returnFocus={returnFocus} />}
       {usersOpen && <AdminUsers open={usersOpen} onOpenChange={setUsersOpen} currentUserId={userId} onAccessLost={loseAccess} refreshAuth={refreshAuth} returnFocus={returnFocus} />}
     </>
   );

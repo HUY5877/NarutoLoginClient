@@ -28,22 +28,22 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
     <DialogContent ref={setDialogContent} className="auth-dialog daily-tasks-dialog flex max-h-[88dvh] flex-col gap-5 p-5 sm:max-w-5xl sm:p-6"
       onCloseAutoFocus={event => { event.preventDefault(); returnFocus(); }}>
       <DialogHeader className="shrink-0 gap-2 pr-10">
-        <DialogTitle className="flex items-center gap-2 text-lg font-semibold"><CalendarCheck className="size-5 text-primary" aria-hidden="true" />今日刷日常情况</DialogTitle>
-        <DialogDescription className="leading-6">查看今天申请的日常任务，每次申请单独展示。时间均为北京时间。</DialogDescription>
+        <DialogTitle className="flex items-center gap-2 text-lg font-semibold"><CalendarCheck className="size-5 text-primary" aria-hidden="true" />近七天刷日常情况</DialogTitle>
+        <DialogDescription className="leading-6">查看今天及之前六天申请的日常任务，每次申请单独展示。时间均为北京时间。</DialogDescription>
       </DialogHeader>
-      <div className="flex shrink-0 items-center justify-between gap-3">
-        <Badge variant="outline" className="bg-white/35 px-3 py-1.5 font-normal">{data?.date ?? '今日'} · {data ? `${data.total} 次申请` : '日常任务'}</Badge>
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
+        <Badge variant="outline" className="max-w-full whitespace-normal bg-white/35 px-3 py-1.5 font-normal leading-5">{data?.startDate ? `${data.startDate} — ${data.date}` : data?.date ?? '近七天'} · {data ? `${data.total} 次申请` : '日常任务'}</Badge>
         <Button type="button" variant="outline" size="sm" className="min-h-11 px-3 md:min-h-0" disabled={loading} onClick={() => { void reload(); }}>
           {loading ? <Spinner aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}刷新
         </Button>
       </div>
       <AdminError message={error} />
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" aria-busy={loading}>
-        {loading && !data && <AdminLoading label="正在读取今日任务…" />}
+        {loading && !data && <AdminLoading label="正在读取近七天任务…" />}
         {data && data.items.length > 0 && (showTable ? <div className="overflow-hidden rounded-xl border bg-white/35">
           <Tooltip.Provider delayDuration={200}>
           <Table className="min-w-190">
-            <TableCaption className="sr-only">今日刷日常情况，所有时间均为北京时间</TableCaption>
+            <TableCaption className="sr-only">近七天刷日常情况，所有时间均为北京时间</TableCaption>
             <TableHeader className="bg-secondary/50"><TableRow>
               <TableHead className="pl-4">用户名</TableHead><TableHead>申请时间</TableHead>
               <TableHead>扫描完成时间</TableHead><TableHead>脚本执行完成时间</TableHead><TableHead className="pr-4">任务状态</TableHead>
@@ -62,7 +62,7 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
             </TableRow>)}</TableBody>
           </Table>
           </Tooltip.Provider>
-        </div> : <ul aria-label="今日任务列表" className="space-y-3">
+        </div> : <ul aria-label="近七天任务列表" className="space-y-3">
           {data.items.map(task => <li key={task.id} className="rounded-xl border bg-white/45 p-4">
             <div className="mb-3 flex items-start justify-between gap-3">
               <span className="min-w-0 break-all text-sm font-semibold">{task.username}</span>
@@ -83,7 +83,7 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
         </ul>)}
         {!loading && data?.items.length === 0 && <Empty className="py-12">
           <EmptyHeader><EmptyMedia variant="icon" className="bg-white/40"><CalendarCheck aria-hidden="true" /></EmptyMedia>
-            <EmptyTitle>{data.total ? '本页暂无任务' : '今天还没有日常申请'}</EmptyTitle>
+            <EmptyTitle>{data.total ? '本页暂无任务' : '近七天还没有日常申请'}</EmptyTitle>
             <EmptyDescription>{data.total ? '返回上一页查看任务。' : '用户申请后，刷新即可查看扫码与执行情况。'}</EmptyDescription>
           </EmptyHeader>
         </Empty>}

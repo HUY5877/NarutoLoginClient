@@ -65,11 +65,20 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
           else state.mutations.push({ path: url.pathname, method, body: route.request().postDataJSON() });
           if (url.pathname.endsWith('/failure-details')) return reply(state.detailStatus === 200 ? state.detailResponse
             : { error: '任务日志暂时不可用，请稍后重试。' }, state.detailStatus);
+          if (url.pathname === '/api/admin/monthly-stats') {
+            const month = url.searchParams.get('month'), sort = url.searchParams.get('sort');
+            const items = [{ userId: 'naruto', username: 'Naruto_01', requestCount: 30, requestDays: 3 },
+              { userId: 'sasuke', username: 'Sasuke_02', requestCount: 12, requestDays: 7 }];
+            if (sort === 'days') items.reverse();
+            return reply({ items: month === '2020-01' ? [] : items.map((item, index) => ({ ...item, rank: index + 1 })),
+              total: month === '2020-01' ? 0 : 2, totalRequests: month === '2020-01' ? 0 : 42,
+              month, sort, page: 1, pageSize: 20, timeZone: 'Asia/Shanghai' });
+          }
           if (url.pathname === '/api/admin/daily-tasks') {
             if (state.failDaily) return reply({ error: '任务日志暂时不可用，请稍后重试。' }, 503);
             return reply({ items: [task, { ...task, id: 'running', username: 'Sasuke_02', scannedAt: null, completedAt: null, status: 'running_daily' },
               { ...task, id: 'failed', username: 'Sakura_03', completedAt: null, status: 'failed', ...state.failureDetails }],
-            total: 3, page: 1, pageSize: 20, date: '2026-10-08', timeZone: 'Asia/Shanghai' });
+            total: 3, page: 1, pageSize: 20, startDate: '2026-10-02', date: '2026-10-08', timeZone: 'Asia/Shanghai' });
           }
           if (url.pathname === '/api/admin/users' && method === 'GET') {
             const filtered = state.users.filter(value => value.username.toLowerCase().includes((url.searchParams.get('search') || '').toLowerCase()));
@@ -94,16 +103,41 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
         state.errors.push(`Unexpected API ${method} ${url.pathname}`); return reply({}, 404);
       });
       await page.goto(origin, { waitUntil: 'domcontentloaded' });
-      await page.getByText(admin.username, { exact: true }).waitFor();
-      return { context, page, state, async open(name) { await page.getByRole('button', { name: '管理员', exact: true }).click(); await page.getByRole('menuitem', { name }).click(); },
+      await page.locator('span:visible').filter({ hasText: /^管理员账号$/ }).first().waitFor();
+      return { context, page, state, async open(name) { await page.getByRole('button', { name: /^(管理员|管理员账号)$/ }).click(); await page.getByRole('menuitem', { name }).click(); },
         async close() { await context.close(); assert.deepEqual(state.errors, []); } };
     }
+
+    await t.test('monthly rankings switch metrics/months and fit desktop and mobile', async () => {
+      for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+        const f = await fixture(true, viewport);
+        try {
+          await f.open('月度排行榜');
+          const dialog = f.page.getByRole('dialog', { name: '月度排行榜' });
+          await dialog.getByRole('cell', { name: 'Naruto_01', exact: true }).waitFor();
+          assert.match(await dialog.innerText(), /2 人参与 · 共 42 次申请/);
+          assert.match(await dialog.getByRole('row').nth(1).innerText(), /Naruto_01/);
+          await dialog.getByRole('button', { name: '日常天数榜' }).click();
+          await f.page.waitForFunction(() => document.querySelector('tbody tr')?.textContent?.includes('Sasuke_02'));
+          const bounds = await dialog.boundingBox();
+          assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= viewport.width);
+          assert.ok(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth), 'ranking must fit without horizontal overflow');
+          assert.equal(await dialog.getByRole('button', { name: '日常天数榜' }).getAttribute('aria-pressed'), 'true');
+          await f.page.screenshot({ animations: 'disabled', path: path.join(repository, `.data/admin-preview/monthly-${viewport.width < 768 ? 'mobile' : 'desktop'}.png`) });
+          await dialog.getByLabel('统计月份').fill('2020-01');
+          await dialog.getByText('这个月还没有日常申请。').waitFor();
+          f.state.access = false;
+          await dialog.getByRole('button', { name: '刷新', exact: true }).click();
+          await dialog.waitFor({ state: 'hidden' });
+        } finally { await f.close(); }
+      }
+    });
 
     await t.test('daily table displays requested columns, Beijing timestamps and keeps data on refresh failure', async () => {
       const f = await fixture();
       try {
-        await f.open('今日刷日常情况');
-        const dialog = f.page.getByRole('dialog', { name: '今日刷日常情况' });
+        await f.open('近七天刷日常情况');
+        const dialog = f.page.getByRole('dialog', { name: '近七天刷日常情况' });
         await dialog.getByRole('cell', { name: user.username, exact: true }).waitFor();
         assert.deepEqual(await dialog.getByRole('columnheader').allTextContents(), ['用户名', '申请时间', '扫描完成时间', '脚本执行完成时间', '任务状态']);
         assert.match(await dialog.innerText(), /08:02:00/); assert.match(await dialog.innerText(), /08:30:00/);
@@ -147,8 +181,8 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
     await t.test('failure details reject other tasks, retry temporary errors and close on lost admin access', async () => {
       const f = await fixture();
       try {
-        await f.open('今日刷日常情况');
-        const dialog = f.page.getByRole('dialog', { name: '今日刷日常情况' });
+        await f.open('近七天刷日常情况');
+        const dialog = f.page.getByRole('dialog', { name: '近七天刷日常情况' });
         const details = dialog.getByRole('button', { name: 'Sakura_03的失败详情', exact: true });
         f.state.detailResponse.taskId = 'another-task';
         await details.hover();
@@ -180,8 +214,8 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
           f.state.detailResponse.logs = Array.from({ length: 10 }, (_, index) => ({ id: `1000-${index}`, time: task.requestedAt,
             level: index === 9 ? 'ERROR' : 'WARNING', message: `记录 ${index + 1}：${'装备材料识别失败，重新截图后重试。'.repeat(10)}` }));
           f.state.detailResponse.truncated = true;
-          await f.open('今日刷日常情况');
-          const dialog = f.page.getByRole('dialog', { name: '今日刷日常情况' });
+          await f.open('近七天刷日常情况');
+          const dialog = f.page.getByRole('dialog', { name: '近七天刷日常情况' });
           await dialog.getByRole('button', { name: 'Sakura_03的失败详情', exact: true }).hover();
           const tooltip = f.page.getByRole('tooltip');
           await tooltip.getByText('相关执行日志', { exact: true }).waitFor();
@@ -203,13 +237,13 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
           f.state.detailResponse.logs = Array.from({ length: 10 }, (_, index) => ({ id: `1000-${index}`, time: task.requestedAt,
             level: index === 9 ? 'ERROR' : 'WARNING', message: `记录 ${index + 1}：${'request_id=long_unbroken_token_'.repeat(12)}` }));
           f.state.detailResponse.truncated = true;
-          await f.open('今日刷日常情况');
-          const list = f.page.getByRole('dialog', { name: '今日刷日常情况', exact: true });
+          await f.open('近七天刷日常情况');
+          const list = f.page.getByRole('dialog', { name: '近七天刷日常情况', exact: true });
           const trigger = list.getByRole('button', { name: 'Sakura_03的失败详情', exact: true });
           await trigger.waitFor();
           if (viewport.width < 768) {
             assert.equal(await list.getByRole('table').count(), 0);
-            const cards = list.getByRole('list', { name: '今日任务列表' }).getByRole('listitem');
+            const cards = list.getByRole('list', { name: '近七天任务列表' }).getByRole('listitem');
             assert.equal(await cards.count(), 3);
             assert.match(await cards.first().innerText(), /Naruto_01[\s\S]*已完成[\s\S]*申请时间[\s\S]*08:00:00[\s\S]*扫码完成[\s\S]*08:02:00[\s\S]*执行完成[\s\S]*08:30:00/);
           }
@@ -262,8 +296,8 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
       const f = await fixture(true, { width: 390, height: 844 }, true);
       try {
         f.state.detailStatus = 503;
-        await f.open('今日刷日常情况');
-        const list = f.page.getByRole('dialog', { name: '今日刷日常情况', exact: true });
+        await f.open('近七天刷日常情况');
+        const list = f.page.getByRole('dialog', { name: '近七天刷日常情况', exact: true });
         await list.getByRole('button', { name: 'Sakura_03的失败详情', exact: true }).tap();
         const detail = f.page.getByRole('dialog', { name: '失败详情', exact: true });
         await detail.getByRole('alert').waitFor();

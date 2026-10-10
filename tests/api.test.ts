@@ -99,6 +99,7 @@ test('user management and daily task APIs enforce admin identity, JSON and same-
     updateUser: async (actor, target, body) => { calls.push(['update', actor.id, target, body]); return { user: managed }; },
     deleteUser: async (actor, target) => { calls.push(['delete', actor.id, target]); },
     dailyTasks: async (actor, query) => { calls.push(['daily', actor.id, query]); return { items: [], total: 0, page: 1, pageSize: 20, date: '2026-10-08', timeZone: 'Asia/Shanghai' }; },
+    monthlyStats: async (actor, query) => { calls.push(['monthly', actor.id, query]); return { items: [], total: 0, totalRequests: 0, page: 1, pageSize: 20, month: '2026-10', sort: 'requests', timeZone: 'Asia/Shanghai' }; },
     dailyTaskFailureDetails: async (actor, taskId) => { calls.push(['failure', actor.id, taskId]); return {
       taskId, errorCode: 'daily_failed', errorMessage: '具体错误：未找到挑战按钮', logs: [], truncated: false,
     }; },
@@ -107,7 +108,8 @@ test('user management and daily task APIs enforce admin identity, JSON and same-
     const routes = [{ path: '/api/admin/users', method: 'GET' }, { path: `/api/admin/users/${user.id}`, method: 'GET' },
       { path: '/api/admin/daily-tasks', method: 'GET' }, { path: '/api/admin/users', method: 'POST' },
       { path: `/api/admin/users/${user.id}`, method: 'PATCH' }, { path: `/api/admin/users/${user.id}`, method: 'DELETE' },
-      { path: `/api/admin/daily-tasks/${id}/failure-details`, method: 'GET' }];
+      { path: `/api/admin/daily-tasks/${id}/failure-details`, method: 'GET' },
+      { path: '/api/admin/monthly-stats?month=2026-10&sort=days&page=2', method: 'GET' }];
     for (const route of routes) for (const attempt of [{ headers: {}, status: 401 }, { headers, status: 403 }]) {
       const response = await fetch(`${base}${route.path}`, { method: route.method, headers: { ...jsonHeaders, ...attempt.headers },
         ...(route.method === 'GET' ? {} : { body: '{}' }) });
@@ -128,18 +130,21 @@ test('user management and daily task APIs enforce admin identity, JSON and same-
         taskId: id, errorCode: 'daily_failed', errorMessage: '具体错误：未找到挑战按钮', logs: [], truncated: false,
       });
     }
-    assert.equal(calls.length, 7);
+    assert.equal(calls.length, 8);
     assert.ok(calls.every(call => call[1] === admin.id));
     assert.deepEqual(calls[3], ['create', admin.id, mutation]);
     assert.deepEqual(calls[4], ['update', admin.id, user.id, mutation]);
     assert.deepEqual(calls[5], ['delete', admin.id, user.id]);
     assert.deepEqual(calls[6], ['failure', admin.id, id]);
+    assert.equal(calls[7][0], 'monthly');
+    assert.equal(calls[7][1], admin.id);
+    assert.deepEqual({ ...(calls[7][2] as object) }, { month: '2026-10', sort: 'days', page: '2' });
     assert.equal((await fetch(`${base}/api/admin/daily-tasks/invalid/failure-details`, { headers: adminHeaders })).status, 400);
-    assert.equal(calls.length, 7);
+    assert.equal(calls.length, 8);
   });
   await withApi({ admin: adminService, auth: auth({ getUser: async () => ({ ...admin, isAdmin: false }) }) }, async base => {
     assert.equal((await fetch(`${base}/api/admin/users`, { headers: adminHeaders })).status, 403);
-    assert.equal(calls.length, 7);
+    assert.equal(calls.length, 8);
   });
 });
 

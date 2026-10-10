@@ -15,7 +15,7 @@ const fail = async (): Promise<never> => assert.fail('unexpected store call');
 function fixture(overrides: Partial<AdminStore> = {}, runs: Array<TaskRun | null> = [], clock = now) {
   const calls: unknown[][] = [];
   const store: AdminStore = { initialize: async () => {}, listUsers: fail, getManagedUser: fail, createUser: fail,
-    updateUser: fail, deleteUser: fail, listDailyEvents: fail, ...overrides };
+    updateUser: fail, deleteUser: fail, listDailyEvents: fail, listMonthlyStats: fail, ...overrides };
   const service = new AdminService({ store, now: () => clock, runs: {
     getSummaries: async ids => { calls.push(ids); return runs; }, getFailureDetails: fail,
   } });
@@ -30,7 +30,7 @@ test('all administrator methods reject ordinary accounts before touching storage
   const normal = { ...admin, isAdmin: false };
   for (const operation of [() => service.listUsers(normal, {}), () => service.getUser(normal, id),
     () => service.createUser(normal, {}), () => service.updateUser(normal, id, {}), () => service.deleteUser(normal, id),
-    () => service.dailyTasks(normal, {}), () => service.dailyTaskFailureDetails(normal, id)]) await assert.rejects(operation(), errorIs(403, 'ADMIN_REQUIRED'));
+    () => service.dailyTasks(normal, {}), () => service.monthlyStats(normal, {}), () => service.dailyTaskFailureDetails(normal, id)]) await assert.rejects(operation(), errorIs(403, 'ADMIN_REQUIRED'));
 });
 
 test('administrator failure details read the requested task without dispatching jobs or querying a user-owned event', async () => {
@@ -92,21 +92,21 @@ test('self deletion, disabling and demotion are blocked; store conflicts and err
   }
 });
 
-test('today uses Beijing midnight with an exclusive upper bound and a bounded Redis summary batch', async () => {
+test('recent history includes today and six previous Beijing dates with an exclusive upper bound', async () => {
   const event: DailyEvent = { id, username: user.username, createdAt: '2026-10-08T16:00:00.000Z', expiresAt: '2026-10-08T16:05:00.000Z', status: 'qr_ready' };
   const run: TaskRun = { taskId: id, status: 'completed', updatedAt: '2026-10-08T16:30:00.000Z',
     authorizedAt: '2026-10-08T16:02:00.000Z', startedAt: '2026-10-08T16:03:00.000Z', finishedAt: '2026-10-08T16:30:00.000Z' };
   const f = fixture({ listDailyEvents: async (start, end, offset, limit) => {
-    assert.equal(start.toISOString(), '2026-10-08T16:00:00.000Z'); assert.equal(end.toISOString(), '2026-10-09T16:00:00.000Z');
+    assert.equal(start.toISOString(), '2026-10-02T16:00:00.000Z'); assert.equal(end.toISOString(), '2026-10-09T16:00:00.000Z');
     assert.equal(offset, 20); assert.equal(limit, 20); return { items: [event], total: 21 };
   } }, [run]);
   assert.deepEqual(await f.service.dailyTasks(admin, { page: '2' }), {
     items: [{ id, username: user.username, requestedAt: event.createdAt, scannedAt: run.authorizedAt,
-      completedAt: run.finishedAt, status: 'completed' }], total: 21, page: 2, pageSize: 20, date: '2026-10-09', timeZone: 'Asia/Shanghai',
+      completedAt: run.finishedAt, status: 'completed' }], total: 21, page: 2, pageSize: 20, date: '2026-10-09', startDate: '2026-10-03', timeZone: 'Asia/Shanghai',
   });
   assert.deepEqual(f.calls, [[id]]);
   const beforeMidnight = fixture({ listDailyEvents: async (start, end) => {
-    assert.equal(start.toISOString(), '2026-10-07T16:00:00.000Z'); assert.equal(end.toISOString(), '2026-10-08T16:00:00.000Z'); return { items: [], total: 0 };
+    assert.equal(start.toISOString(), '2026-10-01T16:00:00.000Z'); assert.equal(end.toISOString(), '2026-10-08T16:00:00.000Z'); return { items: [], total: 0 };
   } }, [], now - 1);
   assert.equal((await beforeMidnight.service.dailyTasks(admin, {})).date, '2026-10-08');
 });
@@ -156,4 +156,37 @@ test('daily failures expose each run error with honest fallbacks without adding 
     assert.equal(Object.hasOwn(item, 'errorMessage'), false);
   }
   assert.deepEqual(f.calls, [items.map(item => item.id)]);
+});
+
+test('monthly rankings use Beijing calendar boundaries including leap years and year rollover', async () => {
+  for (const [month, startAt, endAt] of [
+    ['2026-10', '2026-09-30T16:00:00.000Z', '2026-10-31T16:00:00.000Z'],
+    ['2024-02', '2024-01-31T16:00:00.000Z', '2024-02-29T16:00:00.000Z'],
+    ['2026-12', '2026-11-30T16:00:00.000Z', '2026-12-31T16:00:00.000Z'],
+  ]) for (const sort of ['requests', 'days'] as const) {
+    const f = fixture({ listMonthlyStats: async (start, end, order, offset, limit) => {
+      assert.equal(start.toISOString(), startAt); assert.equal(end.toISOString(), endAt);
+      assert.equal(order, sort); assert.equal(offset, 20); assert.equal(limit, 20);
+      return { items: [], total: 0, totalRequests: 0 };
+    } });
+    assert.deepEqual(await f.service.monthlyStats(admin, { month, sort, page: '2' }), {
+      items: [], total: 0, totalRequests: 0, month, sort, page: 2, pageSize: 20, timeZone: 'Asia/Shanghai',
+    });
+    assert.deepEqual(f.calls, [], 'monthly statistics must not depend on expired Redis logs');
+  }
+  const f = fixture({ listMonthlyStats: async (start) => {
+    assert.equal(start.toISOString(), '2026-09-30T16:00:00.000Z'); return { items: [], total: 0, totalRequests: 0 };
+  } }, [], Date.parse('2026-09-30T16:00:00Z'));
+  assert.equal((await f.service.monthlyStats(admin, {})).month, '2026-10');
+});
+
+test('monthly statistics reject malformed filters and sanitize database failures', async () => {
+  const f = fixture({ initialize: fail });
+  for (const month of ['2026-00', '2026-13', '2026-1', '2026-10-01', '2026-10 OR 1=1', ['2026-10'], 202610, '']) {
+    await assert.rejects(f.service.monthlyStats(admin, { month }), errorIs(400, 'INVALID_MONTH'));
+  }
+  for (const sort of ['rank', 'days DESC', ['days']]) await assert.rejects(f.service.monthlyStats(admin, { sort }), errorIs(400, 'INVALID_SORT'));
+  await assert.rejects(f.service.monthlyStats(admin, { page: '0' }), errorIs(400, 'INVALID_PAGE'));
+  const broken = fixture({ listMonthlyStats: async () => { throw new Error('private-db-url'); } });
+  await assert.rejects(broken.service.monthlyStats(admin, {}), errorIs(503, 'ADMIN_UNAVAILABLE'));
 });

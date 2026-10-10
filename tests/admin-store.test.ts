@@ -22,6 +22,8 @@ function fixture(t: TestContext) {
       return { rows: missing ? [] : [{ ...row, username: changes.username }] };
     }
     if (sql.startsWith('SELECT count(*)')) return { rows: [{ total: 41 }] };
+    if (sql.startsWith('SELECT count(DISTINCT user_id)')) return { rows: [{ total: 41, totalRequests: 120 }] };
+    if (sql.startsWith('WITH stats AS')) return { rows: [{ userId: id, username: 'Naruto', requestCount: 9, requestDays: 3, rank: 1, password: 'private-fixture' }] };
     if (sql.includes('FROM naruto_login.users u')) return { rows: missing ? [] : [{ ...row, password: 'private-fixture' }] };
     if (sql.includes('FROM naruto_login.login_events e')) return { rows: [{ id, username: row.username, createdAt: now, expiresAt: new Date(now.getTime() + 300000), status: 'qr_ready', accessToken: 'private-token' }] };
     return { rows: [] };
@@ -101,4 +103,19 @@ test('daily events query selects only rows in the Beijing day and never selects 
   assert.match(query.sql, /e.created_at >= \$1 AND e.created_at < \$2/);
   assert.doesNotMatch(query.sql, /access_token|request_id|password/);
   assert.deepEqual(query.values, [start, end, 20, 20]);
+});
+
+test('monthly stats count durable requests and distinct Beijing dates across all statuses with stable ranking', async t => {
+  const f = fixture(t), start = new Date('2026-09-30T16:00:00Z'), end = new Date('2026-10-31T16:00:00Z');
+  for (const sort of ['requests', 'days'] as const) {
+    const result = await f.store.listMonthlyStats(start, end, sort, 20, 20);
+    assert.deepEqual(result, { items: [{ userId: id, username: 'Naruto', requestCount: 9, requestDays: 3, rank: 1 }], total: 41, totalRequests: 120 });
+    const query = f.calls.filter(call => call.sql.startsWith('WITH stats AS')).at(-1)!;
+    assert.match(query.sql, /count\(DISTINCT \(created_at AT TIME ZONE 'Asia\/Shanghai'\)::date\)/);
+    assert.match(query.sql, /created_at >= \$1 AND created_at < \$2/);
+    assert.match(query.sql, sort === 'days' ? /dense_rank\(\) OVER \(ORDER BY request_days DESC\)/ : /dense_rank\(\) OVER \(ORDER BY request_count DESC\)/);
+    assert.match(query.sql, /s.user_id ASC LIMIT \$3 OFFSET \$4/);
+    assert.doesNotMatch(query.sql, /status|access_token|password|dispatched_at/);
+    assert.deepEqual(query.values, [start, end, 20, 20]);
+  }
 });
