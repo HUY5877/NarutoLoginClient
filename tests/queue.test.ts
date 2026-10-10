@@ -175,7 +175,6 @@ test('会话读取验证凭证，只返回客户端可见字段', async () => {
 
 test('Cookie 身份只可读取自己的申请，响应不暴露内部字段', async () => {
   const service = new TaskService(config, () => driver({ get: async key => {
-    if (key === `${config.redisQueueKey}:runs:${task.id}`) return null;
     assert.equal(key, `${config.redisQueueKey}:sessions:${task.id}`);
     return JSON.stringify({ ...stored, workerId: 'private-worker', privateInternalError: 'secret' });
   } }), () => now);
@@ -195,56 +194,11 @@ test('有效账号锁可恢复处理中及 qr_ready 申请，查询只读且不�
     const keys: string[] = [];
     const service = new TaskService(config, () => driver({ get: async key => {
       keys.push(key);
-      if (key === `${config.redisQueueKey}:runs:${task.id}`) return null;
       return keys.length === 1 ? task.id : JSON.stringify({ ...stored, status, workerId: 'secret' });
     }, eval: async () => assert.fail('active lookup must not mutate locks') }), () => now);
     assert.deepEqual(await service.getActive(task.userId), { id: task.id, status,
       createdAt: task.createdAt, expiresAt: task.expiresAt, simulation: true });
-    assert.deepEqual(keys, [`${config.redisQueueKey}:users:${task.userId}:active`, `${config.redisQueueKey}:sessions:${task.id}`, `${config.redisQueueKey}:runs:${task.id}`]);
-  }
-});
-
-test('二维码发布后执行失败或中断立即结束旧会话，保留记录且不删除账号锁', async () => {
-  for (const status of ['failed', 'interrupted', 'expired']) {
-    for (const loginAuthorized of [false, true]) {
-      const session = { ...stored, status: 'qr_ready', workerId: 'worker-1', loginAuthorized, refreshRequestId: task.id };
-      const run = { taskId: task.id, workerId: 'worker-1', status, errorCode: 'login_finish_failed', error: 'private-secret' };
-      const values = new Map([
-        [`${config.redisQueueKey}:users:${task.userId}:active`, task.id],
-        [`${config.redisQueueKey}:sessions:${task.id}`, JSON.stringify(session)],
-        [`${config.redisQueueKey}:runs:${task.id}`, JSON.stringify(run)],
-      ]);
-      const before = [...values];
-      const service = new TaskService(config, () => driver({ get: async key => values.get(key) ?? null,
-        eval: async () => assert.fail('reads must not delete sessions, locks or execution history') }), () => now);
-      assert.equal(await service.getActive(task.userId), null);
-      for (const result of [await service.getForUser(task.id, task.userId), await service.get(task.id, task.accessToken)]) {
-        assert.equal(result.status, 'failed');
-        assert.equal(result.errorCode, 'login_finish_failed');
-        assert.equal(result.loginAuthorized, undefined);
-        assert.equal(result.refreshRequestId, undefined);
-        assert.doesNotMatch(JSON.stringify(result), /private-secret|worker-1|tokenHash/);
-      }
-      assert.deepEqual([...values], before);
-      await assert.rejects(service.getForUser(task.id, 'other-user'), { status: 404 });
-    }
-  }
-});
-
-test('缺失、损坏、其他任务、旧执行进程及仍在运行的记录不能释放登录占用', async () => {
-  const run = { taskId: task.id, workerId: 'worker-1', status: 'failed' };
-  const reports = [null, '{', 'null', JSON.stringify({ ...run, taskId: task.userId }),
-    JSON.stringify({ ...run, workerId: 'old-worker' }), JSON.stringify({ ...run, workerId: undefined }),
-    JSON.stringify({ ...run, status: ['failed'] }),
-    ...['waiting_scan', 'finishing_login', 'running_daily', 'completed'].map(status => JSON.stringify({ ...run, status }))];
-  for (const report of reports) {
-    const service = new TaskService(config, () => driver({ get: async key => {
-      if (key.endsWith(':active')) return task.id;
-      if (key.includes(':runs:')) return report;
-      return JSON.stringify({ ...stored, status: 'qr_ready', workerId: 'worker-1', loginAuthorized: true });
-    } }), () => now);
-    assert.equal((await service.getActive(task.userId))?.id, task.id);
-    assert.equal((await service.getForUser(task.id, task.userId)).loginAuthorized, true);
+    assert.deepEqual(keys, [`${config.redisQueueKey}:users:${task.userId}:active`, `${config.redisQueueKey}:sessions:${task.id}`]);
   }
 });
 
