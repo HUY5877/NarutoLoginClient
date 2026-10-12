@@ -1,3 +1,5 @@
+import type { LoginType } from './login-types';
+
 export interface ManagedUser {
   id: string;
   username: string;
@@ -16,6 +18,7 @@ export const dailyStatusLabels = {
 export type DailyStatus = keyof typeof dailyStatusLabels;
 export interface DailyTask {
   id: string;
+  loginType?: LoginType;
   username: string;
   requestedAt: string;
   scannedAt: string | null;

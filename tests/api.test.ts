@@ -32,6 +32,26 @@ const otherHeaders = { Cookie: `naruto_session=${otherToken}` };
 const jsonHeaders = { 'Content-Type': 'application/json' };
 const post = { method: 'POST', headers: { ...headers, ...jsonHeaders }, body: '{}' };
 
+test('四个渠道透传创建服务，旧请求默认安卓 QQ，非法渠道不能创建任务', async () => {
+  const received: string[] = [];
+  await withApi({ events: events({ create: async (_user, _request, _options, loginType) => {
+    received.push(loginType!);
+    return { ...baseTask, loginType };
+  } }) }, async base => {
+    for (const loginType of ['android_qq', 'ios_qq', 'android_wechat', 'ios_wechat', undefined]) {
+      const response = await fetch(`${base}/api/login-sessions`, { ...post, body: JSON.stringify({ requestId, loginType }) });
+      assert.equal(response.status, 202);
+      assert.equal((await response.json()).loginType, loginType ?? 'android_qq');
+    }
+    for (const loginType of [null, '', 'qq', 'ANDROID_QQ', false, 1, [], {}]) {
+      const response = await fetch(`${base}/api/login-sessions`, { ...post, body: JSON.stringify({ loginType }) });
+      assert.equal(response.status, 400);
+      assert.equal((await response.json()).code, 'INVALID_LOGIN_TYPE');
+    }
+    assert.deepEqual(received, ['android_qq', 'ios_qq', 'android_wechat', 'ios_wechat', 'android_qq']);
+  });
+});
+
 function events(overrides: Partial<Dependencies['events']> = {}): Dependencies['events'] {
   return { create: async () => ({ ...baseTask, status: 'queued' }), getForUser: async () => ({ ...baseTask }),
     getActive: async () => null, recordStatus: async () => {}, ...overrides };

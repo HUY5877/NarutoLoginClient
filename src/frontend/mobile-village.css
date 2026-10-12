@@ -206,6 +206,10 @@
   .login-explanation,
   .login-session-details { display: none; }
   .equipment-options { width: 100%; min-height: 3.5rem; margin-top: 0.875rem; padding: 0.625rem 0.75rem; border: 1px solid #d5c4da29; border-radius: 0.75rem; background: linear-gradient(100deg, #e4d1ef0a, #d7c0e60d); align-items: center; flex-direction: row-reverse; justify-content: space-between; gap: 0.625rem; cursor: pointer; }
+  .login-channel { margin-top: 0.875rem; }
+  .login-channel > label { font-size: 0.75rem; color: #eee4ef; }
+  .login-channel [data-slot='select-trigger'] { border-color: #d5c4da3d; background: #302b34; color: #f6f1ed; }
+  .login-channel > p { color: #c7bcc8; }
   .equipment-options [id='equipment-stamina-label'] { font-size: 0.75rem; color: #eee4ef; }
   .mobile-option-caption { display: block; margin-top: 0.1875rem; color: #b2a2b6; font-size: 0.625rem; }
   .equipment-options [id='equipment-stamina-help'],

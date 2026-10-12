@@ -13,6 +13,33 @@ const task: Submission = { id: '123e4567-e89b-42d3-a456-426614174000',
 const stored = { id: task.id, userId: task.userId, status: 'queued', createdAt: task.createdAt, expiresAt: task.expiresAt,
   simulation: true, tokenHash: createHash('sha256').update(task.accessToken).digest('hex') };
 
+test('四个渠道贯穿入队与会话恢复，刷新命令从原会话读取渠道', async () => {
+  for (const loginType of ['android_qq', 'ios_qq', 'android_wechat', 'ios_wechat'] as const) {
+    let refreshScript = '';
+    const service = new TaskService(config, () => driver({
+      get: async () => JSON.stringify({ ...stored, loginType }),
+      eval: async (script, options) => {
+        if (options.keys.length === 4) {
+          assert.equal(JSON.parse(options.arguments[0]).loginType, loginType);
+          assert.equal(JSON.parse(options.arguments[2]).loginType, loginType);
+          return 1;
+        }
+        refreshScript = script;
+        return JSON.stringify({ ...stored, loginType, status: 'preparing_qr' });
+      },
+    }), () => now);
+    await service.enqueue({ ...task, loginType });
+    assert.equal((await service.getForUser(task.id, task.userId)).loginType, loginType);
+    assert.equal((await service.requestRefresh(task.id, task.userId)).loginType, loginType);
+    assert.match(refreshScript, /command\.loginType = s\.loginType or 'android_qq'/);
+  }
+  assert.equal((await new TaskService(config, () => driver(), () => now).getForUser(task.id, task.userId)).loginType, 'android_qq');
+  for (const loginType of [null, '', 'invalid', false, []]) {
+    const service = new TaskService(config, () => driver({ get: async () => JSON.stringify({ ...stored, loginType }) }), () => now);
+    await assert.rejects(service.getForUser(task.id, task.userId), { status: 502 });
+  }
+});
+
 test('实例租期独立于排队期限，刷新状态只暴露公开字段', async () => {
   const lease = { ...stored, loginStartedAt: new Date(now + 60_000).toISOString(),
     loginExpiresAt: new Date(now + 660_000).toISOString(), refreshSupported: true,
@@ -58,10 +85,10 @@ test('原子提交会话与 LPUSH 任务，队列不含浏览器凭证，TTL 只
   const service = new TaskService(config, () => driver({ eval: async (_script, options, signal) => {
     assert.deepEqual(options.keys, [config.redisQueueKey, `${config.redisQueueKey}:sessions:${task.id}`,
       `${config.redisQueueKey}:users:${task.userId}:active`, `${config.redisQueueKey}:logs:${task.id}`]);
-    assert.deepEqual(JSON.parse(options.arguments[0]), { ...stored, userOptions: task.userOptions });
+    assert.deepEqual(JSON.parse(options.arguments[0]), { ...stored, userOptions: task.userOptions, loginType: 'android_qq' });
     assert.equal(options.arguments[1], '119000');
     assert.deepEqual(JSON.parse(options.arguments[2]), { version: 1, id: task.id, createdAt: task.createdAt,
-      expiresAt: task.expiresAt, objectKey: `login/${task.id}/qr.png`, userOptions: task.userOptions, loginTimeoutSeconds: 600 });
+      expiresAt: task.expiresAt, objectKey: `login/${task.id}/qr.png`, userOptions: task.userOptions, loginTimeoutSeconds: 600, loginType: 'android_qq' });
     assert.equal(options.arguments[3], new Date(now + 1000).toISOString());
     assert.deepEqual(JSON.parse(options.arguments[4]), { time: task.createdAt, level: 'INFO',
       message: '登录申请已提交，等待执行服务器领取任务。' });
@@ -167,7 +194,7 @@ test('会话读取验证凭证，只返回客户端可见字段', async () => {
     return JSON.stringify({ ...stored, privateInternalError: 'secret' });
   } }), () => now);
   assert.deepEqual(await service.get(task.id, task.accessToken), { id: task.id, status: 'queued',
-    createdAt: task.createdAt, expiresAt: task.expiresAt, simulation: true });
+    createdAt: task.createdAt, expiresAt: task.expiresAt, simulation: true, loginType: 'android_qq' });
   await assert.rejects(service.get(task.id, 'wrong-token'), { status: 404 });
   const missing = new TaskService(config, () => driver({ get: async () => null }), () => now);
   await assert.rejects(missing.get(task.id, task.accessToken), { status: 404 });
@@ -179,7 +206,7 @@ test('Cookie 身份只可读取自己的申请，响应不暴露内部字段', a
     return JSON.stringify({ ...stored, workerId: 'private-worker', privateInternalError: 'secret' });
   } }), () => now);
   assert.deepEqual(await service.getForUser(task.id, task.userId), { id: task.id, status: 'queued',
-    createdAt: task.createdAt, expiresAt: task.expiresAt, simulation: true });
+    createdAt: task.createdAt, expiresAt: task.expiresAt, simulation: true, loginType: 'android_qq' });
   await assert.rejects(service.getForUser(task.id, '456e7890-e89b-42d3-a456-426614174001'), { status: 404 });
   const missing = new TaskService(config, () => driver({ get: async () => null }), () => now);
   await assert.rejects(missing.getForUser(task.id, task.userId), { status: 404 });
@@ -197,7 +224,7 @@ test('有效账号锁可恢复处理中及 qr_ready 申请，查询只读且不�
       return keys.length === 1 ? task.id : JSON.stringify({ ...stored, status, workerId: 'secret' });
     }, eval: async () => assert.fail('active lookup must not mutate locks') }), () => now);
     assert.deepEqual(await service.getActive(task.userId), { id: task.id, status,
-      createdAt: task.createdAt, expiresAt: task.expiresAt, simulation: true });
+      createdAt: task.createdAt, expiresAt: task.expiresAt, simulation: true, loginType: 'android_qq' });
     assert.deepEqual(keys, [`${config.redisQueueKey}:users:${task.userId}:active`, `${config.redisQueueKey}:sessions:${task.id}`]);
   }
 });
@@ -269,7 +296,7 @@ test('工作进程失败仅按白名单代码返回安全中文，保留失败�
         status: 'failed', errorCode, error: 'redis://private-password@private-host' }) }), () => at);
       const result = await service.getForUser(task.id, task.userId);
       assert.deepEqual(result, { id: task.id, status: 'failed', createdAt: task.createdAt, expiresAt: task.expiresAt,
-        simulation: true, ...loginFailure(errorCode) });
+        simulation: true, loginType: 'android_qq', ...loginFailure(errorCode) });
       assert.doesNotMatch(JSON.stringify(result), /private-password|private-host|private_secret|constructor/);
       await assert.rejects(service.getForUser(task.id, 'other-user'), { status: 404 });
     }

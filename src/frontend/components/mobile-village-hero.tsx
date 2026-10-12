@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { ChakraSeal } from '@/components/chakra-seal';
 import { KonanPortrait } from '@/components/konan-portrait';
+import { DEFAULT_LOGIN_TYPE, loginScanApp, loginTypeLabels, type LoginType } from '../../shared/login-types';
 
-export function MobileVillageHero() {
+export function MobileVillageHero({ loginType = DEFAULT_LOGIN_TYPE }: { loginType?: LoginType }) {
   const scene = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -40,7 +41,7 @@ export function MobileVillageHero() {
       <div className="mobile-hero-copy">
         <p className="mobile-game-label">火影忍者手游</p>
         <h1 id="mobile-welcome-title">上号，<br /><em>清日常。</em></h1>
-        <p className="mobile-hero-caption">手机 QQ 扫码<br />登录后自动接着跑</p>
+        <p className="mobile-hero-caption">手机{loginScanApp(loginType)}扫码<br />登录后自动接着跑</p>
       </div>
       <div className="mobile-character-scene" aria-hidden="true">
         <ChakraSeal active className="hero-chakra-seal" />
@@ -48,7 +49,7 @@ export function MobileVillageHero() {
         <KonanPortrait className="mobile-character" decorative />
       </div>
       <div className="mobile-scene-footer">
-        <span className="mobile-region"><i />安卓 · QQ 区</span>
+        <span className="mobile-region"><i />{loginTypeLabels[loginType]}</span>
         <img src="/icons/shuriken.svg" alt="" width="18" height="18" aria-hidden="true" />
       </div>
     </section>

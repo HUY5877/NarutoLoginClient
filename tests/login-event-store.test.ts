@@ -21,7 +21,7 @@ function candidate(sequence = 1, userId = owner, offset = 0): LoginEvent {
     userId, requestId: `request-${sequence}`, status: 'queued', accessToken: 'ab'.repeat(32),
     createdAt: date(offset).toISOString(), expiresAt: date(offset + 120000).toISOString(),
     dispatchedAt: null, finishedAt: null,
-    userOptions: { equipmentStamina: true },
+    userOptions: { equipmentStamina: true }, loginType: 'android_qq',
   };
 }
 
@@ -86,14 +86,14 @@ function fixture(t: TestContext) {
     }
     if (sql.startsWith('INSERT INTO naruto_login.login_events')) {
       assert.ok(releases.has(client), 'the user row must remain locked through insertion');
-      assert.match(sql, /finished_at, user_options\) VALUES \(\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9, \$10::jsonb\)/);
-      const [id, userId, requestId, status, accessToken, createdAt, expiresAt, dispatchedAt, finishedAt, optionsJson] = values as
-        [string, string, string, LoginEvent['status'], string, Date, Date, Date | null, Date | null, string];
+      assert.match(sql, /finished_at, user_options, login_type\) VALUES \(\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9, \$10::jsonb, \$11\)/);
+      const [id, userId, requestId, status, accessToken, createdAt, expiresAt, dispatchedAt, finishedAt, optionsJson, loginType] = values as
+        [string, string, string, LoginEvent['status'], string, Date, Date, Date | null, Date | null, string, LoginEvent['loginType']];
       if ([...rows.values()].some(row => row.userId === userId && (row.requestId === requestId || row.finishedAt === null && finishedAt === null))) {
         throw new Error('unique constraint violation');
       }
       const row: Row = { id, userId, requestId, status, accessToken, createdAt, expiresAt, dispatchedAt, finishedAt,
-        userOptions: JSON.parse(optionsJson) };
+        userOptions: JSON.parse(optionsJson), loginType };
       rows.set(id, row);
       return { rows: [{ ...row }] };
     }
@@ -166,6 +166,17 @@ test('附加参数以 JSONB 参数化保存，新建服务实例仍能恢复原�
     assert.deepEqual(await restored.getActive(owner, date(1)), saved);
     assert.deepEqual(await restored.getLatestForUser(owner), saved);
   } finally { await restored.close(); }
+});
+
+test('渠道参数化存储且重复申请保持原渠道，历史缺失值默认安卓 QQ', async t => {
+  const { store, rows, operations } = fixture(t);
+  const first = await store.reserve({ ...candidate(), loginType: 'ios_wechat' }, date());
+  assert.equal(first.loginType, 'ios_wechat');
+  const insert = operations.find(operation => operation.sql.startsWith('INSERT INTO naruto_login.login_events'))!;
+  assert.equal(insert.values[10], 'ios_wechat');
+  assert.equal((await store.reserve({ ...candidate(2), loginType: 'ios_qq' }, date(1))).loginType, 'ios_wechat');
+  delete rows.get(first.id)!.loginType;
+  assert.equal((await store.getEvent(first.id, owner))?.loginType, 'android_qq');
 });
 
 test('重复请求和已有有效任务保留首次选择，后续请求不能覆盖附加参数', async t => {

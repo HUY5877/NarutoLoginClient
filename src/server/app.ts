@@ -8,6 +8,7 @@ import type { Task } from './queue.js';
 import type { LoginEventService } from './login-events.js';
 import { isStreamCursor, type TaskRunService } from './task-runs.js';
 import { parseUserOptions } from '../shared/user-options.js';
+import { parseLoginType } from '../shared/login-types.js';
 import type { AdminService } from './admin.js';
 
 export interface Dependencies {
@@ -128,7 +129,9 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     if (typeof requestId !== 'string' || !uuid.test(requestId)) throw new ApiError(400, '无效的申请标识，请重新操作。');
     const userOptions = parseUserOptions(req.body?.userOptions);
     if (!userOptions) throw new ApiError(400, '用户附加参数格式不正确，装备栏体力刷取必须选择开启或关闭。', 'INVALID_USER_OPTIONS');
-    const task = await events.create(user.id, requestId, userOptions);
+    const loginType = parseLoginType(req.body?.loginType);
+    if (!loginType) throw new ApiError(400, '请选择有效的登录渠道。', 'INVALID_LOGIN_TYPE');
+    const task = await events.create(user.id, requestId, userOptions, loginType);
     res.status(202).json({ ...publicTask(task), pollAfterMs: 1000 });
   });
 

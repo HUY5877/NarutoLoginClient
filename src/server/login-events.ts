@@ -5,6 +5,7 @@ import { ApiError } from './errors.js';
 import type { Status, Task, TaskService } from './queue.js';
 import { loginFailure } from '../shared/task-errors.js';
 import { DEFAULT_USER_OPTIONS, type UserOptions } from '../shared/user-options.js';
+import { DEFAULT_LOGIN_TYPE, type LoginType } from '../shared/login-types.js';
 
 interface Options {
   store?: LoginEventStore;
@@ -34,7 +35,7 @@ export class LoginEventService {
   private publicTask(event: LoginEvent): Task {
     const status = event.status === 'failed' ? 'failed' : Date.parse(event.expiresAt) <= this.now() ? 'expired' : event.status;
     return { id: event.id, status, createdAt: event.createdAt, expiresAt: event.expiresAt, simulation: true,
-      userOptions: { ...event.userOptions },
+      userOptions: { ...event.userOptions }, loginType: event.loginType ?? DEFAULT_LOGIN_TYPE,
       ...(status === 'failed' ? loginFailure(undefined) : {}) };
   }
 
@@ -76,9 +77,9 @@ export class LoginEventService {
       await this.database(store => store.updateStatus(event.id, event.userId, current.status, new Date(this.now()), current.expiresAt));
       if (current.status === 'failed') {
         const { error: _error, errorCode, ...publicFields } = current;
-        return { ...publicFields, userOptions: task.userOptions, ...loginFailure(errorCode) };
+        return { ...publicFields, userOptions: task.userOptions, loginType: task.loginType, ...loginFailure(errorCode) };
       }
-      return { ...current, userOptions: task.userOptions };
+      return { ...current, userOptions: task.userOptions, loginType: task.loginType };
     } catch (error) {
       // A dispatched task must not be submitted again when Redis loses a key.
       // The durable event still owns this user's slot until its original expiry.
@@ -87,7 +88,8 @@ export class LoginEventService {
     }
   }
 
-  async create(userId: string, requestId: string, userOptions: UserOptions = DEFAULT_USER_OPTIONS): Promise<Task> {
+  async create(userId: string, requestId: string, userOptions: UserOptions = DEFAULT_USER_OPTIONS,
+    loginType: LoginType = DEFAULT_LOGIN_TYPE): Promise<Task> {
     // A claimed worker has a separate ten-minute lease. Consult its account lock
     // before expiring the original queue reservation in PostgreSQL.
     const live = await this.liveActive(userId);
@@ -99,7 +101,7 @@ export class LoginEventService {
     const candidate: LoginEvent = {
       id: randomUUID(), userId, requestId, accessToken: randomBytes(32).toString('hex'),
       createdAt: new Date(created).toISOString(), expiresAt: new Date(created + this.config.sessionTtlMs).toISOString(),
-      status: 'queued', dispatchedAt: null, finishedAt: null, userOptions: { ...userOptions },
+      status: 'queued', dispatchedAt: null, finishedAt: null, userOptions: { ...userOptions }, loginType,
     };
     const event = await this.database(store => store.reserve(candidate, new Date(this.now())));
     try { return await this.resume(event); }

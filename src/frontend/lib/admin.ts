@@ -1,4 +1,5 @@
 import { dailyStatusLabels, type DailyTaskPage, type DailyTaskFailureDetails, type ManagedUser, type PageResult, type MonthlyStatsPage } from '../../shared/admin';
+import { parseLoginType } from '../../shared/login-types';
 
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const date = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value));
@@ -27,6 +28,7 @@ export function isDailyPage(value: unknown): value is DailyTaskPage {
       && (value.startDate === undefined || value.selectedDate >= value.startDate))
     && value.timeZone === 'Asia/Shanghai' && value.items.every(item => object(item)
       && typeof item.id === 'string' && typeof item.username === 'string' && date(item.requestedAt)
+      && parseLoginType(item.loginType) !== null
       && nullableDate(item.scannedAt) && nullableDate(item.completedAt)
       && (item.errorCode === undefined || typeof item.errorCode === 'string' && /^[a-z0-9_]{1,64}$/.test(item.errorCode))
       && (item.errorMessage === undefined || typeof item.errorMessage === 'string')

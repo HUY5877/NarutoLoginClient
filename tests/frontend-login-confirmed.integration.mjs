@@ -121,7 +121,7 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         const countdown = f.page.getByLabel(/^剩余 \d+ 秒$/);
         await image.waitFor();
         await countdown.waitFor();
-        assert.match(await image.getAttribute('alt'), /手机 QQ 扫码授权/);
+        assert.match(await image.getAttribute('alt'), /手机QQ扫码授权/);
         assert.doesNotMatch(await f.page.locator('body').innerText(), /模拟二维码|模拟登录演示|不能授权或登录真实账号/);
         f.state.status = 'finishing_login';
         await f.page.getByText('扫码授权已完成', { exact: true }).waitFor();

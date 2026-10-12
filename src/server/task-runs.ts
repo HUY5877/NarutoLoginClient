@@ -4,6 +4,7 @@ import type { LoginEvent, LoginEventStore } from './database.js';
 import { ApiError } from './errors.js';
 import type { Status } from './queue.js';
 import type { UserOptions } from '../shared/user-options.js';
+import { DEFAULT_LOGIN_TYPE, type LoginType } from '../shared/login-types.js';
 import type { DailyTaskFailureDetails } from '../shared/admin.js';
 import { taskFailureMessage } from '../shared/task-errors.js';
 
@@ -28,7 +29,7 @@ export interface TaskLog {
   actionIndex?: number;
   actionTotal?: number;
 }
-export interface RunTask { id: string; createdAt: string; expiresAt: string; status: Status; userOptions: UserOptions }
+export interface RunTask { id: string; createdAt: string; expiresAt: string; status: Status; userOptions: UserOptions; loginType?: LoginType }
 export interface TaskRunEvents {
   task: RunTask;
   run: TaskRun | null;
@@ -163,7 +164,7 @@ export class TaskRunService {
   }
   private publicTask(event: LoginEvent): RunTask {
     return { id: event.id, createdAt: event.createdAt, expiresAt: event.expiresAt,
-      userOptions: { ...event.userOptions },
+      userOptions: { ...event.userOptions }, loginType: event.loginType ?? DEFAULT_LOGIN_TYPE,
       status: event.status === 'failed' ? 'failed' : Date.parse(event.expiresAt) <= this.now() ? 'expired' : event.status };
   }
   async getLatest(userId: string): Promise<{ task: RunTask | null }> {

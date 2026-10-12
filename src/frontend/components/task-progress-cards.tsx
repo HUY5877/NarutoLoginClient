@@ -59,7 +59,7 @@ export function TaskProgressCards({ progress }: { progress: ReturnType<typeof de
             <AccordionItem value="simulation">
               <AccordionTrigger className="text-sm font-medium">现在可以登录游戏吗？</AccordionTrigger>
               <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                执行服务器生成游戏二维码后，使用手机 QQ 扫码并确认授权即可。授权完成后无需再次扫码，系统会继续进入游戏和执行日常脚本。
+                选择安卓或 iOS 的 QQ 区、微信区后获取二维码。QQ 区用手机 QQ，微信区用微信扫码并确认授权。授权完成后系统会继续进入游戏和执行日常脚本。
               </AccordionContent>
             </AccordionItem>
             <AccordionItem value="account">

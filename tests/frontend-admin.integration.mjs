@@ -179,7 +179,7 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
         await f.open('近七天刷日常情况');
         const dialog = f.page.getByRole('dialog', { name: '近七天刷日常情况' });
         await dialog.getByRole('cell', { name: user.username, exact: true }).waitFor();
-        assert.deepEqual(await dialog.getByRole('columnheader').allTextContents(), ['用户名', '申请时间', '扫描完成时间', '脚本执行完成时间', '任务状态']);
+        assert.deepEqual(await dialog.getByRole('columnheader').allTextContents(), ['用户名', '登录渠道', '申请时间', '扫描完成时间', '脚本执行完成时间', '任务状态']);
         assert.match(await dialog.innerText(), /08:02:00/); assert.match(await dialog.innerText(), /08:30:00/);
         assert.match(await dialog.innerText(), /刷日常中/); assert.match(await dialog.innerText(), /失败/);
         const details = dialog.getByRole('button', { name: 'Sakura_03的失败详情', exact: true });

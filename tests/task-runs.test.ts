@@ -7,7 +7,7 @@ const id = '123e4567-e89b-42d3-a456-426614174000';
 const owner = '456e7890-e89b-42d3-a456-426614174000';
 const at = '2026-09-24T01:00:00.000Z';
 const event: LoginEvent = { id, userId: owner, requestId: id, status: 'qr_ready', accessToken: 'ab'.repeat(32),
-  createdAt: at, expiresAt: '2026-09-24T01:02:00.000Z', dispatchedAt: at, finishedAt: null, userOptions: { equipmentStamina: true } };
+  createdAt: at, expiresAt: '2026-09-24T01:02:00.000Z', dispatchedAt: at, finishedAt: null, userOptions: { equipmentStamina: true }, loginType: 'android_qq' };
 const run = { taskId: id, status: 'running_daily', updatedAt: at, startedAt: at, finishedAt: null,
   actionIndex: 2, actionTotal: 38, workerId: 'private-worker', sequence: 10, accessToken: 'private-token' };
 const log = (sequence: number, payload: unknown = { time: at, level: 'INFO', message: `完成步骤 ${sequence}` }) =>
@@ -174,7 +174,7 @@ test('最近任务仅从用户持久记录恢复，二维码过期仍可读取�
   const f = fixture();
   const latest = await f.service.getLatest(owner);
   assert.deepEqual(latest, { task: { id, createdAt: event.createdAt, expiresAt: event.expiresAt, status: 'expired',
-    userOptions: { equipmentStamina: true } } });
+    userOptions: { equipmentStamina: true }, loginType: 'android_qq' } });
   assert.deepEqual(await f.service.getLatest('other-user'), { task: null });
   assert.equal(f.calls, 0);
   assert.equal(f.connections, 0);

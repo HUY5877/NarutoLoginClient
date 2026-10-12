@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { loginFailure } from '../../shared/task-errors';
 import { DEFAULT_USER_OPTIONS, parseUserOptions, type UserOptions } from '../../shared/user-options';
+import { DEFAULT_LOGIN_TYPE, parseLoginType, type LoginType } from '../../shared/login-types';
 import { expireLoginSession } from '../lib/login-expiry';
 
 export type SessionStatus = 'queued' | 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'qr_ready' | 'failed' | 'expired';
@@ -16,6 +17,7 @@ export interface Session {
   pollAfterMs?: number;
   showGetButton?: boolean;
   userOptions?: UserOptions;
+  loginType?: LoginType;
   loginStartedAt?: string;
   loginAuthorized?: boolean;
   refreshSupported?: boolean;
@@ -23,7 +25,7 @@ export interface Session {
   qrRevision?: string;
 }
 interface ActiveResponse { session: Session | null; showGetButton: boolean }
-interface PendingIntent { requestId: string; createdAt: number; expiresAt: number; userOptions: UserOptions }
+interface PendingIntent { requestId: string; createdAt: number; expiresAt: number; userOptions: UserOptions; loginType: LoginType }
 const intentLifetimeMs = 300_000;
 const pendingKey = (userId: string) => `naruto-login:pending:${userId}`;
 const statusLabels: Record<Phase, string> = {
@@ -45,7 +47,8 @@ function readPending(userId: string): PendingIntent | null {
       value.createdAt > Date.now() || value.expiresAt <= Date.now()) return null;
     const expiresAt = Math.min(value.expiresAt, value.createdAt + intentLifetimeMs);
     const userOptions = parseUserOptions(value.userOptions);
-    return expiresAt > Date.now() && userOptions ? { ...value, expiresAt, userOptions } : null;
+    const loginType = parseLoginType(value.loginType);
+    return expiresAt > Date.now() && userOptions && loginType ? { ...value, expiresAt, userOptions, loginType } : null;
   } catch { return null; }
 }
 function clearPending(userId: string, requestId?: string) {
@@ -102,7 +105,7 @@ async function retryRead(path: string, signal: AbortSignal, onRetry: () => void)
 function validSession(value: Session): boolean {
   return typeof value?.id === 'string' && value.id.length > 0 &&
     ['queued', 'starting_emulator', 'opening_game', 'preparing_qr', 'qr_ready', 'failed', 'expired'].includes(value.status) &&
-    Number.isFinite(Date.parse(value.expiresAt)) && parseUserOptions(value.userOptions) !== null;
+    Number.isFinite(Date.parse(value.expiresAt)) && parseUserOptions(value.userOptions) !== null && parseLoginType(value.loginType) !== null;
 }
 function isLive(value: Session | null): boolean {
   return Boolean(value && !['failed', 'expired'].includes(value.status) && Date.parse(value.expiresAt) > Date.now());
@@ -118,6 +121,7 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
   const [showGetButton, setShowGetButton] = useState(false);
   const [pendingUntil, setPendingUntil] = useState<number | null>(null);
   const [userOptions, setUserOptions] = useState<UserOptions>({ ...DEFAULT_USER_OPTIONS });
+  const [loginType, setLoginType] = useState<LoginType>(DEFAULT_LOGIN_TYPE);
   const [acceptedRevision, setAcceptedRevision] = useState(0);
   const [confirmedTaskId, setConfirmedTaskId] = useState<string | null>(null);
   const confirmedTaskRef = useRef<string | null>(null);
@@ -162,7 +166,7 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     replaceQr(null);
     const savedIntent = readPending(userId);
     setPendingUntil(savedIntent?.expiresAt ?? null);
-    if (savedIntent) setUserOptions(savedIntent.userOptions);
+    if (savedIntent) { setUserOptions(savedIntent.userOptions); setLoginType(savedIntent.loginType); }
 
     const readActive = async (): Promise<ActiveResponse> => {
       const response = await retryRead('/api/login-sessions/active', controller.signal, onRetry);
@@ -196,6 +200,7 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
       sessionRef.current = value;
       setSession(value);
       setUserOptions(parseUserOptions(value.userOptions) ?? { ...DEFAULT_USER_OPTIONS });
+      setLoginType(parseLoginType(value.loginType) ?? DEFAULT_LOGIN_TYPE);
       setNow(Date.now());
       clearPending(userId);
       setPendingUntil(null);
@@ -214,7 +219,7 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
           try {
             const response = await request('/api/login-sessions', controller.signal, {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ requestId: savedIntent.requestId, userOptions: savedIntent.userOptions }), keepalive: true,
+              body: JSON.stringify({ requestId: savedIntent.requestId, userOptions: savedIntent.userOptions, loginType: savedIntent.loginType }), keepalive: true,
             });
             current = await response.json() as Session;
             if (!validSession(current) || typeof current.showGetButton !== 'boolean') {
@@ -354,6 +359,7 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     const savedIntent = userId ? readPending(userId) : null;
     setPendingUntil(savedIntent?.expiresAt ?? null);
     setUserOptions(savedIntent?.userOptions ?? { ...DEFAULT_USER_OPTIONS });
+    setLoginType(savedIntent?.loginType ?? DEFAULT_LOGIN_TYPE);
     setAcceptedRevision(0);
     confirmedTaskRef.current = null;
     setConfirmedTaskId(null);
@@ -405,12 +411,13 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
       const timestamp = Date.now();
       const intent = readPending(userId) || {
         requestId: crypto.randomUUID(), createdAt: timestamp, expiresAt: timestamp + intentLifetimeMs,
-        userOptions: { ...userOptions },
+        userOptions: { ...userOptions }, loginType,
       };
       // This synchronous write precedes every await and POST, including an immediate page reload.
       localStorage.setItem(pendingKey(userId), JSON.stringify(intent));
       setPendingUntil(intent.expiresAt);
       setUserOptions(intent.userOptions);
+      setLoginType(intent.loginType);
       void run('recover');
     } catch {
       setPhase('query_failed');
@@ -474,6 +481,10 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     statusLabel: pending && visibleSession?.refreshRequestId ? '正在刷新二维码，请稍候' : statusLabels[visiblePhase], startLogin, confirmLogin,
     refreshQr: () => run('refresh'),
     userOptions: currentOwner ? userOptions : DEFAULT_USER_OPTIONS, canEditUserOptions,
+    loginType: currentOwner ? loginType : DEFAULT_LOGIN_TYPE,
+    setLoginType: (value: LoginType) => {
+      if (canEditUserOptions && !runningRef.current && parseLoginType(value)) setLoginType(value);
+    },
     setEquipmentStamina: (equipmentStamina: boolean) => {
       if (canEditUserOptions && !runningRef.current) setUserOptions(previous => ({ ...previous, equipmentStamina }));
     },

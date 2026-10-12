@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { CalendarCheck, RefreshCw } from 'lucide-react';
 import { Tooltip } from 'radix-ui';
 import { dailyStatusLabels, type DailyStatus } from '../../shared/admin';
+import { DEFAULT_LOGIN_TYPE, loginTypeLabels } from '../../shared/login-types';
 import { useAdminData } from '@/hooks/use-admin';
 import { useMediaQuery } from '@/hooks/use-media-query';
 import { formatAdminDate, isDailyPage } from '@/lib/admin';
@@ -59,14 +60,15 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
         {loading && !data && <AdminLoading label={selectedDate === 'all' ? '正在读取近七天任务…' : '正在读取当天任务…'} />}
         {data && data.items.length > 0 && (showTable ? <div className="overflow-hidden rounded-xl border bg-white/35">
           <Tooltip.Provider delayDuration={200}>
-          <Table className="min-w-190">
+          <Table className="min-w-210">
             <TableCaption className="sr-only">近七天刷日常情况，所有时间均为北京时间</TableCaption>
             <TableHeader className="bg-secondary/50"><TableRow>
-              <TableHead className="pl-4">用户名</TableHead><TableHead>申请时间</TableHead>
+              <TableHead className="pl-4">用户名</TableHead><TableHead>登录渠道</TableHead><TableHead>申请时间</TableHead>
               <TableHead>扫描完成时间</TableHead><TableHead>脚本执行完成时间</TableHead><TableHead className="pr-4">任务状态</TableHead>
             </TableRow></TableHeader>
             <TableBody>{data.items.map(task => <TableRow key={task.id}>
               <TableCell className="max-w-44 truncate py-4 pl-4 font-medium" title={task.username}>{task.username}</TableCell>
+              <TableCell className="whitespace-nowrap text-xs">{loginTypeLabels[task.loginType ?? DEFAULT_LOGIN_TYPE]}</TableCell>
               <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatAdminDate(task.requestedAt)}</TableCell>
               <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatAdminDate(task.scannedAt)}</TableCell>
               <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatAdminDate(task.completedAt)}</TableCell>
@@ -86,6 +88,10 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
               <Badge variant={statusVariant(task.status)} className="shrink-0">{dailyStatusLabels[task.status]}</Badge>
             </div>
             <dl className="space-y-2 text-xs leading-5">
+              <div className="grid grid-cols-[4rem_minmax(0,1fr)] gap-2">
+                <dt className="text-muted-foreground">登录渠道</dt>
+                <dd className="text-right">{loginTypeLabels[task.loginType ?? DEFAULT_LOGIN_TYPE]}</dd>
+              </div>
               {([
                 ['申请时间', task.requestedAt], ['扫码完成', task.scannedAt], ['执行完成', task.completedAt],
               ] as const).map(([label, value]) => <div key={label} className="grid grid-cols-[4rem_minmax(0,1fr)] gap-2">

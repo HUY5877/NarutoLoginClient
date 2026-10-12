@@ -83,6 +83,8 @@ import { TaskRunPanel } from '@/components/task-run-panel';
 import { deriveTaskProgress, hasGameAuthorization, isUnclaimedQueueTimeout, selectProgressRun } from '@/lib/task-progress';
 import { isRunTerminal } from '@/lib/task-run';
 import { DEFAULT_USER_OPTIONS, parseUserOptions } from '../shared/user-options';
+import { DEFAULT_LOGIN_TYPE, loginTypes, loginTypeLabels, loginScanApp, parseLoginType } from '../shared/login-types';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 function LoginHelp() {
   return (
@@ -100,9 +102,9 @@ function LoginHelp() {
         </DialogHeader>
         <ItemGroup className="py-1">
           {[
-            ['启动模拟器', '登录账户并点击「启动模拟器获取二维码」。同账户的多个页面共用一个实例。'],
+            ['启动模拟器', '登录账户，选择登录渠道并点击「启动模拟器获取二维码」。同账户的多个页面共用一个实例。'],
             ['等待准备完成', '保持页面打开，页面会自动更新准备进度和二维码。'],
-            ['扫码授权并执行', '使用手机 QQ 扫描二维码并确认授权；进入游戏后自动继续执行日常脚本。'],
+            ['扫码授权并执行', 'QQ 区使用手机 QQ，微信区使用微信扫描二维码并确认授权；进入游戏后自动继续执行日常脚本。'],
           ].map(([title, description], index) => (
             <Item key={title} role="listitem" size="sm" className="items-start px-0">
               <ItemMedia variant="icon" className="size-8 rounded-lg bg-primary/10 text-primary">
@@ -153,6 +155,8 @@ export default function App() {
     userOptions,
     canEditUserOptions,
     setEquipmentStamina,
+    loginType,
+    setLoginType,
   } = useLoginSession(auth.user?.id ?? null, auth.handleUnauthorized);
   const taskRun = useTaskRun(auth.user?.id ?? null, session, auth.handleUnauthorized);
   useEffect(() => { setSubmissionRevision(null); setMobileDetailsOpen(false); }, [auth.user?.id]);
@@ -173,6 +177,8 @@ export default function App() {
   const displayedUserOptions = restoringAuthorizedRun
     ? parseUserOptions(visibleRun.task?.userOptions) ?? DEFAULT_USER_OPTIONS : userOptions;
   const canEditShownOptions = canEditUserOptions && !restoringAuthorizedRun;
+  const displayedLoginType = restoringAuthorizedRun ? parseLoginType(visibleRun.task?.loginType) ?? DEFAULT_LOGIN_TYPE : loginType;
+  const scanApp = loginScanApp(displayedLoginType);
   const queueTimedOut = phase === 'expired' && isUnclaimedQueueTimeout(session, currentRun);
   const ready = progressInput.qrReady && !authorizationComplete;
   const qrPending = pending && !authorizationComplete;
@@ -253,17 +259,17 @@ export default function App() {
           <div className="village-hero-copy">
             <Badge variant="outline" className="mb-4 gap-1.5 border-primary/20 bg-card/80 px-2.5 py-1 text-xs font-medium text-primary">
               <Smartphone className="size-3" aria-hidden="true" />
-              火影忍者手游 · 安卓 QQ 区
+              火影忍者手游 · {loginTypeLabels[displayedLoginType]}
             </Badge>
             <h1 id="welcome-title" className="village-title">上号，<span className="desktop-hero-accent">清日常。</span></h1>
             <p className="mt-3 max-w-70 text-sm leading-6 text-muted-foreground sm:max-w-none">
-              用手机 QQ 扫码登录，<span className="inline-block">日常任务会自动接着跑。</span>
+              用手机{scanApp}扫码登录，<span className="inline-block">日常任务会自动接着跑。</span>
             </p>
           </div>
           <img className="hero-seal" src="/icons/leaf-village.svg" alt="" width="240" height="240" aria-hidden="true" />
           <KonanPortrait className="village-portrait" />
         </section>
-        <MobileVillageHero />
+        <MobileVillageHero loginType={displayedLoginType} />
 
         <div className="village-workspace grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6">
           <Card className="village-glass login-card gap-0 overflow-hidden shadow-sm" data-authorized={authorizationComplete} data-phase={ready ? 'qr_ready' : authorizationComplete ? 'authorized' : phase}>
@@ -274,13 +280,13 @@ export default function App() {
                 <span className="sm:hidden">{authorizationComplete ? '本次登录' : '扫码登录'}</span>
               </CardTitle>
               <CardDescription className="text-sm">
-                <span className="hidden sm:inline">生成二维码后，用手机 QQ 扫一扫。</span>
-                <span className="sm:hidden">{authorizationComplete ? '进入游戏后，日常任务会自动接着跑。' : '用手机 QQ 扫码，再确认登录。'}</span>
+                <span className="hidden sm:inline">生成二维码后，用手机{scanApp}扫一扫。</span>
+                <span className="sm:hidden">{authorizationComplete ? '进入游戏后，日常任务会自动接着跑。' : `用手机${scanApp}扫码，再确认登录。`}</span>
               </CardDescription>
               <CardAction>
                 <Badge variant="secondary" className="gap-1.5 font-normal">
                   <Smartphone aria-hidden="true" />
-                  安卓 QQ 区
+                  {loginTypeLabels[displayedLoginType]}
                 </Badge>
               </CardAction>
             </CardHeader>
@@ -293,7 +299,7 @@ export default function App() {
                     <img
                       className="size-full object-contain"
                       src={qrUrl}
-                      alt="火影忍者 QQ 登录二维码，请使用手机 QQ 扫码授权"
+                      alt={`火影忍者 ${loginTypeLabels[displayedLoginType]}登录二维码，请使用手机${scanApp}扫码授权`}
                       onError={handleQrError}
                     />
                   ) : (
@@ -361,6 +367,18 @@ export default function App() {
               )}
 
               {auth.user && (
+                <div className="login-channel mt-6 w-full max-w-sm space-y-2">
+                  <label id="login-channel-label" className="text-sm font-medium">登录渠道</label>
+                  <Select value={displayedLoginType} disabled={auth.busy || !canEditShownOptions}
+                    onValueChange={value => { const type = parseLoginType(value); if (type) setLoginType(type); }}>
+                    <SelectTrigger aria-labelledby="login-channel-label" className="min-h-11 w-full bg-white/40"><SelectValue /></SelectTrigger>
+                    <SelectContent>{loginTypes.map(type => <SelectItem key={type} value={type} className="min-h-11">{loginTypeLabels[type]}</SelectItem>)}</SelectContent>
+                  </Select>
+                  <p className="text-xs leading-5 text-muted-foreground">{canEditShownOptions ? '请选择游戏账号所在的区服。' : '本次申请的渠道已保存，刷新二维码会沿用此渠道。'}</p>
+                </div>
+              )}
+
+              {auth.user && (
                 <label className="equipment-options mt-6 flex w-full max-w-sm items-start gap-3 rounded-xl border border-primary/15 bg-white/40 px-4 py-3" data-editable={canEditShownOptions}>
                   <span className="equipment-switch">
                     <input
@@ -408,7 +426,7 @@ export default function App() {
                   <RefreshCw aria-hidden="true" />{canResumePending ? '继续本次申请' : '重试查询'}
                 </Button>
               )}
-              {auth.user && ready && <p className="qr-ready-note mt-5 text-sm font-medium text-primary">请用手机 QQ 扫码，二维码失效可刷新</p>}
+              {auth.user && ready && <p className="qr-ready-note mt-5 text-sm font-medium text-primary">请用手机{scanApp}扫码，二维码失效可刷新</p>}
               <p className="qr-sharing-note mt-3 flex items-start gap-1.5 text-center text-xs leading-5 text-muted-foreground">
                 <ShieldCheck className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
                 {session?.loginStartedAt ? '实例保留 10 分钟供扫码，刷新不会延长占用' : '同一账户共用一个实例，分配后有 10 分钟扫码时间'}
@@ -449,7 +467,7 @@ export default function App() {
                 <CircleAlert aria-hidden="true" />
                 <AlertTitle className="text-sm font-medium text-foreground">确认登录后，日常会接着跑</AlertTitle>
                 <AlertDescription className="text-sm leading-6">
-                  在手机 QQ 上确认登录就好。进入游戏后会自动清日常，下方可以查看进度。
+                  在手机{scanApp}上确认登录就好。进入游戏后会自动清日常，下方可以查看进度。
                 </AlertDescription>
               </Alert>
               {session && (

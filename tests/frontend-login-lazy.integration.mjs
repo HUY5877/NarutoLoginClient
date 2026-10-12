@@ -44,7 +44,7 @@ function deferred() {
 }
 const callsToLogin = calls => calls.filter(call => call.path.startsWith('/api/login-sessions'));
 const generate = page => page.getByRole('button', { name: '启动模拟器获取二维码', exact: true });
-const equipmentStamina = page => page.getByRole('checkbox', { name: '装备栏体力刷取', exact: true });
+const equipmentStamina = page => page.locator('input[aria-labelledby="equipment-stamina-label"]');
 const expandRecords = page => page.getByRole('button', { name: '展开记录', exact: true });
 async function waitFor(predicate, message, timeout = 8_000) {
   const deadline = Date.now() + timeout;
@@ -66,7 +66,7 @@ async function expectStages(page, expected) {
   assert.equal(await progress.getByRole('listitem').count(), 3);
 }
 
-test('QR sessions load only after an explicit click', { skip: unavailable || false, timeout: 90_000 }, async t => {
+test('QR sessions load only after an explicit click', { skip: unavailable || false, timeout: 120_000 }, async t => {
   const { createServer } = await import(pathToFileURL(frontendRequire.resolve('vite')).href);
   const { default: react } = await import(pathToFileURL(frontendRequire.resolve('@vitejs/plugin-react')).href);
   const { default: tailwindcss } = await import(pathToFileURL(frontendRequire.resolve('@tailwindcss/vite')).href);
@@ -106,6 +106,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         if (url.pathname === '/api/auth/me') body = { user: state.user };
         else if (url.pathname === '/api/login-sessions/active') body = await state.active(request);
         else if (url.pathname === '/api/login-sessions' && request.method() === 'POST') body = await state.submit(request);
+        else if (url.pathname === `/api/login-sessions/${sessionId}/refresh`) body = await state.refresh(request);
         else if (url.pathname === `/api/login-sessions/${sessionId}`) body = await state.detail(request);
         else if (url.pathname === `/api/login-sessions/${sessionId}/qr`) {
           if (state.afterQr) await state.afterQr();
@@ -127,6 +128,40 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       page.setDefaultTimeout(8_000);
       return { context, page, state, async open() { await page.goto(origin, { waitUntil: 'networkidle' }); await generate(page).waitFor(); },
         async close() { await context.close(); assert.deepEqual(state.errors, []); } };
+    }
+
+    for (const [loginType, label, app] of [['android_qq', '安卓 QQ 区', 'QQ'], ['ios_qq', 'iOS QQ 区', 'QQ'],
+      ['android_wechat', '安卓微信区', '微信'], ['ios_wechat', 'iOS 微信区', '微信']]) {
+      await t.test(`${label} persists through submission, page recovery and refresh`, async () => {
+        const f = await fixture();
+        try {
+          const activeTask = { ...session(), loginType };
+          f.state.submit = () => ({ ...activeTask, status: 'queued' });
+          f.state.detail = () => activeTask;
+          f.state.refresh = () => ({ ...activeTask, qrRevision: pendingId });
+          await f.open();
+          const selector = f.page.getByRole('combobox', { name: '登录渠道', exact: true });
+          await selector.click();
+          await f.page.getByRole('option', { name: label, exact: true }).click();
+          await generate(f.page).click();
+          await f.page.locator('img[src^="blob:"]').waitFor();
+          assert.equal(callsToLogin(f.state.calls).find(call => call.method === 'POST').body.loginType, loginType);
+          assert.equal(await selector.isDisabled(), true);
+          assert.match(await f.page.locator('img[src^="blob:"]').getAttribute('alt'), new RegExp(`手机${app}扫码授权`));
+          f.state.active = () => ({ session: activeTask, showGetButton: false });
+          await f.page.reload({ waitUntil: 'networkidle' });
+          await generate(f.page).click();
+          await f.page.locator('img[src^="blob:"]').waitFor();
+          assert.equal(await selector.innerText(), label);
+          await f.page.getByRole('button', { name: '刷新二维码', exact: true }).click();
+          await f.page.locator('img[src^="blob:"]').waitFor();
+          const posts = callsToLogin(f.state.calls).filter(call => call.method === 'POST');
+          assert.equal(posts.length, 2, 'recovery reuses the original session');
+          assert.equal(posts[1].path, `/api/login-sessions/${sessionId}/refresh`);
+          assert.deepEqual(posts[1].body, {}, 'refresh uses the task channel saved on the server');
+          assert.equal(await selector.innerText(), label);
+        } finally { await f.close(); }
+      });
     }
 
     await t.test('initial visit, reload, new tab, focus and storage do not request QR sessions; logs keep polling', async () => {
@@ -191,7 +226,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           const posts = callsToLogin(f.state.calls).filter(call => call.method === 'POST');
           assert.equal(posts.length, 1);
           assert.deepEqual(posts[0].body.userOptions, { equipmentStamina: enabled });
-          assert.deepEqual(Object.keys(posts[0].body).sort(), ['requestId', 'userOptions']);
+          assert.deepEqual(Object.keys(posts[0].body).sort(), ['loginType', 'requestId', 'userOptions']);
           assert.equal(await equipmentStamina(f.page).isChecked(), enabled);
           assert.equal(await equipmentStamina(f.page).isDisabled(), true);
         } finally { await f.close(); }
@@ -239,8 +274,8 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         const posts = callsToLogin(f.state.calls).filter(call => call.method === 'POST');
         assert.equal(posts.length, 2);
         assert.deepEqual(posts.map(call => call.body), [
-          { requestId: intent.requestId, userOptions: { equipmentStamina: false } },
-          { requestId: intent.requestId, userOptions: { equipmentStamina: false } },
+          { requestId: intent.requestId, userOptions: { equipmentStamina: false }, loginType: 'android_qq' },
+          { requestId: intent.requestId, userOptions: { equipmentStamina: false }, loginType: 'android_qq' },
         ]);
       } finally { gate.resolve(); await f.close(); }
     });
@@ -266,7 +301,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         const posts = callsToLogin(f.state.calls).filter(call => call.method === 'POST');
         assert.equal(posts.length, 4);
         for (const post of posts) assert.deepEqual(post.body, {
-          requestId: firstPosts[0].body.requestId, userOptions: { equipmentStamina: false },
+          requestId: firstPosts[0].body.requestId, userOptions: { equipmentStamina: false }, loginType: 'android_qq',
         });
       } finally { await f.close(); }
     });
@@ -340,7 +375,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         await f.page.evaluate(() => window.dispatchEvent(new StorageEvent('storage', {
           key: 'naruto-login:auth-changed', newValue: `${Date.now()}:test-switch`,
         })));
-        await f.page.getByText(secondUser.username, { exact: true }).waitFor();
+        await f.page.getByTitle(secondUser.username, { exact: true }).waitFor();
         await generate(f.page).waitFor();
         gate.resolve();
         await new Promise(resolve => setTimeout(resolve, 200));

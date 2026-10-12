@@ -1,8 +1,9 @@
 import { parseUserOptions, type UserOptions } from '../../shared/user-options';
+import { parseLoginType, type LoginType } from '../../shared/login-types';
 
 export type RunStatus = 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'waiting_scan' | 'finishing_login'
   | 'running_daily' | 'completed' | 'failed' | 'interrupted' | 'expired';
-export interface RunTask { id: string; createdAt: string; expiresAt: string; status: string; userOptions?: UserOptions }
+export interface RunTask { id: string; createdAt: string; expiresAt: string; status: string; userOptions?: UserOptions; loginType?: LoginType }
 export interface TaskRun {
   taskId: string; status: RunStatus; updatedAt: string;
   startedAt: string | null; finishedAt: string | null;
@@ -35,7 +36,7 @@ const action = (value: unknown) => value === undefined || (Number.isSafeInteger(
 export function isRunTask(value: unknown): value is RunTask {
   return object(value) && typeof value.id === 'string' && value.id.length > 0 && value.id.length <= 128
     && date(value.createdAt) && date(value.expiresAt) && typeof value.status === 'string'
-    && parseUserOptions(value.userOptions) !== null;
+    && parseUserOptions(value.userOptions) !== null && parseLoginType(value.loginType) !== null;
 }
 function compareCursor(left: string, right: string): number {
   const [lm, ls] = left.split('-').map(BigInt);

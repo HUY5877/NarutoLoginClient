@@ -4,6 +4,7 @@ import { UserManagementError, UsernameTakenError, type AdminStore, type UserChan
 import { ApiError } from './errors.js';
 import type { TaskRunService } from './task-runs.js';
 import type { DailyTask, DailyTaskFailureDetails, DailyTaskPage, ManagedUser, PageResult, MonthlyStatsPage } from '../shared/admin.js';
+import { DEFAULT_LOGIN_TYPE } from '../shared/login-types.js';
 import { taskFailureMessage } from '../shared/task-errors.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -103,7 +104,7 @@ export class AdminService {
       const run = summaries[index];
       const status: DailyTask['status'] = run?.status ?? (event.status === 'failed' ? 'failed'
         : Date.parse(event.expiresAt) <= now ? 'unavailable' : event.status === 'qr_ready' ? 'waiting_scan' : event.status);
-      return { id: event.id, username: event.username, requestedAt: event.createdAt,
+      return { id: event.id, username: event.username, requestedAt: event.createdAt, loginType: event.loginType ?? DEFAULT_LOGIN_TYPE,
         scannedAt: run?.authorizedAt ?? null,
         // finishedAt on a failed/expired run does not mean the daily script completed.
         completedAt: run?.status === 'completed' && run.startedAt ? run.finishedAt : null,

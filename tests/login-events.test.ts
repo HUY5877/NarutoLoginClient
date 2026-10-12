@@ -61,6 +61,22 @@ function fixture() {
   return { records, queue, submissions, store, tasks, service, advance(ms: number) { time += ms; } };
 }
 
+test('恢复和复用始终沿用首次渠道，下一次新申请可选择另一渠道', async () => {
+  for (const loginType of ['android_qq', 'ios_qq', 'android_wechat', 'ios_wechat'] as const) {
+    const f = fixture(), userId = randomUUID(), requestId = randomUUID();
+    const original = await f.service().create(userId, requestId, { equipmentStamina: false }, loginType);
+    assert.equal(original.loginType, loginType);
+    assert.equal(f.records.get(original.id)?.loginType, loginType);
+    assert.equal(f.submissions[0].loginType, loginType);
+    assert.equal((await f.service().getForUser(original.id, userId)).loginType, loginType);
+    assert.equal((await f.service().create(userId, randomUUID(), undefined, 'android_qq')).loginType, loginType);
+    f.advance(120_001);
+    const next = await f.service().create(userId, randomUUID(), undefined, 'ios_wechat');
+    assert.notEqual(next.id, original.id);
+    assert.equal(next.loginType, 'ios_wechat');
+  }
+});
+
 test('事件先持久化再入队，刷新与新的服务实例恢复相同申请且不暴露内部凭据', async () => {
   const f = fixture(), userId = randomUUID(), requestId = randomUUID();
   const task = await f.service().create(userId, requestId);

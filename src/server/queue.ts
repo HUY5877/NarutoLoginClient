@@ -4,6 +4,7 @@ import type { Config } from './config.js';
 import { ApiError } from './errors.js';
 import { loginFailure, type TaskFailureCode } from '../shared/task-errors.js';
 import { parseUserOptions, type UserOptions } from '../shared/user-options.js';
+import { DEFAULT_LOGIN_TYPE, parseLoginType, type LoginType } from '../shared/login-types.js';
 
 export type Status = 'queued' | 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'qr_ready' | 'failed' | 'expired';
 export interface Task {
@@ -13,6 +14,7 @@ export interface Task {
   expiresAt: string;
   simulation: true;
   userOptions?: UserOptions;
+  loginType?: LoginType;
   error?: string;
   errorCode?: TaskFailureCode;
   loginStartedAt?: string;
@@ -24,6 +26,7 @@ export interface Task {
 export interface Submission {
   id: string; userId: string; accessToken: string; createdAt: string; expiresAt: string;
   userOptions: UserOptions;
+  loginType?: LoginType;
 }
 interface StoredTask extends Task { userId?: string; tokenHash: string; loginExpiresAt?: string }
 type QueueConfig = Pick<Config, 'redisUrl' | 'redisQueueKey' | 'timeoutMs' | 'ossPrefix'>;
@@ -46,7 +49,8 @@ if existing then
   local decoded, persisted = pcall(cjson.decode, existing)
   if decoded and type(persisted) == 'table' and persisted.id == submitted.id
       and persisted.userId == submitted.userId and persisted.tokenHash == submitted.tokenHash
-      and persisted.createdAt == submitted.createdAt and persisted.expiresAt == submitted.expiresAt then
+      and persisted.createdAt == submitted.createdAt and persisted.expiresAt == submitted.expiresAt
+      and (persisted.loginType or 'android_qq') == submitted.loginType then
     -- Outbox delivery may retry after a worker has already advanced this session.
     -- Acknowledge the same submission without renewing TTLs or touching its lock.
     return 0
@@ -130,7 +134,9 @@ if s.loginAuthorized == true then return cjson.encode(s) end
 if s.refreshSupported ~= true then return -3 end
 if s.status ~= 'qr_ready' and not s.refreshRequestId then return -4 end
 if not redis.call('GET', KEYS[2]) then
-  redis.call('SET', KEYS[2], ARGV[4], 'EX', 600)
+  local command = cjson.decode(ARGV[4])
+  command.loginType = s.loginType or 'android_qq'
+  redis.call('SET', KEYS[2], cjson.encode(command), 'EX', 600)
   s.refreshRequestId = ARGV[5]
 end
 s.status = 'preparing_qr'
@@ -153,6 +159,9 @@ function parseSession(raw: string, id: string, userId?: string): StoredTask {
     || Date.parse(record.expiresAt) <= Date.parse(record.createdAt)) {
     throw invalidSession();
   }
+  const loginType = parseLoginType(record.loginType);
+  if (!loginType) throw invalidSession();
+  record.loginType = loginType;
   if (record.userOptions !== undefined) {
     const userOptions = parseUserOptions(record.userOptions);
     if (!userOptions) throw invalidSession();
@@ -231,14 +240,16 @@ export class TaskService {
   }
 
   async enqueue(task: Submission): Promise<void> {
+    const loginType = parseLoginType(task.loginType);
+    if (!loginType) throw invalidSession();
     const now = this.now();
     const ttl = Date.parse(task.expiresAt) - now;
     if (!Number.isFinite(ttl) || ttl <= 0) throw new ApiError(410, '登录申请已过期，请重新生成二维码。');
     const record = JSON.stringify({ id: task.id, userId: task.userId, status: 'queued', createdAt: task.createdAt,
-      expiresAt: task.expiresAt, simulation: true, tokenHash: hash(task.accessToken), userOptions: task.userOptions });
+      expiresAt: task.expiresAt, simulation: true, tokenHash: hash(task.accessToken), userOptions: task.userOptions, loginType });
     const payload = JSON.stringify({ version: 1, id: task.id, createdAt: task.createdAt,
       expiresAt: task.expiresAt, objectKey: `${this.config.ossPrefix}/${task.id}/qr.png`, userOptions: task.userOptions,
-      loginTimeoutSeconds: 600 });
+      loginTimeoutSeconds: 600, loginType });
     const submittedLog = JSON.stringify({ time: task.createdAt, level: 'INFO',
       message: '登录申请已提交，等待执行服务器领取任务。' });
     const result = await this.request((driver, signal) => driver.eval(enqueueScript, {
@@ -300,7 +311,7 @@ export class TaskService {
   private publicTask(record: StoredTask): Task {
     const expiresAt = record.loginExpiresAt ?? record.expiresAt;
     return { id: record.id, status: record.status === 'failed' ? 'failed' : this.now() >= Date.parse(expiresAt) ? 'expired' : record.status,
-      createdAt: record.createdAt, expiresAt, simulation: true,
+      createdAt: record.createdAt, expiresAt, simulation: true, loginType: record.loginType ?? DEFAULT_LOGIN_TYPE,
       ...(record.loginStartedAt ? { loginStartedAt: record.loginStartedAt } : {}),
       ...(record.loginAuthorized === true ? { loginAuthorized: true } : {}),
       ...(record.refreshSupported === true ? { refreshSupported: true } : {}),

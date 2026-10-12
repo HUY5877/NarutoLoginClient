@@ -102,13 +102,22 @@ test('recent history includes today and six previous Beijing dates with an exclu
   } }, [run]);
   assert.deepEqual(await f.service.dailyTasks(admin, { page: '2' }), {
     items: [{ id, username: user.username, requestedAt: event.createdAt, scannedAt: run.authorizedAt,
-      completedAt: run.finishedAt, status: 'completed' }], total: 21, page: 2, pageSize: 20, date: '2026-10-09', startDate: '2026-10-03', timeZone: 'Asia/Shanghai',
+      completedAt: run.finishedAt, status: 'completed', loginType: 'android_qq' }], total: 21, page: 2, pageSize: 20, date: '2026-10-09', startDate: '2026-10-03', timeZone: 'Asia/Shanghai',
   });
   assert.deepEqual(f.calls, [[id]]);
   const beforeMidnight = fixture({ listDailyEvents: async (start, end) => {
     assert.equal(start.toISOString(), '2026-10-01T16:00:00.000Z'); assert.equal(end.toISOString(), '2026-10-08T16:00:00.000Z'); return { items: [], total: 0 };
   } }, [], now - 1);
   assert.equal((await beforeMidnight.service.dailyTasks(admin, {})).date, '2026-10-08');
+});
+
+test('日常列表显示申请保存的渠道，历史缺失值默认安卓 QQ', async () => {
+  const channels = ['android_qq', 'ios_qq', 'android_wechat', 'ios_wechat', undefined] as const;
+  const items: DailyEvent[] = channels.map((loginType, index) => ({ id: `${id}-${index}`, username: user.username,
+    createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 60_000).toISOString(), status: 'queued', loginType }));
+  const f = fixture({ listDailyEvents: async () => ({ items, total: items.length }) });
+  assert.deepEqual((await f.service.dailyTasks(admin, {})).items.map(task => task.loginType),
+    ['android_qq', 'ios_qq', 'android_wechat', 'ios_wechat', 'android_qq']);
 });
 
 test('daily date filters use one Beijing day and retain pagination across calendar boundaries', async () => {
