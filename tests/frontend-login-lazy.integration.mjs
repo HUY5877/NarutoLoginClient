@@ -83,8 +83,8 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
     browser = await chromium.launch({ headless: true,
       ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
 
-    async function fixture() {
-      const context = await browser.newContext();
+    async function fixture(options = {}) {
+      const context = await browser.newContext(options);
       const state = { user: firstUser, calls: [], errors: [], active: () => ({ session: null, showGetButton: true }),
         submit: () => session('queued'), submitStatus: 200, detail: () => session(), afterQr: null, qrResponse: null,
         latest: () => ({ task: { ...session('expired', Date.now() - 60_000), id: latestId } }),
@@ -130,6 +130,54 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         async close() { await context.close(); assert.deepEqual(state.errors, []); } };
     }
 
+    await t.test('channel menu keeps page scrolling, background and layout stable on desktop and touch screens', async () => {
+      for (const width of [1280, 390]) {
+        const touch = width === 390;
+        const f = await fixture({ viewport: { width, height: 844 }, hasTouch: touch });
+        try {
+          await f.open();
+          await f.page.evaluate(async () => {
+            await Promise.all(document.getAnimations().filter(animation => animation.effect?.getTiming().iterations !== Infinity)
+              .map(animation => animation.finished.catch(() => {})));
+            window.scrollTo(0, 160);
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          });
+          const readLayout = () => f.page.evaluate(() => {
+            const bodyStyle = getComputedStyle(document.body);
+            return { scrollLock: document.body.getAttribute('data-scroll-locked'), overflow: bodyStyle.overflow,
+              position: bodyStyle.position, marginRight: bodyStyle.marginRight, pointerEvents: bodyStyle.pointerEvents,
+              scrollY: window.scrollY, viewportWidth: document.documentElement.clientWidth,
+              backdrop: document.querySelector('.village-backdrop').getBoundingClientRect().toJSON(),
+              card: document.querySelector('.login-card').getBoundingClientRect().toJSON(),
+              sceneShift: document.querySelector('.mobile-village-hero').style.getPropertyValue('--scene-shift') };
+          });
+          const before = await readLayout();
+          assert.ok(before.scrollY > 0, 'exercise an already scrolled page');
+          const selector = f.page.getByRole('button', { name: '登录渠道', exact: true });
+          if (touch) await selector.tap(); else await selector.click();
+          await f.page.getByRole('menuitemradio', { name: '安卓 QQ 区', exact: true }).waitFor();
+          assert.equal(await f.page.getByRole('menuitemradio').count(), 4);
+          assert.equal(await f.page.getByRole('menuitemradio', { name: '安卓 QQ 区', exact: true }).getAttribute('aria-checked'), 'true');
+          for (let frame = 0; frame < 8; frame += 1) {
+            await f.page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+            assert.deepEqual(await readLayout(), before, 'opening the channel menu must not lock body or move the page');
+          }
+          await f.page.keyboard.press('Escape');
+          await f.page.getByRole('menu').waitFor({ state: 'hidden' });
+          assert.deepEqual(await readLayout(), before);
+          assert.equal(await selector.evaluate(element => document.activeElement === element), true);
+          await selector.press('ArrowDown');
+          await f.page.getByRole('menu').waitFor();
+          await f.page.keyboard.press('ArrowDown');
+          await f.page.keyboard.press('Enter');
+          await f.page.getByRole('menu').waitFor({ state: 'hidden' });
+          assert.equal(await selector.innerText(), 'iOS QQ 区');
+          assert.deepEqual(await readLayout(), before);
+          assert.deepEqual(callsToLogin(f.state.calls), [], 'choosing a channel does not start a login task');
+        } finally { await f.close(); }
+      }
+    });
+
     for (const [loginType, label, app] of [['android_qq', '安卓 QQ 区', 'QQ'], ['ios_qq', 'iOS QQ 区', 'QQ'],
       ['android_wechat', '安卓微信区', '微信'], ['ios_wechat', 'iOS 微信区', '微信']]) {
       await t.test(`${label} persists through submission, page recovery and refresh`, async () => {
@@ -140,9 +188,9 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           f.state.detail = () => activeTask;
           f.state.refresh = () => ({ ...activeTask, qrRevision: pendingId });
           await f.open();
-          const selector = f.page.getByRole('combobox', { name: '登录渠道', exact: true });
+          const selector = f.page.getByRole('button', { name: '登录渠道', exact: true });
           await selector.click();
-          await f.page.getByRole('option', { name: label, exact: true }).click();
+          await f.page.getByRole('menuitemradio', { name: label, exact: true }).click();
           await generate(f.page).click();
           await f.page.locator('img[src^="blob:"]').waitFor();
           assert.equal(callsToLogin(f.state.calls).find(call => call.method === 'POST').body.loginType, loginType);

@@ -134,6 +134,13 @@
   isolation: isolate;
 }
 
+.login-channel-menu {
+  --popover: #302b34;
+  --popover-foreground: #f6f1ed;
+  --accent: #49404e;
+  --accent-foreground: #f6f1ed;
+}
+
 @media (min-width: 640px) {
   .login-shell {
     --background: #242128;

@@ -73,6 +73,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Spinner } from '@/components/ui/spinner';
@@ -84,7 +86,6 @@ import { deriveTaskProgress, hasGameAuthorization, isUnclaimedQueueTimeout, sele
 import { isRunTerminal } from '@/lib/task-run';
 import { DEFAULT_USER_OPTIONS, parseUserOptions } from '../shared/user-options';
 import { DEFAULT_LOGIN_TYPE, loginTypes, loginTypeLabels, loginScanApp, parseLoginType } from '../shared/login-types';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 function LoginHelp() {
   return (
@@ -368,13 +369,28 @@ export default function App() {
 
               {auth.user && (
                 <div className="login-channel mt-6 w-full max-w-sm space-y-2">
-                  <label id="login-channel-label" className="text-sm font-medium">登录渠道</label>
-                  <Select value={displayedLoginType} disabled={auth.busy || !canEditShownOptions}
-                    onValueChange={value => { const type = parseLoginType(value); if (type) setLoginType(type); }}>
-                    <SelectTrigger aria-labelledby="login-channel-label" className="min-h-11 w-full bg-white/40"><SelectValue /></SelectTrigger>
-                    <SelectContent>{loginTypes.map(type => <SelectItem key={type} value={type} className="min-h-11">{loginTypeLabels[type]}</SelectItem>)}</SelectContent>
-                  </Select>
-                  <p className="text-xs leading-5 text-muted-foreground">{canEditShownOptions ? '请选择游戏账号所在的区服。' : '本次申请的渠道已保存，刷新二维码会沿用此渠道。'}</p>
+                  <label id="login-channel-label" htmlFor="login-channel-trigger" className="text-sm font-medium">登录渠道</label>
+                  {/* 非模态菜单保持页面滚动、固定背景和玻璃面板稳定。 */}
+                  <DropdownMenu modal={false}>
+                    <DropdownMenuTrigger asChild>
+                      <Button id="login-channel-trigger" type="button" variant="outline"
+                        aria-labelledby="login-channel-label" aria-describedby="login-channel-help"
+                        disabled={auth.busy || !canEditShownOptions}
+                        className="login-channel-trigger h-11 min-h-11 w-full justify-between bg-white/40 font-normal">
+                        <span>{loginTypeLabels[displayedLoginType]}</span>
+                        <ChevronDown aria-hidden="true" className="size-4 text-muted-foreground" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" collisionPadding={8} className="login-channel-menu">
+                      <DropdownMenuRadioGroup value={displayedLoginType} aria-labelledby="login-channel-label"
+                        onValueChange={value => { const type = parseLoginType(value); if (type) setLoginType(type); }}>
+                        {loginTypes.map(type => <DropdownMenuRadioItem key={type} value={type} className="min-h-11 px-3">
+                          {loginTypeLabels[type]}
+                        </DropdownMenuRadioItem>)}
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <p id="login-channel-help" className="text-xs leading-5 text-muted-foreground">{canEditShownOptions ? '请选择游戏账号所在的区服。' : '本次申请的渠道已保存，刷新二维码会沿用此渠道。'}</p>
                 </div>
               )}
 
