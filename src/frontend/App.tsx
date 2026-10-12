@@ -84,6 +84,7 @@ import { useTaskRun } from '@/hooks/use-task-run';
 import { TaskRunPanel } from '@/components/task-run-panel';
 import { deriveTaskProgress, hasGameAuthorization, isUnclaimedQueueTimeout, selectProgressRun } from '@/lib/task-progress';
 import { isRunTerminal } from '@/lib/task-run';
+import { deriveDailyCompletion } from '@/lib/daily-completion';
 import { DEFAULT_USER_OPTIONS, parseUserOptions } from '../shared/user-options';
 import { DEFAULT_LOGIN_TYPE, loginTypes, loginTypeLabels, loginScanApp, parseLoginType } from '../shared/login-types';
 
@@ -171,6 +172,7 @@ export default function App() {
   const progressInput = { phase, session, qrReady: phase === 'qr_ready' && Boolean(qrUrl), view: taskRun, awaitingSubmission };
   const visibleRun = selectProgressRun(progressInput);
   const currentRun = visibleRun.run;
+  const initialDailyCompletion = deriveDailyCompletion(currentRun);
   const authorizedRun = hasGameAuthorization(currentRun) && (session?.id === currentRun?.taskId
     || !session && phase === 'idle' && ['finishing_login', 'running_daily'].includes(currentRun?.status ?? ''));
   const authorizationComplete = phase === 'login_confirmed' || authorizedRun;
@@ -455,7 +457,8 @@ export default function App() {
                     const label = scanned ? '已扫码' : waitingForScan ? '待扫码'
                       : id === 'submission' ? state === 'completed' ? '已提交' : '提交申请'
                         : id === 'qr' ? '二维码'
-                          : currentRun?.status === 'finishing_login' ? '进入游戏' : state === 'completed' ? '已完成' : '清日常';
+                          : currentRun?.status === 'finishing_login' ? '进入游戏'
+                            : initialDailyCompletion?.tone === 'success' ? '初步完成' : state === 'completed' ? '已完成' : '清日常';
                     const stateLabel = waitingForScan ? 'active' : state;
                     const StepIcon = stepIcons[id];
                     return <span key={id} data-stage={id} data-state={stateLabel} aria-label={`${title}：${description}`}>

@@ -366,3 +366,26 @@ test('授权完成与登录收尾状态可独立于二维码到期读取，授�
   f.setSnapshot([JSON.stringify({ ...run, authorizedAt: 'private-invalid-value' }), [], '', 0, 0]);
   await assert.rejects(f.service.getEvents(id, owner), { code: 'TASK_RUN_DATA_INVALID' });
 });
+
+test('首次秘境完成时间随运行快照和终态透传，缺字段兼容而无效时间拒绝', async () => {
+  const f = fixture();
+  assert.equal((await f.service.getEvents(id, owner)).run?.secretRealmCompletedAt, undefined);
+  for (const status of ['running_daily', 'completed', 'failed', 'interrupted']) {
+    f.setSnapshot([JSON.stringify({ ...run, status, secretRealmCompletedAt: at,
+      ...(status === 'failed' ? { errorCode: 'daily_timeout', finishedAt: at } : {}) }), [], '', 0, 0]);
+    const restored = await f.service.getEvents(id, owner);
+    assert.equal(restored.task.status, 'expired');
+    assert.equal(restored.run?.status, status);
+    assert.equal(restored.run?.secretRealmCompletedAt, at);
+    assert.doesNotMatch(JSON.stringify(restored.run), /private-worker|private-token|workerId|sequence|accessToken/);
+  }
+  f.driver.eval = async () => [JSON.stringify({ ...run, secretRealmCompletedAt: at })];
+  assert.equal((await f.service.getSummaries([id]))[0]?.secretRealmCompletedAt, at);
+  f.service.close();
+  const invalidFixture = fixture();
+  for (const invalid of ['invalid', '2026-99-99T00:00:00.000Z', null, true, 123, {}]) {
+    invalidFixture.setSnapshot([JSON.stringify({ ...run, secretRealmCompletedAt: invalid }), [], '', 0, 0]);
+    await assert.rejects(invalidFixture.service.getEvents(id, owner), { code: 'TASK_RUN_DATA_INVALID' });
+  }
+  invalidFixture.service.close();
+});

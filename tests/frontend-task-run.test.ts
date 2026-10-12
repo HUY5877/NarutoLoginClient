@@ -192,3 +192,60 @@ test('run parser preserves authorization through finishing and terminal failure 
   assert.equal(parseRunEvents(failed, task.id, '0-0').run?.authorizedAt, authorizedAt);
   assert.throws(() => parseRunEvents(events({ run: { ...finishing.run!, authorizedAt: 'invalid' } }), task.id, '0-0'));
 });
+
+test('执行快照兼容旧任务，并验证首次秘境完成时间在运行和终态均可读取', () => {
+  const secretRealmCompletedAt = new Date(now).toISOString();
+  assert.equal(parseRunEvents(events(), task.id, '0-0').run?.secretRealmCompletedAt, undefined);
+  for (const status of ['running_daily', 'completed', 'failed', 'interrupted'] as const) {
+    const snapshot = events({ run: { ...events().run!, status, secretRealmCompletedAt,
+      ...(status === 'failed' ? { errorCode: 'daily_timeout' } : {}) } });
+    assert.equal(parseRunEvents(snapshot, task.id, '0-0').run?.secretRealmCompletedAt, secretRealmCompletedAt);
+  }
+  for (const invalid of ['invalid', '2026-99-99T00:00:00.000Z', null, true, 123, {}]) {
+    const snapshot = { ...events(), run: { ...events().run!, secretRealmCompletedAt: invalid } };
+    assert.throws(() => parseRunEvents(snapshot, task.id, '0-0'));
+  }
+});
+
+test('刷新恢复和日志分页裁剪保留首次秘境完成，新任务清除旧标记', async () => {
+  let view = emptyTaskRun();
+  let page = 0;
+  const secretRealmCompletedAt = new Date(now).toISOString();
+  const newTask = { ...task, id: 'new-daily-task' };
+  const newResponse = deferred<unknown>();
+  const paths: string[] = [];
+  const tracker = new TaskRunTracker(next => { view = next; }, () => assert.fail('unexpected unauthorized'), async path => {
+    paths.push(path);
+    if (path.endsWith('/latest')) return { task: expiredTask };
+    if (path.includes(newTask.id)) return newResponse.promise;
+    page++;
+    const first = (page - 1) * 100 + 1;
+    const last = Math.min(page * 100, 2001);
+    const terminal = last === 2001;
+    return events({ task: expiredTask,
+      run: { ...events().run!, secretRealmCompletedAt, status: terminal ? 'failed' : 'running_daily',
+        ...(terminal ? { errorCode: 'daily_timeout', finishedAt: new Date(now).toISOString() } : {}) },
+      logs: Array.from({ length: last - first + 1 }, (_, i) => log(`${first + i}-0`)),
+      nextCursor: `${last}-0`, hasMore: !terminal });
+  }, async () => {});
+  await tracker.restore();
+  await settle();
+  assert.equal(view.run?.secretRealmCompletedAt, secretRealmCompletedAt);
+  assert.equal(view.run?.status, 'failed');
+  assert.equal(view.polling, false);
+  assert.equal(view.truncated, true);
+  assert.equal(view.logs.length, 2000);
+  assert.equal(view.logs[0].id, '2-0');
+  assert.equal(view.logs.at(-1)?.id, '2001-0');
+  assert.equal(paths[2], '/api/task-runs/task-one/events?after=100-0');
+  tracker.follow(newTask);
+  assert.equal(view.task?.id, newTask.id);
+  assert.equal(view.run, null);
+  assert.equal(view.logs.length, 0);
+  newResponse.resolve(events({ task: newTask, run: { ...events().run!, taskId: newTask.id, status: 'completed' } }));
+  await settle();
+  // The tracker callback replaces the view after the earlier null assertion.
+  assert.equal((view as TaskRunView).run?.secretRealmCompletedAt, undefined);
+  assert.equal(paths.at(-1), '/api/task-runs/new-daily-task/events?after=0-0');
+  tracker.dispose();
+});

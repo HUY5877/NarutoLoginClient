@@ -41,14 +41,15 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
     browser = await chromium.launch({ headless: true,
       ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
-    async function fixture({ old = false, sessionStatus = 'qr_ready', runStatus = 'waiting_scan' } = {}) {
-      const context = await browser.newContext();
+    async function fixture({ old = false, sessionStatus = 'qr_ready', runStatus = 'waiting_scan', dailyStarted = false, secretRealmCompleted = false, mobile = false } = {}) {
+      const context = await browser.newContext(mobile ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true } : {});
       const page = await context.newPage();
       page.setDefaultTimeout(6_000);
       const time = new Date().toISOString();
       const session = { id: taskId, status: sessionStatus, createdAt: time, expiresAt: new Date(Date.now() + 60_000).toISOString(),
         simulation: true, showGetButton: false };
       const state = { status: runStatus, detailStatus: sessionStatus, detailHttpStatus: 200,
+        startedAt: dailyStarted ? time : null, secretRealmCompletedAt: secretRealmCompleted ? time : undefined, errorCode: undefined,
         calls: [], errors: [], oldRequested: false, oldGate: deferred() };
       page.on('pageerror', error => state.errors.push(error.message));
       await context.route('**/*', async route => {
@@ -64,12 +65,14 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
             json: { ...session, status: state.detailStatus, showGetButton: state.detailStatus === 'expired' } });
         }
         else if (url.pathname === `/api/login-sessions/${taskId}/qr`) return route.fulfill({ status: 200, contentType: 'image/png', body: png });
-        else if (url.pathname === '/api/task-runs/latest') body = { task: old ? { ...session, id: oldId } : null };
+        else if (url.pathname === '/api/task-runs/latest') body = { task: old ? { ...session, id: oldId } : dailyStarted ? session : null };
         else if (url.pathname.endsWith('/events')) {
           const id = url.pathname.split('/')[3];
           if (id === oldId) { state.oldRequested = true; await state.oldGate.promise; }
           const status = id === oldId ? 'finishing_login' : state.status;
-          body = { task: { ...session, id }, run: status ? { taskId: id, status, updatedAt: time, startedAt: null, finishedAt: null,
+          body = { task: { ...session, id }, run: status ? { taskId: id, status, updatedAt: time, startedAt: state.startedAt, finishedAt: null,
+            ...(state.secretRealmCompletedAt ? { secretRealmCompletedAt: state.secretRealmCompletedAt } : {}),
+            ...(state.errorCode ? { errorCode: state.errorCode } : {}),
             ...(status === 'finishing_login' ? { authorizedAt: time } : {}) } : null,
           logs: [], nextCursor: '0-0', hasMore: false, truncated: false };
         } else { state.errors.push(`Unexpected API ${url.pathname}`); return route.fulfill({ status: 404, json: {} }); }
@@ -134,6 +137,58 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         assert.equal(await f.page.getByText('二维码已过期', { exact: true }).count(), 0);
         assert.equal(await countdown.count(), 0);
         assert.equal(f.state.calls.filter(value => value.startsWith('/api/login-sessions')).length, before);
+      } finally { await f.close(); }
+    });
+
+    await t.test('first secret realm completion survives the daily time limit and page reload, then full completion wins', async () => {
+      const f = await fixture({ runStatus: 'running_daily', dailyStarted: true, secretRealmCompleted: true });
+      try {
+        await f.page.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^日常任务已初步完成$/ }).waitFor();
+        await f.page.locator('#task-run-details').getByText('日常任务已初步完成，还在扫荡未用完的秘境扫荡券。', { exact: true }).waitFor();
+        assert.equal(await f.page.getByLabel('任务执行进度', { exact: true }).locator('[data-stage="script"]').getAttribute('data-state'), 'active');
+        f.state.status = 'failed'; f.state.errorCode = 'daily_timeout';
+        const stopped = '日常任务已初步完成；已达到执行时限，剩余秘境扫荡已停止。';
+        await f.page.locator('#task-run-details').getByText(stopped, { exact: true }).waitFor();
+        assert.equal(await f.page.getByLabel('任务整体状态', { exact: true }).innerText(), '日常任务已初步完成');
+        assert.equal(await f.page.getByLabel('任务执行进度', { exact: true }).locator('[data-stage="script"]').getAttribute('data-state'), 'completed');
+        assert.equal(await f.page.getByLabel('任务失败原因', { exact: true }).count(), 0);
+        await f.page.reload({ waitUntil: 'domcontentloaded' });
+        await f.page.locator('#task-run-details').getByText(stopped, { exact: true }).waitFor();
+        assert.equal(await f.page.getByLabel('任务整体状态', { exact: true }).innerText(), '日常任务已初步完成');
+        // 完整完成使用新快照恢复，不能被已保留的初步完成标记降级。
+        f.state.status = 'completed'; f.state.errorCode = undefined;
+        await f.page.reload({ waitUntil: 'domcontentloaded' });
+        await f.page.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^任务已完成$/ }).waitFor();
+        assert.equal(await f.page.locator('#task-run-details').getByText('日常任务已初步完成', { exact: true }).count(), 0);
+      } finally { await f.close(); }
+    });
+
+    await t.test('daily time limit without any secret realm completion keeps its failure', async () => {
+      const f = await fixture({ runStatus: 'running_daily', dailyStarted: true });
+      try {
+        await f.page.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^脚本执行中$/ }).waitFor();
+        f.state.status = 'failed'; f.state.errorCode = 'daily_timeout';
+        await f.page.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^脚本执行失败$/ }).waitFor();
+        await f.page.getByLabel('任务失败原因', { exact: true }).waitFor();
+        assert.equal(await f.page.getByText('日常任务已初步完成', { exact: true }).count(), 0);
+      } finally { await f.close(); }
+    });
+
+    await t.test('mobile overview and task sheet distinguish initial completion from all tickets used', async () => {
+      const f = await fixture({ runStatus: 'running_daily', dailyStarted: true, secretRealmCompleted: true, mobile: true });
+      try {
+        const overview = f.page.getByLabel('任务进度概览', { exact: true }).locator('[data-stage="script"]');
+        await overview.getByText('初步完成', { exact: true }).waitFor();
+        assert.equal(await overview.getAttribute('data-state'), 'active');
+        await f.page.getByRole('button', { name: '任务进度与记录', exact: true }).click();
+        const sheet = f.page.getByRole('dialog', { name: '本次任务', exact: true });
+        await sheet.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^日常任务已初步完成$/ }).waitFor();
+        await sheet.getByText('日常任务已初步完成，还在扫荡未用完的秘境扫荡券。', { exact: true }).last().waitFor();
+        f.state.status = 'failed'; f.state.errorCode = 'daily_timeout';
+        await sheet.getByText('日常任务已初步完成；已达到执行时限，剩余秘境扫荡已停止。', { exact: true }).last().waitFor();
+        assert.equal(await overview.getAttribute('data-state'), 'completed');
+        assert.match(await overview.innerText(), /初步完成/);
+        assert.equal(await sheet.getByLabel('任务失败原因', { exact: true }).count(), 0);
       } finally { await f.close(); }
     });
 

@@ -1,6 +1,7 @@
 import type { Phase, Session } from '../hooks/use-login-session';
 import { emptyTaskRun, type TaskRun, type TaskRunView } from './task-run';
 import { loginFailure, taskFailureMessage } from '../../shared/task-errors';
+import { deriveDailyCompletion } from './daily-completion';
 
 export type StepState = 'pending' | 'active' | 'completed' | 'failed';
 export interface ProgressStep {
@@ -59,6 +60,7 @@ export function deriveTaskProgress(input: ProgressInput) {
   const [submission, qr, script] = steps;
   submission.state = 'completed';
   const scriptStarted = Boolean(run?.startedAt) || run?.status === 'running_daily';
+  const initialCompletion = deriveDailyCompletion(run);
   if (hasGameAuthorization(run) && run) {
     qr.state = 'completed';
     qr.description = '二维码已获取，扫码登录已确认';
@@ -66,6 +68,10 @@ export function deriveTaskProgress(input: ProgressInput) {
       script.state = 'completed';
       script.description = '日常脚本执行完成';
       summary = '任务已完成'; tone = 'success'; hint = '本次任务已完成，关键执行记录保留在下方。';
+    } else if (initialCompletion) {
+      script.state = initialCompletion.state;
+      script.description = initialCompletion.description;
+      summary = initialCompletion.summary; tone = initialCompletion.tone; hint = initialCompletion.description;
     } else if (['failed', 'interrupted', 'expired'].includes(run.status)) {
       script.state = 'failed';
       script.description = taskFailureMessage(run.errorCode,

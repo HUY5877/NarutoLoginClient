@@ -16,6 +16,7 @@ export interface TaskRun {
   updatedAt: string;
   startedAt: string | null;
   authorizedAt?: string;
+  secretRealmCompletedAt?: string;
   finishedAt: string | null;
   actionIndex?: number;
   actionTotal?: number;
@@ -90,6 +91,7 @@ function parseRun(raw: unknown, taskId: string): TaskRun | null {
   if (!value || value.taskId !== taskId || !runStatuses.has(value.status as RunStatus) || !timestamp(value.updatedAt)
     || value.startedAt !== null && !timestamp(value.startedAt) || value.finishedAt !== null && !timestamp(value.finishedAt)
     || value.authorizedAt !== undefined && !timestamp(value.authorizedAt)
+    || value.secretRealmCompletedAt !== undefined && !timestamp(value.secretRealmCompletedAt)
     || !validProgress(value)
     || value.errorCode !== undefined && (typeof value.errorCode !== 'string' || !/^[a-z0-9_]{1,64}$/.test(value.errorCode))) {
     throw invalidData();
@@ -97,6 +99,7 @@ function parseRun(raw: unknown, taskId: string): TaskRun | null {
   return { taskId, status: value.status as RunStatus, updatedAt: value.updatedAt, startedAt: value.startedAt as string | null,
     finishedAt: value.finishedAt as string | null,
     ...(value.authorizedAt !== undefined ? { authorizedAt: value.authorizedAt as string } : {}),
+    ...(value.secretRealmCompletedAt !== undefined ? { secretRealmCompletedAt: value.secretRealmCompletedAt as string } : {}),
     ...(value.actionIndex !== undefined ? { actionIndex: value.actionIndex as number } : {}),
     ...(value.actionTotal !== undefined ? { actionTotal: value.actionTotal as number } : {}),
     ...(value.errorCode !== undefined ? { errorCode: value.errorCode as string } : {}) };

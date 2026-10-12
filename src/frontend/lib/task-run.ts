@@ -8,6 +8,7 @@ export interface TaskRun {
   taskId: string; status: RunStatus; updatedAt: string;
   startedAt: string | null; finishedAt: string | null;
   authorizedAt?: string;
+  secretRealmCompletedAt?: string;
   actionIndex?: number; actionTotal?: number; errorCode?: string;
 }
 export interface RunLog {
@@ -52,6 +53,7 @@ export function parseRunEvents(value: unknown, taskId: string, after: string): R
     || (value.run.startedAt !== null && !date(value.run.startedAt))
     || (value.run.finishedAt !== null && !date(value.run.finishedAt))
     || (value.run.authorizedAt !== undefined && !date(value.run.authorizedAt))
+    || (value.run.secretRealmCompletedAt !== undefined && !date(value.run.secretRealmCompletedAt))
     || !action(value.run.actionIndex) || !action(value.run.actionTotal)
     || (value.run.errorCode !== undefined && typeof value.run.errorCode !== 'string'))) throw new Error('invalid task run');
   let previous = after;

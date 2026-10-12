@@ -172,3 +172,62 @@ test('confirmed authorization ends QR waiting before daily execution and survive
   assert.equal(hasGameAuthorization(mock.view.run), false);
   assert.equal(hasGameAuthorization(input('running_daily').view.run), true);
 });
+
+test('首次秘境完成后继续扫荡显示初步完成，二维码过期或刷新恢复不覆盖进度', () => {
+  for (const phase of ['queued', 'expired', 'query_failed', 'idle'] as const) {
+    const current = input('running_daily', { phase, session: phase === 'idle' ? null : { ...session, status: 'expired' } });
+    current.view.run!.secretRealmCompletedAt = at;
+    const progress = deriveTaskProgress(current);
+    assert.equal(progress.summary, '日常任务已初步完成');
+    assert.equal(progress.tone, 'success');
+    assert.deepEqual(progress.steps.map(step => step.state), ['completed', 'completed', 'active']);
+    assert.match(`${progress.steps[2].description} ${progress.hint}`, /扫荡.*秘境扫荡券/);
+  }
+});
+
+test('完成过秘境后达到执行时限保留初步完成，但说明扫荡已经停止', () => {
+  const current = input('failed');
+  Object.assign(current.view.run!, { startedAt: at, secretRealmCompletedAt: at, errorCode: 'daily_timeout' });
+  const progress = deriveTaskProgress(current);
+  assert.equal(progress.summary, '日常任务已初步完成');
+  assert.equal(progress.tone, 'success');
+  assert.deepEqual(progress.steps.map(step => step.state), ['completed', 'completed', 'completed']);
+  const explanation = `${progress.steps[2].description} ${progress.hint}`;
+  assert.match(explanation, /执行时限|时间上限|执行时间/);
+  assert.match(explanation, /扫荡.*停止|停止.*扫荡/);
+  assert.doesNotMatch(explanation, /还在扫荡|仍在扫荡/);
+});
+
+test('完整完成优先于初步完成，后续真实异常仍保留错误与已完成事实', () => {
+  const completed = input('completed');
+  completed.view.run!.secretRealmCompletedAt = at;
+  assert.equal(deriveTaskProgress(completed).summary, '任务已完成');
+  assert.deepEqual(states(completed), ['completed', 'completed', 'completed']);
+  for (const status of ['failed', 'interrupted'] as const) {
+    const current = input(status);
+    Object.assign(current.view.run!, { startedAt: at, secretRealmCompletedAt: at, errorCode: 'daily_failed' });
+    const progress = deriveTaskProgress(current);
+    assert.equal(progress.steps[2].state, 'failed');
+    assert.equal(progress.tone, 'danger');
+    const explanation = `${progress.steps[2].description} ${progress.hint}`;
+    assert.match(explanation, /初步完成/);
+    assert.match(explanation, /日常任务执行失败/);
+  }
+});
+
+test('缺首次完成标记、未开始日常及新申请均不能继承其他任务的初步完成', () => {
+  const oldVersion = input('failed');
+  Object.assign(oldVersion.view.run!, { startedAt: at, errorCode: 'daily_timeout' });
+  assert.equal(deriveTaskProgress(oldVersion).summary, '脚本执行失败');
+  const beforeStart = input('running_daily');
+  Object.assign(beforeStart.view.run!, { startedAt: null, secretRealmCompletedAt: at });
+  assert.notEqual(deriveTaskProgress(beforeStart).summary, '日常任务已初步完成');
+  const previous = input('running_daily');
+  previous.view.task = { ...session, id: 'old-task' };
+  Object.assign(previous.view.run!, { taskId: 'old-task', secretRealmCompletedAt: at });
+  assert.deepEqual(selectProgressRun(previous), emptyTaskRun());
+  assert.notEqual(deriveTaskProgress(previous).summary, '日常任务已初步完成');
+  const submitting = { ...previous, session: previous.view.task as Session, phase: 'submitting' as const, awaitingSubmission: true };
+  assert.deepEqual(selectProgressRun(submitting), emptyTaskRun());
+  assert.equal(deriveTaskProgress(submitting).taskId, null);
+});

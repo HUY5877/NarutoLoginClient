@@ -7,6 +7,7 @@ import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle }
 import { Spinner } from '@/components/ui/spinner';
 import type { RunStatus, TaskRunView } from '@/lib/task-run';
 import { taskFailureMessage } from '../../shared/task-errors';
+import { deriveDailyCompletion } from '@/lib/daily-completion';
 
 const labels: Record<RunStatus, string> = {
   starting_emulator: '准备游戏环境', opening_game: '打开游戏', preparing_qr: '获取二维码',
@@ -28,10 +29,11 @@ export function TaskRunPanel({ view, retry }: { view: TaskRunView; retry: () => 
   useEffect(() => {
     if (expanded && following.current && scrollArea.current) scrollArea.current.scrollTop = scrollArea.current.scrollHeight;
   }, [expanded, lastLog, view.task?.id]);
-  const bad = view.run && ['failed', 'interrupted', 'expired'].includes(view.run.status);
-  const label = view.run ? labels[view.run.status] : view.unavailable ? '无执行记录'
-    : view.loading ? '正在读取' : view.task ? '等待任务开始' : '待开始';
-  const hasSummary = Boolean(view.error || bad && view.run?.errorCode || view.run?.actionIndex !== undefined);
+  const initialCompletion = deriveDailyCompletion(view.run);
+  const bad = view.run && ['failed', 'interrupted', 'expired'].includes(view.run.status) && !initialCompletion?.timedOut;
+  const label = initialCompletion?.summary ?? (view.run ? labels[view.run.status] : view.unavailable ? '无执行记录'
+    : view.loading ? '正在读取' : view.task ? '等待任务开始' : '待开始');
+  const hasSummary = Boolean(initialCompletion || view.error || bad && view.run?.errorCode || view.run?.actionIndex !== undefined);
   return (
     <Card className="village-glass mt-5 gap-4 sm:mt-6">
       <CardHeader className="gap-2">
@@ -54,6 +56,7 @@ export function TaskRunPanel({ view, retry }: { view: TaskRunView; retry: () => 
         </CardAction>
       </CardHeader>
       <CardContent className="space-y-4" hidden={!expanded && !hasSummary}>
+        {initialCompletion && <p className="text-sm leading-6" role="status">{initialCompletion.description}</p>}
         {view.error && <Alert variant="destructive"><CircleAlert aria-hidden="true" />
           <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
             <span>{view.error}</span><Button variant="outline" size="sm" onClick={retry} className="gap-1.5"><RefreshCw aria-hidden="true" />重试更新</Button>
