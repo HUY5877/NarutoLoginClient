@@ -19,20 +19,27 @@ import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, Tabl
 function statusVariant(status: DailyStatus) {
   return status === 'completed' ? 'default' : ['failed', 'interrupted'].includes(status) ? 'destructive' : 'secondary';
 }
+const beijingToday = () => new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus }: {
   open: boolean; onOpenChange: (open: boolean) => void; onAccessLost: () => void; returnFocus: () => void;
 }) {
   const [page, setPage] = useState(1);
-  const [selectedDate, setSelectedDate] = useState('all');
-  const [today, setToday] = useState(() => new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10));
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [today, setToday] = useState(beijingToday);
   const [dialogContent, setDialogContent] = useState<HTMLDivElement | null>(null);
   const showTable = useMediaQuery('(min-width: 768px)');
-  const { data: response, loading, error, reload } = useAdminData(open
+  useEffect(() => {
+    if (open) {
+      const date = beijingToday();
+      setToday(date); setSelectedDate(date); setPage(1);
+    } else setSelectedDate(null);
+  }, [open]);
+  const { data: response, loading, error, reload } = useAdminData(open && selectedDate
     ? `/api/admin/daily-tasks?page=${page}${selectedDate === 'all' ? '' : `&date=${selectedDate}`}` : null, isDailyPage, onAccessLost);
   const data = response?.page === page && (response.selectedDate ?? 'all') === selectedDate ? response : null;
   useEffect(() => { if (response?.date) setToday(response.date); }, [response?.date]);
   const dates = Array.from({ length: 7 }, (_, index) => new Date(Date.parse(today) - index * 24 * 60 * 60 * 1000).toISOString().slice(0, 10));
-  const dateLabel = selectedDate === 'all' ? `${dates[6]} — ${today}` : selectedDate;
+  const dateLabel = selectedDate === 'all' ? `${dates[6]} — ${today}` : selectedDate ?? today;
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent ref={setDialogContent} className="auth-dialog daily-tasks-dialog flex max-h-[88dvh] flex-col gap-5 p-5 sm:max-w-5xl sm:p-6"
       onCloseAutoFocus={event => { event.preventDefault(); returnFocus(); }}>
@@ -41,7 +48,7 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
         <DialogDescription className="leading-6">可选择近七天中的某一天，或查看全部申请。每次申请单独展示，时间均为北京时间。</DialogDescription>
       </DialogHeader>
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
-        <Select value={selectedDate} onValueChange={value => { setSelectedDate(value); setPage(1); }}>
+        <Select value={selectedDate ?? today} onValueChange={value => { setSelectedDate(value); setPage(1); }}>
           <SelectTrigger aria-label="查看日期" className="min-h-11 w-46 bg-white/35 md:min-h-0"><SelectValue /></SelectTrigger>
           <SelectContent position="popper" align="start">
             <SelectItem value="all" className="min-h-11 md:min-h-0">全部七天</SelectItem>

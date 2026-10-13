@@ -39,8 +39,10 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
     browser = await chromium.launch({ headless: true,
       ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
     async function fixture(isAdmin = true, viewport = { width: 1280, height: 900 }, touch = false) {
-      const context = await browser.newContext({ viewport, hasTouch: touch, isMobile: touch });
+      const context = await browser.newContext({ viewport, hasTouch: touch, isMobile: touch, timezoneId: 'UTC' });
       const page = await context.newPage(); page.setDefaultTimeout(8_000);
+      // Only this isolated page's clock changes: Beijing is already October 8 while UTC is October 7.
+      await page.clock.setFixedTime(new Date('2026-10-07T16:30:00.000Z'));
       const state = { users: [structuredClone(admin), structuredClone(user)], mutations: [], adminReads: [], errors: [], access: isAdmin, failDaily: false, extraDaily: [],
         failureDetails: { errorCode: 'daily_failed', errorMessage: '日常任务执行失败，请查看执行日志。' }, detailStatus: 200,
         detailResponse: { taskId: 'failed', errorCode: 'daily_failed', errorMessage: '具体错误：VisualError: 未能识别装备材料页面；执行阶段 daily 失败',
@@ -136,7 +138,7 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
       }
     });
 
-    await t.test('daily date selection filters server requests, resets pagination and works on desktop and mobile', async () => {
+    await t.test('daily tasks default to Beijing today on every open, while date selection resets pagination on desktop and mobile', async () => {
       for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
         const f = await fixture(true, viewport, viewport.width < 768);
         try {
@@ -144,10 +146,15 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
             { ...task, id: 'yesterday', username: 'Yesterday_User', requestedAt: '2026-10-07T00:00:00Z', scannedAt: null, completedAt: null, status: 'waiting_scan' });
           await f.open('近七天刷日常情况');
           const dialog = f.page.getByRole('dialog', { name: '近七天刷日常情况' });
-          await dialog.getByText('共 25 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
-          await dialog.getByRole('button', { name: '下一页', exact: true }).click();
-          await dialog.getByText('共 25 条 · 第 2 页 / 2 页', { exact: true }).waitFor();
+          await dialog.getByText('共 24 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
+          assert.deepEqual(f.state.adminReads, ['/api/admin/daily-tasks?page=1&date=2026-10-08'], 'Opening must request today directly without an all-seven-days request');
           const picker = dialog.getByRole('combobox', { name: '查看日期' });
+          assert.equal(await picker.innerText(), '2026-10-08（今天）');
+          assert.match(await dialog.innerText(), /2026-10-08 · 24 次申请/);
+          assert.doesNotMatch(await dialog.innerText(), /Yesterday_User/);
+          await dialog.getByRole('button', { name: '下一页', exact: true }).click();
+          await dialog.getByText('共 24 条 · 第 2 页 / 2 页', { exact: true }).waitFor();
+          assert.equal(f.state.adminReads.at(-1), '/api/admin/daily-tasks?page=2&date=2026-10-08');
           await picker.click();
           assert.deepEqual(await f.page.getByRole('option').allTextContents(), ['全部七天', '2026-10-08（今天）', '2026-10-07（昨天）',
             '2026-10-06', '2026-10-05', '2026-10-04', '2026-10-03', '2026-10-02']);
@@ -168,6 +175,17 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
           await picker.click(); await f.page.getByRole('option', { name: '全部七天', exact: true }).click();
           await dialog.getByText('共 25 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
           assert.equal(f.state.adminReads.at(-1), '/api/admin/daily-tasks?page=1');
+          await dialog.getByRole('button', { name: '下一页', exact: true }).click();
+          await dialog.getByText('共 25 条 · 第 2 页 / 2 页', { exact: true }).waitFor();
+          assert.match(await dialog.innerText(), /Yesterday_User/);
+          assert.equal(f.state.adminReads.at(-1), '/api/admin/daily-tasks?page=2');
+          await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+          await dialog.waitFor({ state: 'hidden' });
+          const readsBeforeReopen = f.state.adminReads.length;
+          await f.open('近七天刷日常情况');
+          await dialog.getByText('共 24 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
+          assert.equal(await picker.innerText(), '2026-10-08（今天）');
+          assert.deepEqual(f.state.adminReads.slice(readsBeforeReopen), ['/api/admin/daily-tasks?page=1&date=2026-10-08'], 'Reopening resets both date and page before requesting data');
           assert.deepEqual(f.state.mutations, []);
         } finally { await f.close(); }
       }
