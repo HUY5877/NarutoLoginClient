@@ -21,7 +21,7 @@ function candidate(sequence = 1, userId = owner, offset = 0): LoginEvent {
     userId, requestId: `request-${sequence}`, status: 'queued', accessToken: 'ab'.repeat(32),
     createdAt: date(offset).toISOString(), expiresAt: date(offset + 120000).toISOString(),
     dispatchedAt: null, finishedAt: null,
-    userOptions: { equipmentStamina: true }, loginType: 'android_qq',
+    userOptions: { equipmentStamina: true, secretRealmOnce: false }, loginType: 'android_qq',
   };
 }
 
@@ -152,13 +152,13 @@ test('事件表保留请求幂等约束和每账号唯一有效事件约束，�
 
 test('附加参数以 JSONB 参数化保存，新建服务实例仍能恢复原选择', async t => {
   const { store, rows, operations } = fixture(t);
-  const submission = { ...candidate(), userOptions: { equipmentStamina: false } };
+  const submission = { ...candidate(), userOptions: { equipmentStamina: false, secretRealmOnce: true } };
   const saved = await store.reserve(submission, date());
-  assert.deepEqual(saved.userOptions, { equipmentStamina: false });
-  assert.deepEqual(rows.get(saved.id)?.userOptions, { equipmentStamina: false });
+  assert.deepEqual(saved.userOptions, { equipmentStamina: false, secretRealmOnce: true });
+  assert.deepEqual(rows.get(saved.id)?.userOptions, { equipmentStamina: false, secretRealmOnce: true });
   const insert = operations.find(operation => operation.sql.startsWith('INSERT INTO naruto_login.login_events'))!;
   assert.equal(insert.values[9], JSON.stringify(submission.userOptions));
-  assert.doesNotMatch(insert.sql, /equipmentStamina/);
+  assert.doesNotMatch(insert.sql, /equipmentStamina|secretRealmOnce|secret_realm_once/);
 
   const restored = new PgAuthStore('postgresql://fixture:fixture@127.0.0.1:5432/fixture');
   try {
@@ -181,35 +181,51 @@ test('渠道参数化存储且重复申请保持原渠道，历史缺失值默�
 
 test('重复请求和已有有效任务保留首次选择，后续请求不能覆盖附加参数', async t => {
   const { store, rows, operations } = fixture(t);
-  const saved = await store.reserve({ ...candidate(), userOptions: { equipmentStamina: false } }, date());
+  const saved = await store.reserve({ ...candidate(), userOptions: { equipmentStamina: false, secretRealmOnce: true } }, date());
   const repeated = await store.reserve({ ...candidate(2), requestId: saved.requestId }, date(1));
   const active = await store.reserve(candidate(3), date(2));
   for (const event of [repeated, active]) {
     assert.equal(event.id, saved.id);
-    assert.deepEqual(event.userOptions, { equipmentStamina: false });
+    assert.deepEqual(event.userOptions, { equipmentStamina: false, secretRealmOnce: true });
   }
   const expired = await store.reserve({ ...candidate(4, owner, 120000), requestId: saved.requestId }, date(120000));
   assert.equal(expired.status, 'expired');
-  assert.deepEqual(expired.userOptions, { equipmentStamina: false });
-  assert.deepEqual(rows.get(saved.id)?.userOptions, { equipmentStamina: false });
+  assert.deepEqual(expired.userOptions, { equipmentStamina: false, secretRealmOnce: true });
+  assert.deepEqual(rows.get(saved.id)?.userOptions, { equipmentStamina: false, secretRealmOnce: true });
   assert.equal(operations.filter(operation => operation.sql.startsWith('INSERT INTO naruto_login.login_events')).length, 1);
 });
 
-test('旧记录的空 JSON 对象按默认开启读取，不改变已存储内容', async t => {
+test('旧记录的空 JSON 对象保持装备体力开启和秘境单次关闭，不改变已存储内容', async t => {
   const { store, rows } = fixture(t);
   const saved = await store.reserve(candidate(), date());
   rows.get(saved.id)!.userOptions = {};
   for (const event of [
     await store.getEvent(saved.id, owner), await store.getActive(owner, date(1)),
     await store.getLatestForUser(owner), await store.reserve(candidate(2), date(2)),
-  ]) assert.deepEqual(event?.userOptions, { equipmentStamina: true });
+  ]) assert.deepEqual(event?.userOptions, { equipmentStamina: true, secretRealmOnce: false });
   assert.deepEqual(rows.get(saved.id)?.userOptions, {});
+});
+
+test('旧记录仅有装备体力字段时补秘境默认关闭，显式关闭装备体力保持不变', async t => {
+  const { store, rows } = fixture(t);
+  const saved = await store.reserve(candidate(), date());
+  for (const equipmentStamina of [true, false]) {
+    const legacy = { equipmentStamina };
+    rows.get(saved.id)!.userOptions = legacy;
+    for (const restored of [await store.getEvent(saved.id, owner), await store.getActive(owner, date(1)),
+      await store.getLatestForUser(owner), await store.reserve(candidate(2), date(2))]) {
+      assert.deepEqual(restored?.userOptions, { equipmentStamina, secretRealmOnce: false });
+    }
+    assert.deepEqual(rows.get(saved.id)?.userOptions, legacy);
+  }
 });
 
 test('非法的数据库附加参数拒绝读取，不静默恢复为默认选择', async t => {
   const { store, rows } = fixture(t);
   const saved = await store.reserve(candidate(), date());
-  for (const invalid of [null, false, [], 'invalid', { equipmentStamina: 'false' }, { unexpected: true }]) {
+  for (const invalid of [null, false, [], 'invalid', { equipmentStamina: 'false' }, { unexpected: true },
+    { secretRealmOnce: 'true' }, { secretRealmOnce: 1 }, { secretRealmOnce: null },
+    { secretRealmOnce: [] }, { secretRealmOnce: true, unexpected: false }]) {
     rows.get(saved.id)!.userOptions = invalid;
     await assert.rejects(store.getEvent(saved.id, owner), /Stored login event user options are invalid/);
   }

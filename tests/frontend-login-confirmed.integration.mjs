@@ -41,13 +41,14 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
     browser = await chromium.launch({ headless: true,
       ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
-    async function fixture({ old = false, sessionStatus = 'qr_ready', runStatus = 'waiting_scan', dailyStarted = false, secretRealmCompleted = false, mobile = false } = {}) {
+    async function fixture({ old = false, sessionStatus = 'qr_ready', runStatus = 'waiting_scan', dailyStarted = false, secretRealmCompleted = false, secretRealmOnce = false, mobile = false } = {}) {
       const context = await browser.newContext(mobile ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true } : {});
       const page = await context.newPage();
       page.setDefaultTimeout(6_000);
       const time = new Date().toISOString();
       const session = { id: taskId, status: sessionStatus, createdAt: time, expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        simulation: true, showGetButton: false };
+        simulation: true, showGetButton: false,
+        ...(secretRealmOnce ? { userOptions: { equipmentStamina: true, secretRealmOnce: true } } : {}) };
       const state = { status: runStatus, detailStatus: sessionStatus, detailHttpStatus: 200,
         startedAt: dailyStarted ? time : null, secretRealmCompletedAt: secretRealmCompleted ? time : undefined, errorCode: undefined,
         calls: [], errors: [], oldRequested: false, oldGate: deferred() };
@@ -172,6 +173,32 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         await f.page.getByLabel('任务失败原因', { exact: true }).waitFor();
         assert.equal(await f.page.getByText('日常任务已初步完成', { exact: true }).count(), 0);
       } finally { await f.close(); }
+    });
+
+    await t.test('single secret realm tasks settle after one completion and report full completion on desktop and mobile', async () => {
+      for (const mobile of [false, true]) {
+        const f = await fixture({ runStatus: 'running_daily', dailyStarted: true, secretRealmCompleted: true, secretRealmOnce: true, mobile });
+        try {
+          let details = f.page.locator('#task-run-details');
+          if (mobile) {
+            await f.page.getByText('秘境仅刷一次已开启', { exact: true }).waitFor();
+            await f.page.getByRole('button', { name: '任务进度与记录', exact: true }).click();
+            details = f.page.getByRole('dialog', { name: '本次任务', exact: true });
+          } else {
+            const option = f.page.locator('input[aria-labelledby="secret-realm-once-label"]');
+            await f.page.waitForFunction(() => document.querySelector('input[aria-labelledby="secret-realm-once-label"]')?.checked === true);
+            assert.equal(await option.isChecked(), true);
+            assert.equal(await option.isDisabled(), true);
+          }
+          await details.getByText('日常任务已初步完成，已完成一次秘境探险，正在完成结算并结束本次日常。', { exact: true }).last().waitFor();
+          assert.doesNotMatch(await f.page.locator('body').innerText(), /还在扫荡未用完的秘境扫荡券/);
+          f.state.status = 'completed';
+          const progress = mobile ? details : f.page;
+          await progress.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^任务已完成$/ }).waitFor();
+          assert.equal(await progress.getByLabel('任务执行进度', { exact: true }).locator('[data-stage="script"]').getAttribute('data-state'), 'completed');
+          assert.doesNotMatch(await f.page.locator('body').innerText(), /还在扫荡|正在完成结算并结束本次日常/);
+        } finally { await f.close(); }
+      }
     });
 
     await t.test('mobile overview and task sheet distinguish initial completion from all tickets used', async () => {

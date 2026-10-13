@@ -60,7 +60,7 @@ export function deriveTaskProgress(input: ProgressInput) {
   const [submission, qr, script] = steps;
   submission.state = 'completed';
   const scriptStarted = Boolean(run?.startedAt) || run?.status === 'running_daily';
-  const initialCompletion = deriveDailyCompletion(run);
+  const initialCompletion = deriveDailyCompletion(run, view.task?.userOptions);
   if (hasGameAuthorization(run) && run) {
     qr.state = 'completed';
     qr.description = '二维码已获取，扫码登录已确认';

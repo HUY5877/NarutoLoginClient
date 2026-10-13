@@ -488,6 +488,9 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     setEquipmentStamina: (equipmentStamina: boolean) => {
       if (canEditUserOptions && !runningRef.current) setUserOptions(previous => ({ ...previous, equipmentStamina }));
     },
+    setSecretRealmOnce: (secretRealmOnce: boolean) => {
+      if (canEditUserOptions && !runningRef.current) setUserOptions(previous => ({ ...previous, secretRealmOnce }));
+    },
     retryQuery: () => run(userId && readPending(userId) ? 'recover' : 'query'), handleQrError,
   };
 }

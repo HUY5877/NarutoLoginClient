@@ -157,6 +157,7 @@ export default function App() {
     userOptions,
     canEditUserOptions,
     setEquipmentStamina,
+    setSecretRealmOnce,
     loginType,
     setLoginType,
   } = useLoginSession(auth.user?.id ?? null, auth.handleUnauthorized);
@@ -172,7 +173,7 @@ export default function App() {
   const progressInput = { phase, session, qrReady: phase === 'qr_ready' && Boolean(qrUrl), view: taskRun, awaitingSubmission };
   const visibleRun = selectProgressRun(progressInput);
   const currentRun = visibleRun.run;
-  const initialDailyCompletion = deriveDailyCompletion(currentRun);
+  const initialDailyCompletion = deriveDailyCompletion(currentRun, visibleRun.task?.userOptions);
   const authorizedRun = hasGameAuthorization(currentRun) && (session?.id === currentRun?.taskId
     || !session && phase === 'idle' && ['finishing_login', 'running_daily'].includes(currentRun?.status ?? ''));
   const authorizationComplete = phase === 'login_confirmed' || authorizedRun;
@@ -420,6 +421,30 @@ export default function App() {
                 </label>
               )}
 
+              {auth.user && (
+                <label className="equipment-options mt-3 flex w-full max-w-sm items-start gap-3 rounded-xl border border-primary/15 bg-white/40 px-4 py-3" data-editable={canEditShownOptions}>
+                  <span className="equipment-switch">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 size-4 shrink-0 accent-primary disabled:cursor-not-allowed"
+                      checked={displayedUserOptions.secretRealmOnce}
+                      disabled={auth.busy || !canEditShownOptions}
+                      onChange={event => setSecretRealmOnce(event.target.checked)}
+                      aria-labelledby="secret-realm-once-label"
+                      aria-describedby="secret-realm-once-help"
+                    />
+                    <span className="equipment-switch-track" aria-hidden="true" />
+                  </span>
+                  <span>
+                    <span id="secret-realm-once-label" className="block text-sm font-medium max-sm:text-xs max-sm:text-[#eee4ef]">秘境仅刷一次</span>
+                    <span className="mobile-option-caption" aria-hidden="true">本次任务设置</span>
+                    <span id="secret-realm-once-help" className="mt-1 hidden text-xs leading-5 text-muted-foreground sm:block">
+                      {canEditShownOptions ? '开启后，成功完成一次秘境或发现扫荡券为 0，即结束本次日常；不勾选则按原流程扫荡。' : '本次申请的选择已保存，重新申请时可修改。'}
+                    </span>
+                  </span>
+                </label>
+              )}
+
               {!auth.loading && <Button
                 type="button"
                 size="lg"
@@ -506,6 +531,7 @@ export default function App() {
               <div className="mobile-login-help flex flex-wrap items-center justify-center gap-x-2 gap-y-1 sm:hidden">
                 <LoginHelp />
                 {auth.user && !canEditShownOptions && <span className="text-xs text-muted-foreground">{displayedUserOptions.equipmentStamina ? '装备栏体力刷取已开启' : '装备栏体力刷取未开启'}</span>}
+                {auth.user && !canEditShownOptions && <span className="text-xs text-muted-foreground">{displayedUserOptions.secretRealmOnce ? '秘境仅刷一次已开启' : '秘境按原流程扫荡'}</span>}
               </div>
             </CardFooter>
           </Card>

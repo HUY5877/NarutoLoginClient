@@ -185,6 +185,25 @@ test('首次秘境完成后继续扫荡显示初步完成，二维码过期或�
   }
 });
 
+test('秘境仅刷一次完成标记到达后显示正在结算结束，完整终态仍显示任务已完成', () => {
+  for (const phase of ['queued', 'expired', 'query_failed', 'idle'] as const) {
+    const current = input('running_daily', { phase, session: phase === 'idle' ? null : { ...session, status: 'expired' } });
+    current.view.task = { ...current.view.task!, userOptions: { equipmentStamina: true, secretRealmOnce: true } };
+    current.view.run!.secretRealmCompletedAt = at;
+    const progress = deriveTaskProgress(current);
+    assert.equal(progress.summary, '日常任务已初步完成');
+    assert.equal(progress.steps[2].state, 'active');
+    const explanation = `${progress.steps[2].description} ${progress.hint}`;
+    assert.match(explanation, /完成一次秘境探险/);
+    assert.match(explanation, /结算.*结束/);
+    assert.doesNotMatch(explanation, /还在扫荡|未用完|剩余.*扫荡/);
+    current.view.run!.status = 'completed';
+    current.view.run!.finishedAt = at;
+    assert.equal(deriveTaskProgress(current).summary, '任务已完成');
+    assert.deepEqual(states(current), ['completed', 'completed', 'completed']);
+  }
+});
+
 test('完成过秘境后达到执行时限保留初步完成，但说明扫荡已经停止', () => {
   const current = input('failed');
   Object.assign(current.view.run!, { startedAt: at, secretRealmCompletedAt: at, errorCode: 'daily_timeout' });

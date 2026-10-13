@@ -64,7 +64,7 @@ function fixture() {
 test('恢复和复用始终沿用首次渠道，下一次新申请可选择另一渠道', async () => {
   for (const loginType of ['android_qq', 'ios_qq', 'android_wechat', 'ios_wechat'] as const) {
     const f = fixture(), userId = randomUUID(), requestId = randomUUID();
-    const original = await f.service().create(userId, requestId, { equipmentStamina: false }, loginType);
+    const original = await f.service().create(userId, requestId, { equipmentStamina: false, secretRealmOnce: true }, loginType);
     assert.equal(original.loginType, loginType);
     assert.equal(f.records.get(original.id)?.loginType, loginType);
     assert.equal(f.submissions[0].loginType, loginType);
@@ -207,26 +207,27 @@ test('选项先持久化，丢失投递响应后的重试和有效事件复用�
     await enqueue(task);
     if (first) { first = false; throw new ApiError(503, 'lost reply'); }
   };
-  const selected = { equipmentStamina: false };
+  const selected = { equipmentStamina: false, secretRealmOnce: true };
   await assert.rejects(f.service().create(userId, requestId, selected), { status: 503 });
   selected.equipmentStamina = true;
+  selected.secretRealmOnce = false;
   const recovered = await f.service().create(userId, requestId, selected);
-  assert.deepEqual(recovered.userOptions, { equipmentStamina: false });
-  assert.deepEqual(f.records.get(recovered.id)?.userOptions, { equipmentStamina: false });
+  assert.deepEqual(recovered.userOptions, { equipmentStamina: false, secretRealmOnce: true });
+  assert.deepEqual(f.records.get(recovered.id)?.userOptions, { equipmentStamina: false, secretRealmOnce: true });
   assert.equal(f.submissions.length, 2);
-  for (const submission of f.submissions) assert.deepEqual(submission.userOptions, { equipmentStamina: false });
-  assert.deepEqual((await f.service().create(userId, randomUUID(), selected)).userOptions, { equipmentStamina: false });
-  assert.deepEqual((await f.service().getForUser(recovered.id, userId)).userOptions, { equipmentStamina: false });
+  for (const submission of f.submissions) assert.deepEqual(submission.userOptions, { equipmentStamina: false, secretRealmOnce: true });
+  assert.deepEqual((await f.service().create(userId, randomUUID(), selected)).userOptions, { equipmentStamina: false, secretRealmOnce: true });
+  assert.deepEqual((await f.service().getForUser(recovered.id, userId)).userOptions, { equipmentStamina: false, secretRealmOnce: true });
   assert.equal(f.queue.size, 1);
   assert.equal(f.submissions.length, 2);
   // Losing Redis must not lose the persisted selection or re-enqueue the task.
   f.queue.clear();
-  assert.deepEqual((await f.service().getActive(userId))?.userOptions, { equipmentStamina: false });
+  assert.deepEqual((await f.service().getActive(userId))?.userOptions, { equipmentStamina: false, secretRealmOnce: true });
   assert.equal(f.submissions.length, 2);
   f.advance(120001);
   const next = await f.service().create(userId, randomUUID(), selected);
   assert.notEqual(next.id, recovered.id);
-  assert.deepEqual(next.userOptions, { equipmentStamina: true });
+  assert.deepEqual(next.userOptions, { equipmentStamina: true, secretRealmOnce: false });
 });
 
 test('失败原因在首次读取、数据库已标记失败后的复查及原二维码到期后保持，不重新派发', async () => {

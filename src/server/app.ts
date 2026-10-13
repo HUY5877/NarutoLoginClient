@@ -128,7 +128,7 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     const requestId: unknown = req.body?.requestId === undefined ? randomUUID() : req.body.requestId;
     if (typeof requestId !== 'string' || !uuid.test(requestId)) throw new ApiError(400, '无效的申请标识，请重新操作。');
     const userOptions = parseUserOptions(req.body?.userOptions);
-    if (!userOptions) throw new ApiError(400, '用户附加参数格式不正确，装备栏体力刷取必须选择开启或关闭。', 'INVALID_USER_OPTIONS');
+    if (!userOptions) throw new ApiError(400, '任务设置格式不正确，装备栏体力刷取和秘境仅刷一次必须选择开启或关闭。', 'INVALID_USER_OPTIONS');
     const loginType = parseLoginType(req.body?.loginType);
     if (!loginType) throw new ApiError(400, '请选择有效的登录渠道。', 'INVALID_LOGIN_TYPE');
     const task = await events.create(user.id, requestId, userOptions, loginType);

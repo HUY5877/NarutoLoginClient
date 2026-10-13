@@ -7,7 +7,8 @@ const id = '123e4567-e89b-42d3-a456-426614174000';
 const owner = '456e7890-e89b-42d3-a456-426614174000';
 const at = '2026-09-24T01:00:00.000Z';
 const event: LoginEvent = { id, userId: owner, requestId: id, status: 'qr_ready', accessToken: 'ab'.repeat(32),
-  createdAt: at, expiresAt: '2026-09-24T01:02:00.000Z', dispatchedAt: at, finishedAt: null, userOptions: { equipmentStamina: true }, loginType: 'android_qq' };
+  createdAt: at, expiresAt: '2026-09-24T01:02:00.000Z', dispatchedAt: at, finishedAt: null,
+  userOptions: { equipmentStamina: true, secretRealmOnce: false }, loginType: 'android_qq' };
 const run = { taskId: id, status: 'running_daily', updatedAt: at, startedAt: at, finishedAt: null,
   actionIndex: 2, actionTotal: 38, workerId: 'private-worker', sequence: 10, accessToken: 'private-token' };
 const log = (sequence: number, payload: unknown = { time: at, level: 'INFO', message: `完成步骤 ${sequence}` }) =>
@@ -174,7 +175,7 @@ test('最近任务仅从用户持久记录恢复，二维码过期仍可读取�
   const f = fixture();
   const latest = await f.service.getLatest(owner);
   assert.deepEqual(latest, { task: { id, createdAt: event.createdAt, expiresAt: event.expiresAt, status: 'expired',
-    userOptions: { equipmentStamina: true }, loginType: 'android_qq' } });
+    userOptions: { equipmentStamina: true, secretRealmOnce: false }, loginType: 'android_qq' } });
   assert.deepEqual(await f.service.getLatest('other-user'), { task: null });
   assert.equal(f.calls, 0);
   assert.equal(f.connections, 0);
@@ -202,7 +203,7 @@ test('二维码到期后继续读日常阶段，读取幂等且白名单过滤�
   assert.equal(result.nextCursor, '1800000000000-1');
   assert.equal(result.hasMore, false);
   assert.equal(result.truncated, false);
-  assert.doesNotMatch(JSON.stringify(result), /accessToken|requestId|userId|workerId|sequence|secret/);
+  assert.doesNotMatch(JSON.stringify(result), /accessToken|requestId|userId|workerId|sequence|"secret"/);
   assert.equal(f.connections, 1);
   assert.deepEqual(f.operations[0], { keys: [`naruto:login:tasks:runs:${id}`, `naruto:login:tasks:logs:${id}`], arguments: ['0-0', '101'] });
   f.service.close();
@@ -332,14 +333,18 @@ test('未配置 Redis 不影响数据库恢复，超时中止读取并释放连�
   assert.equal(f.destroyed, 1);
 });
 
-test('独立执行记录从数据库恢复原附加参数，二维码过期或 Redis 快照缺省都不改变关闭选择', async () => {
-  const f = fixture();
-  f.records.set(id, { ...event, userOptions: { equipmentStamina: false } });
-  assert.deepEqual((await f.service.getLatest(owner)).task?.userOptions, { equipmentStamina: false });
-  const result = await f.service.getEvents(id, owner);
-  assert.equal(result.task.status, 'expired');
-  assert.equal(result.run?.status, 'running_daily');
-  assert.deepEqual(result.task.userOptions, { equipmentStamina: false });
+test('独立执行记录恢复两项选择的四种组合，二维码过期或 Redis 快照缺省都不覆盖用户设置', async () => {
+  for (const equipmentStamina of [true, false]) for (const secretRealmOnce of [true, false]) {
+    const f = fixture();
+    const userOptions = { equipmentStamina, secretRealmOnce };
+    f.records.set(id, { ...event, userOptions });
+    assert.deepEqual((await f.service.getLatest(owner)).task?.userOptions, userOptions);
+    const result = await f.service.getEvents(id, owner);
+    assert.equal(result.task.status, 'expired');
+    assert.equal(result.run?.status, 'running_daily');
+    assert.deepEqual(result.task.userOptions, userOptions);
+    f.service.close();
+  }
 });
 
 test('失败任务到二维码有效期后仍保留失败状态与独立运行错误码', async () => {
