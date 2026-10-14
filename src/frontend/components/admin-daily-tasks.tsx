@@ -1,13 +1,12 @@
 import { useEffect, useState } from 'react';
 import { CalendarCheck, RefreshCw } from 'lucide-react';
-import { Tooltip } from 'radix-ui';
 import { dailyStatusLabels, type DailyStatus } from '../../shared/admin';
 import { DEFAULT_LOGIN_TYPE, loginTypeLabels } from '../../shared/login-types';
 import { useAdminData } from '@/hooks/use-admin';
 import { useMediaQuery } from '@/hooks/use-media-query';
 import { formatAdminDate, isDailyPage } from '@/lib/admin';
 import { AdminError, AdminLoading, AdminPagination } from '@/components/admin-common';
-import { AdminTaskFailureDetails } from '@/components/admin-task-failure-details';
+import { AdminTaskLogDetails } from '@/components/admin-task-log-details';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -26,7 +25,6 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
   const [page, setPage] = useState(1);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [today, setToday] = useState(beijingToday);
-  const [dialogContent, setDialogContent] = useState<HTMLDivElement | null>(null);
   const showTable = useMediaQuery('(min-width: 768px)');
   useEffect(() => {
     if (open) {
@@ -41,7 +39,7 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
   const dates = Array.from({ length: 7 }, (_, index) => new Date(Date.parse(today) - index * 24 * 60 * 60 * 1000).toISOString().slice(0, 10));
   const dateLabel = selectedDate === 'all' ? `${dates[6]} — ${today}` : selectedDate ?? today;
   return <Dialog open={open} onOpenChange={onOpenChange}>
-    <DialogContent ref={setDialogContent} className="auth-dialog daily-tasks-dialog flex max-h-[88dvh] flex-col gap-5 p-5 sm:max-w-5xl sm:p-6"
+    <DialogContent className="auth-dialog daily-tasks-dialog flex max-h-[88dvh] flex-col gap-5 p-5 sm:max-w-6xl sm:p-6"
       onCloseAutoFocus={event => { event.preventDefault(); returnFocus(); }}>
       <DialogHeader className="shrink-0 gap-2 pr-10">
         <DialogTitle className="flex items-center gap-2 text-lg font-semibold"><CalendarCheck className="size-5 text-primary" aria-hidden="true" />近七天刷日常情况</DialogTitle>
@@ -66,12 +64,11 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" aria-busy={loading}>
         {loading && !data && <AdminLoading label={selectedDate === 'all' ? '正在读取近七天任务…' : '正在读取当天任务…'} />}
         {data && data.items.length > 0 && (showTable ? <div className="overflow-hidden rounded-xl border bg-white/35">
-          <Tooltip.Provider delayDuration={200}>
-          <Table className="min-w-210">
+          <Table className="min-w-230">
             <TableCaption className="sr-only">近七天刷日常情况，所有时间均为北京时间</TableCaption>
             <TableHeader className="bg-secondary/50"><TableRow>
               <TableHead className="pl-4">用户名</TableHead><TableHead>登录渠道</TableHead><TableHead>申请时间</TableHead>
-              <TableHead>扫描完成时间</TableHead><TableHead>脚本执行完成时间</TableHead><TableHead className="pr-4">任务状态</TableHead>
+              <TableHead>扫描完成时间</TableHead><TableHead>脚本执行完成时间</TableHead><TableHead>任务状态</TableHead><TableHead className="pr-4">日志详情</TableHead>
             </TableRow></TableHeader>
             <TableBody>{data.items.map(task => <TableRow key={task.id}>
               <TableCell className="max-w-44 truncate py-4 pl-4 font-medium" title={task.username}>{task.username}</TableCell>
@@ -79,15 +76,10 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
               <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatAdminDate(task.requestedAt)}</TableCell>
               <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatAdminDate(task.scannedAt)}</TableCell>
               <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatAdminDate(task.completedAt)}</TableCell>
-              <TableCell className="pr-4">
-                <span className="inline-flex items-center gap-1.5">
-                  <Badge variant={statusVariant(task.status)}>{dailyStatusLabels[task.status]}</Badge>
-                  {task.status === 'failed' && <AdminTaskFailureDetails task={task} onAccessLost={onAccessLost} portalContainer={dialogContent} />}
-                </span>
-              </TableCell>
+              <TableCell><Badge variant={statusVariant(task.status)}>{dailyStatusLabels[task.status]}</Badge></TableCell>
+              <TableCell className="pr-4"><AdminTaskLogDetails task={task} onAccessLost={onAccessLost} /></TableCell>
             </TableRow>)}</TableBody>
           </Table>
-          </Tooltip.Provider>
         </div> : <ul aria-label="近七天任务列表" className="space-y-3">
           {data.items.map(task => <li key={task.id} className="rounded-xl border bg-white/45 p-4">
             <div className="mb-3 flex items-start justify-between gap-3">
@@ -106,9 +98,7 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
                 <dd className="text-right tabular-nums [overflow-wrap:anywhere]">{value ? <time dateTime={value}>{formatAdminDate(value)}</time> : '—'}</dd>
               </div>)}
             </dl>
-            {task.status === 'failed' && <div className="mt-3 border-t pt-3">
-              <AdminTaskFailureDetails task={task} onAccessLost={onAccessLost} portalContainer={dialogContent} />
-            </div>}
+            <div className="mt-3 border-t pt-3"><AdminTaskLogDetails task={task} onAccessLost={onAccessLost} /></div>
           </li>)}
         </ul>)}
         {!loading && data?.items.length === 0 && <Empty className="py-12">

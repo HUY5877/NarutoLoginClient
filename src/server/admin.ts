@@ -4,7 +4,7 @@ import { UserManagementError, UsernameTakenError, type AdminStore, type UserChan
 import { ApiError } from './errors.js';
 import { logBackend } from './logging.js';
 import type { TaskRunService } from './task-runs.js';
-import type { DailyTask, DailyTaskFailureDetails, DailyTaskPage, ManagedUser, PageResult, MonthlyStatsPage } from '../shared/admin.js';
+import type { DailyTask, DailyTaskFailureDetails, DailyTaskLogPage, DailyTaskPage, ManagedUser, PageResult, MonthlyStatsPage } from '../shared/admin.js';
 import { DEFAULT_LOGIN_TYPE } from '../shared/login-types.js';
 import { taskFailureMessage } from '../shared/task-errors.js';
 
@@ -37,7 +37,7 @@ function userInput(body: unknown, creating: boolean): UserChanges {
 export class AdminService {
   private readonly now: () => number;
   constructor(private readonly options: {
-    store?: AdminStore; runs: Pick<TaskRunService, 'getSummaries' | 'getFailureDetails'>; now?: () => number;
+    store?: AdminStore; runs: Pick<TaskRunService, 'getSummaries' | 'getFailureDetails' | 'getAdminLogPage'>; now?: () => number;
   }) { this.now = options.now ?? Date.now; }
 
   private async database<T>(run: (store: AdminStore) => Promise<T>): Promise<T> {
@@ -127,6 +127,10 @@ export class AdminService {
   async dailyTaskFailureDetails(admin: User, taskId: string): Promise<DailyTaskFailureDetails> {
     requireAdmin(admin);
     return await this.options.runs.getFailureDetails(taskId);
+  }
+  async dailyTaskLogs(admin: User, taskId: string, after = '0-0', snapshot?: string): Promise<DailyTaskLogPage> {
+    requireAdmin(admin);
+    return await this.options.runs.getAdminLogPage(taskId, after, snapshot);
   }
   async monthlyStats(admin: User, query: { month?: unknown; sort?: unknown; page?: unknown }): Promise<MonthlyStatsPage> {
     requireAdmin(admin);

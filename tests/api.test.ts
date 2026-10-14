@@ -123,12 +123,16 @@ test('user management and daily task APIs enforce admin identity, JSON and same-
     dailyTaskFailureDetails: async (actor, taskId) => { calls.push(['failure', actor.id, taskId]); return {
       taskId, errorCode: 'daily_failed', errorMessage: '具体错误：未找到挑战按钮', logs: [], truncated: false,
     }; },
+    dailyTaskLogs: async (actor, taskId, after, snapshot) => { calls.push(['logs', actor.id, taskId, after, snapshot]); return {
+      taskId, status: 'completed', logs: [], nextCursor: after ?? '0-0', snapshotCursor: snapshot ?? '0-0', hasMore: false, truncated: false,
+    }; },
   };
   await withApi({ admin: adminService }, async base => {
     const routes = [{ path: '/api/admin/users', method: 'GET' }, { path: `/api/admin/users/${user.id}`, method: 'GET' },
       { path: '/api/admin/daily-tasks?date=2026-10-07&page=2', method: 'GET' }, { path: '/api/admin/users', method: 'POST' },
       { path: `/api/admin/users/${user.id}`, method: 'PATCH' }, { path: `/api/admin/users/${user.id}`, method: 'DELETE' },
       { path: `/api/admin/daily-tasks/${id}/failure-details`, method: 'GET' },
+      { path: `/api/admin/daily-tasks/${id}/logs`, method: 'GET' },
       { path: '/api/admin/monthly-stats?month=2026-10&sort=days&page=2', method: 'GET' }];
     for (const route of routes) for (const attempt of [{ headers: {}, status: 401 }, { headers, status: 403 }]) {
       const response = await fetch(`${base}${route.path}`, { method: route.method, headers: { ...jsonHeaders, ...attempt.headers },
@@ -150,7 +154,7 @@ test('user management and daily task APIs enforce admin identity, JSON and same-
         taskId: id, errorCode: 'daily_failed', errorMessage: '具体错误：未找到挑战按钮', logs: [], truncated: false,
       });
     }
-    assert.equal(calls.length, 8);
+    assert.equal(calls.length, 9);
     assert.ok(calls.every(call => call[1] === admin.id));
     assert.equal(calls[2][0], 'daily');
     assert.deepEqual({ ...(calls[2][2] as object) }, { date: '2026-10-07', page: '2' });
@@ -158,15 +162,24 @@ test('user management and daily task APIs enforce admin identity, JSON and same-
     assert.deepEqual(calls[4], ['update', admin.id, user.id, mutation]);
     assert.deepEqual(calls[5], ['delete', admin.id, user.id]);
     assert.deepEqual(calls[6], ['failure', admin.id, id]);
-    assert.equal(calls[7][0], 'monthly');
-    assert.equal(calls[7][1], admin.id);
-    assert.deepEqual({ ...(calls[7][2] as object) }, { month: '2026-10', sort: 'days', page: '2' });
+    assert.deepEqual(calls[7], ['logs', admin.id, id, '0-0', undefined]);
+    assert.equal(calls[8][0], 'monthly');
+    assert.equal(calls[8][1], admin.id);
+    assert.deepEqual({ ...(calls[8][2] as object) }, { month: '2026-10', sort: 'days', page: '2' });
     assert.equal((await fetch(`${base}/api/admin/daily-tasks/invalid/failure-details`, { headers: adminHeaders })).status, 400);
-    assert.equal(calls.length, 8);
+    for (const query of ['after=1-0&after=2-0', 'after[x]=1-0', 'after=18446744073709551616-0',
+      'snapshot=invalid', 'snapshot=1-0&snapshot=2-0', 'snapshot[x]=1-0', 'after=2-0&snapshot=1-0']) {
+      assert.equal((await fetch(`${base}/api/admin/daily-tasks/${id}/logs?${query}`, { headers: adminHeaders })).status, 400, query);
+    }
+    assert.equal((await fetch(`${base}/api/admin/daily-tasks/invalid/logs`, { headers: adminHeaders })).status, 400);
+    assert.equal(calls.length, 9);
+    const page = await fetch(`${base}/api/admin/daily-tasks/${id}/logs?after=1-0&snapshot=3-0`, { headers: adminHeaders });
+    assert.equal(page.status, 200);
+    assert.deepEqual(calls.at(-1), ['logs', admin.id, id, '1-0', '3-0']);
   });
   await withApi({ admin: adminService, auth: auth({ getUser: async () => ({ ...admin, isAdmin: false }) }) }, async base => {
     assert.equal((await fetch(`${base}/api/admin/users`, { headers: adminHeaders })).status, 403);
-    assert.equal(calls.length, 8);
+    assert.equal(calls.length, 10);
   });
 });
 

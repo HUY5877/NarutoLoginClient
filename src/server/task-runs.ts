@@ -6,7 +6,7 @@ import { logBackend } from './logging.js';
 import type { Status } from './queue.js';
 import type { UserOptions } from '../shared/user-options.js';
 import { DEFAULT_LOGIN_TYPE, type LoginType } from '../shared/login-types.js';
-import type { DailyTaskFailureDetails } from '../shared/admin.js';
+import type { DailyTaskFailureDetails, DailyTaskLogPage } from '../shared/admin.js';
 import { taskFailureMessage } from '../shared/task-errors.js';
 
 export type RunStatus = 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'waiting_scan' | 'finishing_login'
@@ -65,6 +65,9 @@ export function isStreamCursor(value: unknown): value is string {
 function compareIds(left: string, right: string): number {
   const [lm, ls] = left.split('-').map(BigInt), [rm, rs] = right.split('-').map(BigInt);
   return lm < rm ? -1 : lm > rm ? 1 : ls < rs ? -1 : ls > rs ? 1 : 0;
+}
+export function isLogCursorRange(after: string, snapshot: string): boolean {
+  return isStreamCursor(after) && isStreamCursor(snapshot) && compareIds(after, snapshot) <= 0;
 }
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -138,6 +141,28 @@ const failureSnapshotScript = `
 local run = redis.call('GET', KEYS[1])
 local entries = redis.call('XREVRANGE', KEYS[2], '+', '-', 'COUNT', ARGV[1])
 return {run, entries}
+`;
+// Fix the upper cursor on the first page, so continuing work cannot extend this read.
+const adminLogSnapshotScript = `
+local run = redis.call('GET', KEYS[1])
+local exists = redis.call('EXISTS', KEYS[2])
+local upper, firstId, added, length = ARGV[2], '', nil, 0
+if exists == 1 then
+  local info = redis.call('XINFO', 'STREAM', KEYS[2])
+  for i = 1, #info, 2 do
+    if info[i] == 'first-entry' and type(info[i + 1]) == 'table' then firstId = info[i + 1][1] end
+    if info[i] == 'entries-added' then added = info[i + 1] end
+    if info[i] == 'length' then length = info[i + 1] end
+  end
+  if upper == '' then
+    local tail = redis.call('XREVRANGE', KEYS[2], '+', '-', 'COUNT', 1)
+    upper = #tail > 0 and tail[1][1] or '0-0'
+  end
+end
+if added == nil then added = length end
+if upper == '' then upper = '0-0' end
+local entries = redis.call('XRANGE', KEYS[2], '(' .. ARGV[1], upper, 'COUNT', ARGV[3])
+return {run, entries, upper, firstId, added, length, exists}
 `;
 function isGenericFailure(message: string, errorCode?: string): boolean {
   return message === taskFailureMessage(errorCode)
@@ -244,6 +269,46 @@ export class TaskRunService {
       ...(run?.actionIndex !== undefined ? { actionIndex: run.actionIndex, actionTotal: run.actionTotal } : {}),
       ...(action ? { actionName: action.message.replace(/^动作\s*\d+\s*\/\s*\d+\s*[：:]\s*/, '') } : {}),
       logs: logs.reverse(), truncated };
+  }
+  async getAdminLogPage(taskId: string, after = '0-0', snapshot?: string): Promise<DailyTaskLogPage> {
+    if (taskId !== taskId.trim() || !taskIdPattern.test(taskId)) throw new ApiError(400, '无效的任务编号。');
+    if (!isStreamCursor(after) || snapshot !== undefined && (!isStreamCursor(snapshot) || compareIds(after, snapshot) > 0)) {
+      throw new ApiError(400, '无效的日志读取位置。');
+    }
+    const raw = await this.readRedis(adminLogSnapshotScript,
+      [`${this.config.redisQueueKey}:runs:${taskId}`, `${this.config.redisQueueKey}:logs:${taskId}`],
+      [after, snapshot ?? '', String(pageSize + 1)]);
+    if (!Array.isArray(raw) || raw.length !== 7 || !Array.isArray(raw[1]) || raw[1].length > pageSize + 1
+      || !isStreamCursor(raw[2]) || snapshot !== undefined && raw[2] !== snapshot
+      || typeof raw[3] !== 'string' || raw[3] !== '' && !isStreamCursor(raw[3])
+      || !Number.isSafeInteger(raw[4]) || raw[4] < 0 || !Number.isSafeInteger(raw[5]) || raw[5] < 0 || raw[4] < raw[5]
+      || raw[6] !== 0 && raw[6] !== 1) throw invalidData();
+    const snapshotCursor = raw[2];
+    if (compareIds(after, snapshotCursor) > 0) throw new ApiError(400, '无效的日志读取位置。');
+    const run = parseRun(raw[0], taskId);
+    const logs: TaskLog[] = [];
+    let nextCursor = after;
+    let previous = after;
+    let truncated = raw[6] === 0 && (after !== '0-0' || snapshotCursor !== '0-0') || raw[4] > raw[5]
+      || after !== '0-0' && raw[3] !== '' && compareIds(after, raw[3]) < 0;
+    for (const [index, entry] of (raw[1] as unknown[]).entries()) {
+      if (!Array.isArray(entry) || entry.length !== 2 || !isStreamCursor(entry[0])
+        || compareIds(entry[0], previous) <= 0 || compareIds(entry[0], snapshotCursor) > 0) throw invalidData();
+      previous = entry[0];
+      const log = parseLog(entry[0], entry[1]);
+      if (!log) truncated = true;
+      if (index < pageSize) {
+        nextCursor = entry[0];
+        if (log) logs.push(log);
+      }
+    }
+    const hasMore = raw[1].length > pageSize;
+    if (!hasMore && compareIds(nextCursor, snapshotCursor) < 0) {
+      // Entries still inside the fixed snapshot have disappeared between pages.
+      truncated = true;
+      nextCursor = snapshotCursor;
+    }
+    return { taskId, status: run?.status ?? null, logs, nextCursor, snapshotCursor, hasMore, truncated };
   }
   async getEvents(taskId: string, userId: string, after = '0-0'): Promise<TaskRunEvents> {
     if (taskId !== taskId.trim() || !taskIdPattern.test(taskId)) throw new ApiError(400, '无效的任务编号。');

@@ -7,7 +7,7 @@ import type { ObjectReader } from './storage.js';
 import { ApiError } from './errors.js';
 import type { Task } from './queue.js';
 import type { LoginEventService } from './login-events.js';
-import { isStreamCursor, type TaskRunService } from './task-runs.js';
+import { isLogCursorRange, isStreamCursor, type TaskRunService } from './task-runs.js';
 import { parseUserOptions } from '../shared/user-options.js';
 import { parseLoginType } from '../shared/login-types.js';
 import type { AdminService } from './admin.js';
@@ -18,7 +18,7 @@ export interface Dependencies {
   auth: Pick<AuthService, 'register' | 'login' | 'getUser' | 'listApplications' | 'reviewApplication'>;
   storage: ObjectReader;
   runs?: Pick<TaskRunService, 'getLatest' | 'getEvents'>;
-  admin?: Pick<AdminService, 'listUsers' | 'getUser' | 'createUser' | 'updateUser' | 'deleteUser' | 'dailyTasks' | 'dailyTaskFailureDetails' | 'monthlyStats'>;
+  admin?: Pick<AdminService, 'listUsers' | 'getUser' | 'createUser' | 'updateUser' | 'deleteUser' | 'dailyTasks' | 'dailyTaskFailureDetails' | 'dailyTaskLogs' | 'monthlyStats'>;
   now?: () => number;
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -42,7 +42,7 @@ function cookieOptions(req: Request): CookieOptions {
 function logPath(req: Request): string {
   const path = req.originalUrl.split('?')[0].replace(/\/[0-9a-f-]{36}(?=\/|$)/gi, '/:id');
   // Unknown paths can contain arbitrary user input; never include them in diagnostics.
-  return /^\/api\/(?:health|auth\/(?:me|login|register|logout)|login-sessions(?:\/(?:active|:id)(?:\/(?:refresh|qr))?)?|task-runs\/(?:latest|:id\/events)|admin\/(?:users(?:\/:id)?|monthly-stats|daily-tasks(?:\/:id\/failure-details)?|registration-applications(?:\/:id\/review)?))$/.test(path)
+  return /^\/api\/(?:health|auth\/(?:me|login|register|logout)|login-sessions(?:\/(?:active|:id)(?:\/(?:refresh|qr))?)?|task-runs\/(?:latest|:id\/events)|admin\/(?:users(?:\/:id)?|monthly-stats|daily-tasks(?:\/:id\/(?:failure-details|logs))?|registration-applications(?:\/:id\/review)?))$/.test(path)
     ? path : '/api/unknown';
 }
 
@@ -110,6 +110,17 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
   app.get('/api/admin/monthly-stats', async (req, res) => res.json(await adminService().monthlyStats(res.locals.user as User, req.query)));
   app.get('/api/admin/daily-tasks/:id/failure-details', async (req, res) =>
     res.json(await adminService().dailyTaskFailureDetails(res.locals.user as User, sessionId(req))));
+  app.get('/api/admin/daily-tasks/:id/logs', async (req, res) => {
+    if (Object.keys(req.query).some(key => key !== 'after' && key !== 'snapshot')) {
+      throw new ApiError(400, '无效的日志读取位置。');
+    }
+    const after = req.query.after === undefined ? '0-0' : req.query.after;
+    const snapshot = req.query.snapshot;
+    if (!isStreamCursor(after) || snapshot !== undefined && (!isStreamCursor(snapshot) || !isLogCursorRange(after, snapshot))) {
+      throw new ApiError(400, '无效的日志读取位置。');
+    }
+    res.json(await adminService().dailyTaskLogs(res.locals.user as User, sessionId(req), after, snapshot));
+  });
   app.get('/api/admin/users', async (req, res) => res.json(await adminService().listUsers(res.locals.user as User, req.query)));
   app.get('/api/admin/users/:id', async (req, res) => res.json(await adminService().getUser(res.locals.user as User, req.params.id as string)));
   app.post('/api/admin/users', async (req, res) => res.status(201).json(await adminService().createUser(res.locals.user as User, req.body)));
