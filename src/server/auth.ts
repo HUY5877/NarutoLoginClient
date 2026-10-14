@@ -1,9 +1,11 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { decodeJwt, decodeProtectedHeader, jwtVerify, SignJWT, type JWTPayload } from 'jose';
 import type { Config } from './config.js';
 import { ApplicationReviewError, PgAuthStore, UsernameTakenError, type ApplicationStatus,
   type AuthStore, type PublicUser, type RegistrationApplication, type StoredUser } from './database.js';
 import { ApiError } from './errors.js';
+import { logBackend } from './logging.js';
 
 export type User = PublicUser;
 export interface AuthSession { user: User; token: string; expiresAt: Date }
@@ -66,8 +68,11 @@ export class AuthService {
   async initialize(): Promise<void> {
     const store = this.database();
     if (!this.initialization) {
-      const pending = Promise.resolve().then(() => store.initialize()).catch(() => {
+      const started = performance.now();
+      const pending = Promise.resolve().then(() => store.initialize()).catch(error => {
         if (this.initialization === pending) this.initialization = undefined;
+        logBackend('error', 'auth.database_failed', { component: 'auth', phase: 'initialize',
+          operation: 'initialize', durationMs: Math.round(performance.now() - started), error });
         throw unavailable();
       });
       this.initialization = pending;
@@ -75,10 +80,15 @@ export class AuthService {
     await this.initialization;
   }
 
-  private async request<T>(run: (store: AuthStore) => Promise<T>): Promise<T> {
+  private async request<T>(operation: string, run: (store: AuthStore) => Promise<T>): Promise<T> {
     await this.initialize();
+    const started = performance.now();
     try { return await run(this.database()); }
-    catch { throw unavailable(); }
+    catch (error) {
+      logBackend('error', 'auth.database_failed', { component: 'auth', phase: 'query', operation,
+        durationMs: Math.round(performance.now() - started), error });
+      throw unavailable();
+    }
   }
 
   private jwtKey(): Uint8Array {
@@ -91,17 +101,23 @@ export class AuthService {
     const key = this.jwtKey();
     const issuedAt = Math.floor(this.now() / 1000);
     const expires = issuedAt + JWT_TTL_SECONDS;
+    const started = performance.now();
     try {
       const token = await new SignJWT().setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
         .setSubject(user.id).setIssuer(JWT_ISSUER).setAudience(JWT_AUDIENCE)
         .setIssuedAt(issuedAt).setExpirationTime(expires).setJti(randomUUID()).sign(key);
       return { user: publicUser(user), token, expiresAt: new Date(expires * 1000) };
-    } catch { throw unavailable(); }
+    } catch (error) {
+      logBackend('error', 'auth.operation_failed', { component: 'auth', phase: 'jwt', operation: 'create_session',
+        durationMs: Math.round(performance.now() - started), error });
+      throw unavailable();
+    }
   }
 
   async register(body: unknown): Promise<{ application: RegistrationApplication; message: string }> {
     const input = credentials(body);
     await this.initialize();
+    const started = performance.now();
     try {
       const user: StoredUser = { id: randomUUID(), username: input.username, usernameKey: input.usernameKey,
         password: input.password, isInvalid: true, isAdmin: false };
@@ -109,16 +125,23 @@ export class AuthService {
       return { application, message: '注册申请已提交，请等待管理员审核。' };
     } catch (error) {
       if (error instanceof UsernameTakenError) throw new ApiError(409, '该用户名已被注册。', 'USERNAME_TAKEN');
+      logBackend('error', 'auth.database_failed', { component: 'auth', phase: 'query', operation: 'create_registration',
+        durationMs: Math.round(performance.now() - started), error });
       throw unavailable();
     }
   }
 
   async login(body: unknown): Promise<AuthSession> {
     const input = credentials(body);
-    const user = await this.request(store => store.findUser(input.usernameKey));
+    const user = await this.request('find_user', store => store.findUser(input.usernameKey));
+    const started = performance.now();
     let valid: boolean;
     try { valid = verifyPassword(input.password, user?.password ?? ''); }
-    catch { throw unavailable(); }
+    catch (error) {
+      logBackend('error', 'auth.operation_failed', { component: 'auth', phase: 'password', operation: 'verify_password',
+        durationMs: Math.round(performance.now() - started), error });
+      throw unavailable();
+    }
     if (!user || !valid) throw new ApiError(401, '用户名或密码错误。', 'INVALID_CREDENTIALS');
     if (user.isInvalid) {
       if (user.applicationStatus === 'pending') throw new ApiError(403, '注册申请正在审核中，请等待管理员批准。', 'REGISTRATION_PENDING');
@@ -148,7 +171,7 @@ export class AuthService {
       if (!validClaims(payload, now)) return null;
       subject = payload.sub!;
     } catch { return null; }
-    const user = await this.request(store => store.findActiveUser(subject));
+    const user = await this.request('find_active_user', store => store.findActiveUser(subject));
     return user ? publicUser(user) : null;
   }
 
@@ -158,7 +181,7 @@ export class AuthService {
     if (typeof selected !== 'string' || !['pending', 'approved', 'rejected', 'all'].includes(selected)) {
       throw new ApiError(400, '无效的注册申请状态。', 'INVALID_APPLICATION_STATUS');
     }
-    const applications = await this.request(store => store.listRegistrationApplications(selected as ApplicationStatus | 'all', 100));
+    const applications = await this.request('list_applications', store => store.listRegistrationApplications(selected as ApplicationStatus | 'all', 100));
     return { applications };
   }
 
@@ -175,6 +198,7 @@ export class AuthService {
     }
     const reason = typeof input.reason === 'string' ? input.reason.trim() || null : null;
     await this.initialize();
+    const started = performance.now();
     try {
       const application = await this.database().reviewRegistration(id, admin.id, input.decision, reason, new Date(this.now()));
       return { application };
@@ -184,13 +208,20 @@ export class AuthService {
         if (error.code === 'NOT_FOUND') throw new ApiError(404, '注册申请不存在。', 'APPLICATION_NOT_FOUND');
         if (error.code === 'ALREADY_REVIEWED') throw new ApiError(409, '该注册申请已完成审核。', 'APPLICATION_ALREADY_REVIEWED');
       }
+      logBackend('error', 'auth.database_failed', { component: 'auth', phase: 'query', operation: 'review_registration',
+        durationMs: Math.round(performance.now() - started), error });
       throw unavailable();
     }
   }
 
   async close(): Promise<void> {
+    const started = performance.now();
     try { await this.store?.close(); }
-    catch { throw unavailable(); }
+    catch (error) {
+      logBackend('error', 'auth.database_failed', { component: 'auth', phase: 'close', operation: 'close',
+        durationMs: Math.round(performance.now() - started), error });
+      throw unavailable();
+    }
     finally { this.store = undefined; this.initialization = undefined; }
   }
 }

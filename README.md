@@ -52,6 +52,8 @@ npm start
 
 仓库已关联 Vercel 项目 `sust-acmer/naruto-login-client`，生产分支为 `main`，推送后由 Vercel 自动构建。线上环境变量需在 Vercel 配置；修改后重新部署才生效。ADB 执行端独立运行，更新执行端代码后需重启对应服务。
 
+接口和依赖异常会写入结构化错误日志，可在 Vercel Logs 中用响应头 `X-Request-Id` 关联同一次请求。日志保留失败阶段、错误码及必要耗时，不记录请求正文、Cookie、SQL 参数或连接凭证；正常请求不新增日志。
+
 ## 代码位置
 
 - `src/frontend/`：页面、交互和 shadcn/ui 组件。

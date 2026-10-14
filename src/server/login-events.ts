@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import type { Config } from './config.js';
 import type { LoginEvent, LoginEventStore } from './database.js';
 import { ApiError } from './errors.js';
+import { logBackend } from './logging.js';
 import type { Status, Task, TaskService } from './queue.js';
 import { loginFailure } from '../shared/task-errors.js';
 import { DEFAULT_USER_OPTIONS, type UserOptions } from '../shared/user-options.js';
@@ -24,10 +25,13 @@ export class LoginEventService {
 
   private async database<T>(run: (store: LoginEventStore) => Promise<T>): Promise<T> {
     if (!this.options.store) throw new ApiError(503, '账号数据库未配置，请先配置 DATABASE_URL。', 'DATABASE_NOT_CONFIGURED');
+    let phase = 'database.initialize';
     try {
       await this.options.store.initialize();
+      phase = 'database.query';
       return await run(this.options.store);
-    } catch {
+    } catch (error) {
+      logBackend('error', 'dependency.failed', { component: 'login-events', phase, error });
       throw new ApiError(503, '登录申请记录暂时不可用，请稍后重试查询。', 'LOGIN_EVENTS_UNAVAILABLE');
     }
   }

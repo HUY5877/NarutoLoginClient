@@ -2,6 +2,7 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createClient } from 'redis';
 import type { Config } from './config.js';
 import { ApiError } from './errors.js';
+import { logBackend } from './logging.js';
 import { loginFailure, type TaskFailureCode } from '../shared/task-errors.js';
 import { parseUserOptions, type UserOptions } from '../shared/user-options.js';
 import { DEFAULT_LOGIN_TYPE, parseLoginType, type LoginType } from '../shared/login-types.js';
@@ -209,6 +210,7 @@ export class TaskService {
     let connection: NonNullable<TaskService['connection']> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
+    let phase = 'redis.connect';
     try {
       connection = this.connection ??= { driver: this.createDriver() };
       const current = connection;
@@ -223,12 +225,14 @@ export class TaskService {
           current.opening ??= current.driver.connect();
           await current.opening;
         }
+        phase = 'redis.command';
         controller.signal.throwIfAborted();
         return await command(current.driver, controller.signal);
       };
       return await Promise.race([operation(), deadline]);
     } catch (error) {
       if (error instanceof ApiError) throw error;
+      logBackend('error', 'dependency.failed', { component: 'queue', phase, timeoutMs: this.config.timeoutMs, error });
       if (connection) {
         if (this.connection === connection) this.connection = undefined;
         connection.driver.destroy();

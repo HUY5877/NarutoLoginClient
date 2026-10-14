@@ -1,4 +1,7 @@
 import { Pool, type PoolClient } from 'pg';
+import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
+import { logBackend, requestLogContext } from './logging.js';
 import { parseUserOptions } from '../shared/user-options.js';
 import { DEFAULT_LOGIN_TYPE, parseLoginType, type LoginType } from '../shared/login-types.js';
 import type { Status, Submission } from './queue.js';
@@ -189,8 +192,9 @@ CREATE INDEX IF NOT EXISTS naruto_login_login_events_created_idx ON naruto_login
 export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
   private readonly pool: Pool;
   private initialization?: Promise<void>;
+  private readonly storeId = randomUUID();
 
-  constructor(connectionString: string, timeoutMs = 5000) {
+  constructor(connectionString: string, private readonly timeoutMs = 5000) {
     this.pool = new Pool({
       connectionString,
       max: 3,
@@ -203,20 +207,40 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
       application_name: 'naruto-login-client-auth',
     });
     // Request errors are sanitized by AuthService. Idle connection errors must not crash Node.
-    this.pool.on('error', () => {});
+    this.pool.on('error', error => {
+      // The socket may retain the context of a request that has already finished.
+      requestLogContext.exit(() => logBackend('error', 'postgres.idle_connection_failed', {
+        component: 'postgres', phase: 'idle_connection', error, ...this.logFields(),
+      }));
+    });
+  }
+
+  private logFields() {
+    return { storeId: this.storeId, timeoutMs: this.timeoutMs,
+      poolTotal: this.pool.totalCount, poolIdle: this.pool.idleCount, poolWaiting: this.pool.waitingCount };
+  }
+
+  private async observe<T>(operation: string, run: () => Promise<T>): Promise<T> {
+    const started = performance.now();
+    try { return await run(); }
+    catch (error) {
+      logBackend('error', 'postgres.operation_failed', { component: 'postgres', operation, error,
+        durationMs: Math.round(performance.now() - started), ...this.logFields() });
+      throw error;
+    }
   }
 
   private async transaction<T>(run: (client: PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
+    const client = await this.observe('acquire_connection', () => this.pool.connect());
     let failed = false;
     try {
-      await client.query('BEGIN');
+      await this.observe('begin_transaction', () => client.query('BEGIN'));
       const result = await run(client);
-      await client.query('COMMIT');
+      await this.observe('commit_transaction', () => client.query('COMMIT'));
       return result;
     } catch (error) {
       failed = true;
-      await client.query('ROLLBACK').catch(() => {});
+      await this.observe('rollback_transaction', () => client.query('ROLLBACK')).catch(() => {});
       throw error;
     } finally {
       // Discard a connection after a transaction error, including a timed out query.
@@ -228,8 +252,8 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
     if (!this.initialization) {
       this.initialization = this.transaction(async client => {
         // Serialize schema setup across concurrent cold starts without touching existing data.
-        await client.query('SELECT pg_advisory_xact_lock(19830527, 1179018068)');
-        await client.query(schema);
+        await this.observe('schema_lock', () => client.query('SELECT pg_advisory_xact_lock(19830527, 1179018068)'));
+        await this.observe('schema_apply', () => client.query(schema));
       }).catch(error => {
         this.initialization = undefined;
         throw error;
@@ -280,10 +304,10 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
   }
 
   async findActiveUser(userId: string): Promise<PublicUser | null> {
-    const result = await this.pool.query<PublicUser>(
+    const result = await this.observe('find_active_user', () => this.pool.query<PublicUser>(
       'SELECT id, username, is_admin AS "isAdmin" FROM naruto_login.users WHERE id = $1 AND is_invalid = false',
       [userId],
-    );
+    ));
     return result.rows[0] ?? null;
   }
 

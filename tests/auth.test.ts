@@ -9,6 +9,7 @@ import { loadConfig } from '../src/server/config.js';
 import { ApplicationReviewError, PgAuthStore, UsernameTakenError, type ApplicationStatus,
   type AuthStore, type RegistrationApplication, type StoredUser } from '../src/server/database.js';
 import { ApiError } from '../src/server/errors.js';
+import { requestLogContext } from '../src/server/logging.js';
 
 const jwtSecret = 'jwt-unit-test-fixture-secret-'.repeat(2);
 const config = loadConfig({ DATABASE_URL: 'postgresql://fixture:fixture@127.0.0.1:5432/fixture', JWT_SECRET: jwtSecret });
@@ -445,6 +446,92 @@ test('数据库读写异常不泄露连接信息、SQL、密码或内部错误',
   await assert.rejects(service.login({ username: 'Naruto', password }), sanitized);
   t.mock.method(store, 'findActiveUser', fail);
   await assert.rejects(service.getUser(registered.token), sanitized);
+});
+
+test('认证初始化失败保留请求标识和原始数据库错误类别，公开响应继续脱敏', async t => {
+  const { service, store } = fixture();
+  await service.register({ username: 'Naruto', password });
+  store.approve('naruto');
+  const signed = await service.login({ username: 'Naruto', password });
+  const output: string[] = [];
+  t.mock.method(console, 'error', (line: string) => { output.push(line); });
+  const original = Object.assign(new Error('private SQL postgresql://private-user:private-password@private-host/database'),
+    { code: '42501', detail: 'private row and password', query: 'private SQL', parameters: [signed.token, password] });
+  t.mock.method(store, 'initialize', async () => { throw original; });
+  const restored = new AuthService(config, { store, now: () => start });
+  await requestLogContext.run({ requestId: 'auth-init-test', method: 'GET', path: '/api/auth/me',
+    vercelRequestId: 'iad1-auth-test' }, async () => {
+    await assert.rejects(restored.getUser(signed.token), error => {
+      assert.ok(error instanceof ApiError);
+      assert.equal(error.status, 503);
+      assert.equal(error.code, 'AUTH_UNAVAILABLE');
+      assert.equal(error.message, '账号服务暂时不可用，请稍后重试。');
+      assert.doesNotMatch(JSON.stringify(error), /private|42501/);
+      return true;
+    });
+  });
+  assert.equal(output.length, 1);
+  const diagnostic = JSON.parse(output[0]);
+  assert.equal(diagnostic.event, 'auth.database_failed');
+  assert.equal(diagnostic.phase, 'initialize');
+  assert.equal(diagnostic.operation, 'initialize');
+  assert.equal(diagnostic.requestId, 'auth-init-test');
+  assert.equal(diagnostic.path, '/api/auth/me');
+  assert.equal(diagnostic.vercelRequestId, 'iad1-auth-test');
+  assert.equal(diagnostic.error.code, '42501');
+  assert.equal(diagnostic.error.category, 'database_permission');
+  assert.ok(Number.isFinite(diagnostic.durationMs) && diagnostic.durationMs >= 0);
+  assert.doesNotMatch(output.join(''), /private-user|private-password|private-host|private SQL|private row/);
+  assert.ok(!output.join('').includes(signed.token));
+  assert.ok(!output.join('').includes(password));
+});
+
+test('认证查询失败区分具体操作和数据库错误，成功或业务拒绝不输出错误日志', async t => {
+  const { service, store } = fixture();
+  const admin = reviewer(store);
+  await service.register({ username: 'Naruto', password });
+  store.approve('naruto');
+  const signed = await service.login({ username: 'Naruto', password });
+  const output: string[] = [];
+  t.mock.method(console, 'error', (line: string) => { output.push(line); });
+  assert.deepEqual(await service.getUser(signed.token), signed.user);
+  await assert.rejects(service.login({ username: 'Naruto', password: 'wrong-password' }), errorIs(401, 'INVALID_CREDENTIALS'));
+  await assert.rejects(service.register({ username: 'Naruto', password }), errorIs(409, 'USERNAME_TAKEN'));
+  await assert.rejects(service.reviewApplication(admin, randomUUID(), { decision: 'approved' }), errorIs(404, 'APPLICATION_NOT_FOUND'));
+  assert.equal(output.length, 0);
+  const operations = [
+    { method: 'createRegistration', operation: 'create_registration', code: '57014', category: 'query_timeout',
+      run: () => service.register({ username: 'OtherUser', password }) },
+    { method: 'findUser', operation: 'find_user', code: '53300', category: 'connection_limit',
+      run: () => service.login({ username: 'Naruto', password }) },
+    { method: 'findActiveUser', operation: 'find_active_user', code: 'ECONNRESET', category: 'connection_reset',
+      run: () => service.getUser(signed.token) },
+    { method: 'listRegistrationApplications', operation: 'list_applications', code: '42501', category: 'database_permission',
+      run: () => service.listApplications(admin, 'all') },
+    { method: 'reviewRegistration', operation: 'review_registration', code: '40P01', category: 'database_deadlock',
+      run: () => service.reviewApplication(admin, randomUUID(), { decision: 'approved', reason: 'private review reason' }) },
+  ] as const;
+  for (const entry of operations) {
+    const original = Object.assign(new Error('SQL private-password postgresql://user:private-password@private-host/database'),
+      { code: entry.code, detail: 'private row', parameters: [password, signed.token] });
+    const mocked = t.mock.method(store, entry.method, async () => { throw original; });
+    await requestLogContext.run({ requestId: `auth-${entry.operation}`, method: 'GET', path: '/api/auth/me' }, async () => {
+      await assert.rejects(entry.run(), errorIs(503, 'AUTH_UNAVAILABLE', '账号服务暂时不可用，请稍后重试。'));
+    });
+    mocked.mock.restore();
+    const diagnostic = JSON.parse(output.at(-1)!);
+    assert.equal(diagnostic.event, 'auth.database_failed');
+    assert.equal(diagnostic.phase, 'query');
+    assert.equal(diagnostic.operation, entry.operation);
+    assert.equal(diagnostic.requestId, `auth-${entry.operation}`);
+    assert.equal(diagnostic.error.code, entry.code);
+    assert.equal(diagnostic.error.category, entry.category);
+    assert.ok(Number.isFinite(diagnostic.durationMs) && diagnostic.durationMs >= 0);
+  }
+  assert.equal(output.length, operations.length);
+  assert.doesNotMatch(output.join(''), /private-password|private-host|private row|private review reason/);
+  assert.ok(!output.join('').includes(signed.token));
+  assert.ok(!output.join('').includes(password));
 });
 
 test('数据库连接地址可省略，仅接受 PostgreSQL URL 且配置错误不回显地址', () => {

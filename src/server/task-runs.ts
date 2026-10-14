@@ -2,6 +2,7 @@ import { createClient } from 'redis';
 import type { Config } from './config.js';
 import type { LoginEvent, LoginEventStore } from './database.js';
 import { ApiError } from './errors.js';
+import { logBackend } from './logging.js';
 import type { Status } from './queue.js';
 import type { UserOptions } from '../shared/user-options.js';
 import { DEFAULT_LOGIN_TYPE, type LoginType } from '../shared/login-types.js';
@@ -162,8 +163,15 @@ export class TaskRunService {
 
   private async database<T>(read: (store: EventReader) => Promise<T>): Promise<T> {
     if (!this.options.store) throw new ApiError(503, '账号数据库未配置，请先配置 DATABASE_URL。', 'DATABASE_NOT_CONFIGURED');
-    try { await this.options.store.initialize(); return await read(this.options.store); }
-    catch { throw new ApiError(503, '任务记录暂时不可用，请稍后重试。', 'TASK_RUNS_UNAVAILABLE'); }
+    let phase = 'database.initialize';
+    try {
+      await this.options.store.initialize();
+      phase = 'database.query';
+      return await read(this.options.store);
+    } catch (error) {
+      logBackend('error', 'dependency.failed', { component: 'task-runs', phase, error });
+      throw new ApiError(503, '任务记录暂时不可用，请稍后重试。', 'TASK_RUNS_UNAVAILABLE');
+    }
   }
   private publicTask(event: LoginEvent): RunTask {
     return { id: event.id, createdAt: event.createdAt, expiresAt: event.expiresAt,
@@ -180,6 +188,7 @@ export class TaskRunService {
     let connection: NonNullable<TaskRunService['connection']> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
+    let phase = 'redis.connect';
     try {
       connection = this.connection ??= { driver: (this.options.createDriver ?? (() => createRedisDriver(this.config)))() };
       const current = connection;
@@ -188,11 +197,13 @@ export class TaskRunService {
       });
       const operation = async () => {
         if (!current.driver.isReady) { current.opening ??= current.driver.connect(); await current.opening; }
+        phase = 'redis.command';
         controller.signal.throwIfAborted();
         return await current.driver.eval(script, { keys, arguments: args }, controller.signal);
       };
       return await Promise.race([operation(), deadline]);
-    } catch {
+    } catch (error) {
+      logBackend('error', 'dependency.failed', { component: 'task-runs', phase, timeoutMs: this.config.timeoutMs, error });
       if (connection) { if (this.connection === connection) this.connection = undefined; connection.driver.destroy(); }
       throw new ApiError(503, '任务日志暂时不可用，请稍后重试。', 'TASK_LOGS_UNAVAILABLE');
     } finally { if (timer) clearTimeout(timer); }

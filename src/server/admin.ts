@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { credentials, type User } from './auth.js';
 import { UserManagementError, UsernameTakenError, type AdminStore, type UserChanges } from './database.js';
 import { ApiError } from './errors.js';
+import { logBackend } from './logging.js';
 import type { TaskRunService } from './task-runs.js';
 import type { DailyTask, DailyTaskFailureDetails, DailyTaskPage, ManagedUser, PageResult, MonthlyStatsPage } from '../shared/admin.js';
 import { DEFAULT_LOGIN_TYPE } from '../shared/login-types.js';
@@ -41,7 +42,12 @@ export class AdminService {
 
   private async database<T>(run: (store: AdminStore) => Promise<T>): Promise<T> {
     if (!this.options.store) throw new ApiError(503, '账号数据库未配置，请先配置 DATABASE_URL。', 'DATABASE_NOT_CONFIGURED');
-    try { await this.options.store.initialize(); return await run(this.options.store); }
+    let phase = 'database.initialize';
+    try {
+      await this.options.store.initialize();
+      phase = 'database.query';
+      return await run(this.options.store);
+    }
     catch (error) {
       if (error instanceof UsernameTakenError) throw new ApiError(409, '该用户名已被注册。', 'USERNAME_TAKEN');
       if (error instanceof UserManagementError) {
@@ -49,6 +55,7 @@ export class AdminService {
         if (error.code === 'NOT_FOUND') throw new ApiError(404, '用户不存在，请刷新列表。', 'USER_NOT_FOUND');
         if (error.code === 'SELF_PROTECTED') throw new ApiError(409, '不能删除、停用或撤销当前账号的管理员权限。', 'USER_SELF_PROTECTED');
       }
+      logBackend('error', 'dependency.failed', { component: 'admin', phase, error });
       throw new ApiError(503, '管理数据暂时不可用，请稍后重试。', 'ADMIN_UNAVAILABLE');
     }
   }

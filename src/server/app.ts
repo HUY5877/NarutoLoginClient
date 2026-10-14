@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import express, { type CookieOptions, type ErrorRequestHandler, type Request } from 'express';
 import type { AuthService, User } from './auth.js';
 import type { Config } from './config.js';
@@ -10,6 +11,7 @@ import { isStreamCursor, type TaskRunService } from './task-runs.js';
 import { parseUserOptions } from '../shared/user-options.js';
 import { parseLoginType } from '../shared/login-types.js';
 import type { AdminService } from './admin.js';
+import { logBackend, requestLogContext } from './logging.js';
 
 export interface Dependencies {
   events: Pick<LoginEventService, 'create' | 'getForUser' | 'getActive' | 'recordStatus'> & Partial<Pick<LoginEventService, 'refresh'>>;
@@ -37,12 +39,24 @@ function cookieOptions(req: Request): CookieOptions {
   return { httpOnly: true, sameSite: 'lax', secure: req.secure, path: '/' };
 }
 
+function logPath(req: Request): string {
+  const path = req.originalUrl.split('?')[0].replace(/\/[0-9a-f-]{36}(?=\/|$)/gi, '/:id');
+  // Unknown paths can contain arbitrary user input; never include them in diagnostics.
+  return /^\/api\/(?:health|auth\/(?:me|login|register|logout)|login-sessions(?:\/(?:active|:id)(?:\/(?:refresh|qr))?)?|task-runs\/(?:latest|:id\/events)|admin\/(?:users(?:\/:id)?|monthly-stats|daily-tasks(?:\/:id\/failure-details)?|registration-applications(?:\/:id\/review)?))$/.test(path)
+    ? path : '/api/unknown';
+}
+
 export function createApp(config: Config, { events, auth, storage, runs, admin, now = Date.now }: Dependencies) {
   const app = express();
   app.disable('x-powered-by');
-  app.use('/api', (_req, res, next) => {
+  app.use('/api', (req, res, next) => {
+    const requestId = randomUUID();
+    const upstream = req.get('x-vercel-id');
+    const vercelRequestId = upstream && /^[A-Za-z0-9_:-]{1,128}$/.test(upstream) ? upstream : undefined;
+    res.locals.requestStartedAt = performance.now();
     res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
-    next();
+    res.set('X-Request-Id', requestId);
+    requestLogContext.run({ requestId, method: req.method, path: logPath(req), ...(vercelRequestId ? { vercelRequestId } : {}) }, next);
   });
   app.use(express.json({ limit: '2kb' }));
   app.get('/api/health', (_req, res) => res.json({ ok: true, storage: config.storageDriver, simulation: true }));
@@ -182,6 +196,12 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
   });
   app.use('/api', (_req, res) => res.status(404).json({ error: '接口不存在。' }));
   const onError: ErrorRequestHandler = (error: unknown, _req, res, _next) => {
+    const status = error instanceof ApiError ? error.status
+      : error && typeof error === 'object' && 'type' in error && ['entity.parse.failed', 'entity.too.large'].includes(String(error.type)) ? 400 : 500;
+    if (status >= 500) logBackend('error', 'api.request_failed', {
+      component: 'api', status, errorCode: error instanceof ApiError ? error.code : 'INTERNAL_ERROR', error,
+      durationMs: Math.round(performance.now() - (res.locals.requestStartedAt ?? performance.now())),
+    });
     if (error instanceof ApiError) res.status(error.status).json({ error: error.message, ...(error.code ? { code: error.code } : {}) });
     else if (error && typeof error === 'object' && 'type' in error && ['entity.parse.failed', 'entity.too.large'].includes(String(error.type))) {
       res.status(400).json({ error: '请求格式无效。' });

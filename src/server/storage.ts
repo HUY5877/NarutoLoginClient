@@ -3,6 +3,7 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { Config } from './config.js';
 import { ApiError } from './errors.js';
+import { logBackend } from './logging.js';
 
 export interface ObjectReader {
   exists(id: string): Promise<boolean>;
@@ -41,12 +42,20 @@ export function createObjectReader(config: Config): ObjectReader {
       async exists(id) {
         const key = objectKey(config, id);
         try { await localPath(key); return true; }
-        catch (error) { if (isMissing(error)) return false; throw unavailable(); }
+        catch (error) {
+          if (isMissing(error)) return false;
+          logBackend('error', 'dependency.failed', { component: 'storage', phase: 'local.exists', error });
+          throw unavailable();
+        }
       },
       async read(id) {
         const key = objectKey(config, id);
         try { return await readFile(await localPath(key)); }
-        catch (error) { if (isMissing(error)) return null; throw unavailable(); }
+        catch (error) {
+          if (isMissing(error)) return null;
+          logBackend('error', 'dependency.failed', { component: 'storage', phase: 'local.read', error });
+          throw unavailable();
+        }
       },
     };
   }
@@ -58,12 +67,20 @@ export function createObjectReader(config: Config): ObjectReader {
     async exists(id) {
       const key = objectKey(config, id);
       try { await client.head(key); return true; }
-      catch (error) { if (isMissing(error)) return false; throw unavailable(); }
+      catch (error) {
+        if (isMissing(error)) return false;
+        logBackend('error', 'dependency.failed', { component: 'storage', phase: 'oss.exists', timeoutMs: config.timeoutMs, error });
+        throw unavailable();
+      }
     },
     async read(id) {
       const key = objectKey(config, id);
       try { return (await client.get(key)).content; }
-      catch (error) { if (isMissing(error)) return null; throw unavailable(); }
+      catch (error) {
+        if (isMissing(error)) return null;
+        logBackend('error', 'dependency.failed', { component: 'storage', phase: 'oss.read', timeoutMs: config.timeoutMs, error });
+        throw unavailable();
+      }
     },
   };
 }
