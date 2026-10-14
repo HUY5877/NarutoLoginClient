@@ -111,7 +111,8 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
   app.get('/api/admin/daily-tasks/:id/failure-details', async (req, res) =>
     res.json(await adminService().dailyTaskFailureDetails(res.locals.user as User, sessionId(req))));
   app.get('/api/admin/daily-tasks/:id/logs', async (req, res) => {
-    if (Object.keys(req.query).some(key => key !== 'after' && key !== 'snapshot')) {
+    // Vercel 的 /api/:path* 重写会附带 path；任务身份仍只使用 URL 路径。
+    if (Object.keys(req.query).some(key => key !== 'after' && key !== 'snapshot' && key !== 'path')) {
       throw new ApiError(400, '无效的日志读取位置。');
     }
     const after = req.query.after === undefined ? '0-0' : req.query.after;
