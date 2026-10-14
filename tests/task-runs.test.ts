@@ -8,7 +8,7 @@ const owner = '456e7890-e89b-42d3-a456-426614174000';
 const at = '2026-09-24T01:00:00.000Z';
 const event: LoginEvent = { id, userId: owner, requestId: id, status: 'qr_ready', accessToken: 'ab'.repeat(32),
   createdAt: at, expiresAt: '2026-09-24T01:02:00.000Z', dispatchedAt: at, finishedAt: null,
-  userOptions: { equipmentStamina: true, secretRealmOnce: false }, loginType: 'android_qq' };
+  userOptions: { equipmentStamina: true, secretRealmMode: 'all' }, loginType: 'android_qq' };
 const run = { taskId: id, status: 'running_daily', updatedAt: at, startedAt: at, finishedAt: null,
   actionIndex: 2, actionTotal: 38, workerId: 'private-worker', sequence: 10, accessToken: 'private-token' };
 const log = (sequence: number, payload: unknown = { time: at, level: 'INFO', message: `完成步骤 ${sequence}` }) =>
@@ -175,7 +175,7 @@ test('最近任务仅从用户持久记录恢复，二维码过期仍可读取�
   const f = fixture();
   const latest = await f.service.getLatest(owner);
   assert.deepEqual(latest, { task: { id, createdAt: event.createdAt, expiresAt: event.expiresAt, status: 'expired',
-    userOptions: { equipmentStamina: true, secretRealmOnce: false }, loginType: 'android_qq' } });
+    userOptions: { equipmentStamina: true, secretRealmMode: 'all' }, loginType: 'android_qq' } });
   assert.deepEqual(await f.service.getLatest('other-user'), { task: null });
   assert.equal(f.calls, 0);
   assert.equal(f.connections, 0);
@@ -333,10 +333,10 @@ test('未配置 Redis 不影响数据库恢复，超时中止读取并释放连�
   assert.equal(f.destroyed, 1);
 });
 
-test('独立执行记录恢复两项选择的四种组合，二维码过期或 Redis 快照缺省都不覆盖用户设置', async () => {
-  for (const equipmentStamina of [true, false]) for (const secretRealmOnce of [true, false]) {
+test('独立执行记录恢复装备体力和三种秘境模式，二维码过期或 Redis 快照缺省都不覆盖设置', async () => {
+  for (const equipmentStamina of [true, false]) for (const secretRealmMode of ['once', 'all', 'skip'] as const) {
     const f = fixture();
-    const userOptions = { equipmentStamina, secretRealmOnce };
+    const userOptions = { equipmentStamina, secretRealmMode };
     f.records.set(id, { ...event, userOptions });
     assert.deepEqual((await f.service.getLatest(owner)).task?.userOptions, userOptions);
     const result = await f.service.getEvents(id, owner);

@@ -139,7 +139,92 @@
   --popover-foreground: #f6f1ed;
   --accent: #49404e;
   --accent-foreground: #f6f1ed;
+  padding: .375rem;
+  border: 1px solid #d7c0e63d;
+  border-radius: 1rem;
+  background: linear-gradient(145deg, #3c3342f5, #29242ff5);
+  box-shadow: 0 18px 48px #140f2059, inset 0 1px 0 #ffffff0d;
+  backdrop-filter: blur(18px);
 }
+
+.login-channel-trigger {
+  height: 4rem;
+  min-height: 4rem;
+  padding: .625rem .75rem;
+  border: 1px solid #d7c0e638;
+  border-radius: 1rem;
+  background: linear-gradient(110deg, #d7c0e616, #302b34e6);
+  color: #f6f1ed;
+  box-shadow: inset 0 1px 0 #ffffff08;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+.login-channel-trigger:hover:not(:disabled),
+.login-channel-trigger[data-state='open'] { border-color: #d7c0e685; background: #49404e; }
+.login-channel-trigger:focus-visible { outline: 2px solid #d7c0e6; outline-offset: 3px; }
+.login-channel-selection { display: flex; align-items: center; gap: .75rem; min-width: 0; }
+.channel-app-badge {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 2.125rem;
+  height: 2.125rem;
+  border: 1px solid #d7c0e640;
+  border-radius: .75rem;
+  background: #d7c0e612;
+  color: #eadcf4;
+}
+.channel-app-badge > span { font-size: .6875rem; font-weight: 700; letter-spacing: -.04em; }
+.channel-app-badge[data-app='wechat'] { border-color: #a6cebd40; background: #9bc5b214; color: #c0ddce; }
+.login-channel-copy { display: flex; flex-direction: column; gap: .125rem; text-align: left; min-width: 0; }
+.login-channel-copy > strong { font-size: .8125rem; font-weight: 600; line-height: 1.4; }
+.login-channel-copy > span { color: #c7bcc8; font-size: .6875rem; line-height: 1.4; }
+.channel-chevron { display: grid; place-items: center; width: 1.5rem; height: 1.5rem; border-radius: 50%; color: #d7c0e6; }
+.channel-chevron > svg { transition: transform 150ms ease; }
+.login-channel-trigger[data-state='open'] .channel-chevron > svg { transform: rotate(180deg); }
+.login-channel-option {
+  min-height: 3.75rem;
+  gap: .75rem;
+  margin: .125rem 0;
+  padding: .625rem 2.25rem .625rem .625rem;
+  border: 1px solid transparent;
+  border-radius: .75rem;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+.login-channel-option[data-highlighted] { border-color: #d7c0e62e; background: #d7c0e612; }
+.login-channel-option[data-state='checked'] { border-color: #d7c0e65c; background: #d7c0e620; }
+.login-channel-option [data-slot='dropdown-menu-radio-item-indicator'] { color: #e4d1ef; }
+
+.secret-realm-options { min-inline-size: 0; padding: 0; border: 0; color: #f6f1ed; }
+.secret-realm-options > legend { display: flex; width: 100%; justify-content: space-between; padding: 0; font-size: .8125rem; font-weight: 600; }
+.secret-realm-options > legend > span:last-child { color: #c7bcc8; font-size: .6875rem; font-weight: 400; }
+.secret-realm-choices { display: grid; gap: .5rem; margin-top: .625rem; }
+.secret-realm-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  min-height: 3.75rem;
+  padding: .625rem .75rem;
+  border: 1px solid #d7c0e62e;
+  border-radius: .875rem;
+  background: #d7c0e609;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+.secret-realm-option:hover { border-color: #d7c0e659; background: #d7c0e612; }
+.secret-realm-option[data-selected='true'] { border-color: #d7c0e680; background: linear-gradient(105deg, #d7c0e623, #d7c0e60d); box-shadow: inset 2px 0 0 #d7c0e6; }
+.secret-realm-option:has(input:focus-visible) { outline: 2px solid #d7c0e6; outline-offset: 3px; }
+.secret-realm-option > input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
+.secret-realm-radio { display: grid; place-items: center; flex-shrink: 0; width: 1.125rem; height: 1.125rem; border: 1px solid #d7c0e659; border-radius: 50%; color: #302932; }
+.secret-realm-radio > svg { opacity: 0; }
+.secret-realm-option[data-selected='true'] .secret-realm-radio { border-color: #d7c0e6; background: #d7c0e6; }
+.secret-realm-option[data-selected='true'] .secret-realm-radio > svg { opacity: 1; }
+.secret-realm-copy { display: flex; min-width: 0; flex-direction: column; gap: .125rem; }
+.secret-realm-copy > strong { font-size: .8125rem; font-weight: 500; line-height: 1.5; }
+.secret-realm-copy > span,
+.secret-realm-options > p { color: #c7bcc8; font-size: .6875rem; line-height: 1.5; }
+.secret-realm-options > p { margin-top: .5rem; }
+.secret-realm-options:disabled .secret-realm-option { cursor: default; opacity: .78; }
 
 @media (min-width: 640px) {
   .login-shell {

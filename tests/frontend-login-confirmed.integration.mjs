@@ -41,14 +41,14 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
     browser = await chromium.launch({ headless: true,
       ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
-    async function fixture({ old = false, sessionStatus = 'qr_ready', runStatus = 'waiting_scan', dailyStarted = false, secretRealmCompleted = false, secretRealmOnce = false, mobile = false } = {}) {
+    async function fixture({ old = false, sessionStatus = 'qr_ready', runStatus = 'waiting_scan', dailyStarted = false, secretRealmCompleted = false, secretRealmMode = 'all', mobile = false } = {}) {
       const context = await browser.newContext(mobile ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true } : {});
       const page = await context.newPage();
       page.setDefaultTimeout(6_000);
       const time = new Date().toISOString();
       const session = { id: taskId, status: sessionStatus, createdAt: time, expiresAt: new Date(Date.now() + 60_000).toISOString(),
         simulation: true, showGetButton: false,
-        ...(secretRealmOnce ? { userOptions: { equipmentStamina: true, secretRealmOnce: true } } : {}) };
+        userOptions: { equipmentStamina: true, secretRealmMode } };
       const state = { status: runStatus, detailStatus: sessionStatus, detailHttpStatus: 200,
         startedAt: dailyStarted ? time : null, secretRealmCompletedAt: secretRealmCompleted ? time : undefined, errorCode: undefined,
         calls: [], errors: [], oldRequested: false, oldGate: deferred() };
@@ -177,16 +177,16 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
 
     await t.test('single secret realm tasks settle after one completion and report full completion on desktop and mobile', async () => {
       for (const mobile of [false, true]) {
-        const f = await fixture({ runStatus: 'running_daily', dailyStarted: true, secretRealmCompleted: true, secretRealmOnce: true, mobile });
+        const f = await fixture({ runStatus: 'running_daily', dailyStarted: true, secretRealmCompleted: true, secretRealmMode: 'once', mobile });
         try {
           let details = f.page.locator('#task-run-details');
           if (mobile) {
-            await f.page.getByText('秘境仅刷一次已开启', { exact: true }).waitFor();
+            await f.page.getByRole('radio', { name: '只刷一次就退出', exact: true }).waitFor();
             await f.page.getByRole('button', { name: '任务进度与记录', exact: true }).click();
             details = f.page.getByRole('dialog', { name: '本次任务', exact: true });
           } else {
-            const option = f.page.locator('input[aria-labelledby="secret-realm-once-label"]');
-            await f.page.waitForFunction(() => document.querySelector('input[aria-labelledby="secret-realm-once-label"]')?.checked === true);
+            const option = f.page.locator('input[name="secret-realm-mode"][value="once"]');
+            await f.page.waitForFunction(() => document.querySelector('input[name="secret-realm-mode"][value="once"]')?.checked === true);
             assert.equal(await option.isChecked(), true);
             assert.equal(await option.isDisabled(), true);
           }

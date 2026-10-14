@@ -10,6 +10,7 @@ import {
   LogIn,
   LogOut,
   ListChecks,
+  MessageCircle,
   QrCode,
   RefreshCw,
   ScanLine,
@@ -85,8 +86,22 @@ import { TaskRunPanel } from '@/components/task-run-panel';
 import { deriveTaskProgress, hasGameAuthorization, isUnclaimedQueueTimeout, selectProgressRun } from '@/lib/task-progress';
 import { isRunTerminal } from '@/lib/task-run';
 import { deriveDailyCompletion } from '@/lib/daily-completion';
-import { DEFAULT_USER_OPTIONS, parseUserOptions } from '../shared/user-options';
+import { DEFAULT_USER_OPTIONS, parseUserOptions, type SecretRealmMode } from '../shared/user-options';
 import { DEFAULT_LOGIN_TYPE, loginTypes, loginTypeLabels, loginScanApp, parseLoginType } from '../shared/login-types';
+
+const secretRealmChoices: Array<{ value: SecretRealmMode; title: string; description: string }> = [
+  { value: 'once', title: '只刷一次就退出', description: '成功结算一次或扫荡券为 0 后，结束本次日常。' },
+  { value: 'all', title: '用完所有扫荡卷', description: '持续扫荡，直到券用完或到达执行时限。' },
+  { value: 'skip', title: '不刷秘境', description: '跳过秘境探险，完成其余日常。' },
+];
+
+function ChannelBadge({ app }: { app: 'QQ' | '微信' }) {
+  return <span className="channel-app-badge" data-app={app === 'QQ' ? 'qq' : 'wechat'} aria-hidden="true">
+    {app === 'QQ' ? <span>QQ</span> : <MessageCircle className="size-5" />}
+  </span>;
+}
+
+const channelDevice = (type: string) => type.startsWith('ios_') ? 'iOS' : '安卓';
 
 function LoginHelp() {
   return (
@@ -157,7 +172,7 @@ export default function App() {
     userOptions,
     canEditUserOptions,
     setEquipmentStamina,
-    setSecretRealmOnce,
+    setSecretRealmMode,
     loginType,
     setLoginType,
   } = useLoginSession(auth.user?.id ?? null, auth.handleUnauthorized);
@@ -379,16 +394,26 @@ export default function App() {
                       <Button id="login-channel-trigger" type="button" variant="outline"
                         aria-labelledby="login-channel-label" aria-describedby="login-channel-help"
                         disabled={auth.busy || !canEditShownOptions}
-                        className="login-channel-trigger h-11 min-h-11 w-full justify-between bg-white/40 font-normal">
-                        <span>{loginTypeLabels[displayedLoginType]}</span>
-                        <ChevronDown aria-hidden="true" className="size-4 text-muted-foreground" />
+                        className="login-channel-trigger w-full justify-between font-normal">
+                        <span className="login-channel-selection">
+                          <ChannelBadge app={loginScanApp(displayedLoginType)} />
+                          <span className="login-channel-copy">
+                            <strong>{loginTypeLabels[displayedLoginType]}</strong>
+                            <span>{loginScanApp(displayedLoginType)}扫码 · {channelDevice(displayedLoginType)}账号</span>
+                          </span>
+                        </span>
+                        <span className="channel-chevron"><ChevronDown aria-hidden="true" className="size-4" /></span>
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="start" collisionPadding={8} className="login-channel-menu">
                       <DropdownMenuRadioGroup value={displayedLoginType} aria-labelledby="login-channel-label"
                         onValueChange={value => { const type = parseLoginType(value); if (type) setLoginType(type); }}>
-                        {loginTypes.map(type => <DropdownMenuRadioItem key={type} value={type} className="min-h-11 px-3">
-                          {loginTypeLabels[type]}
+                        {loginTypes.map(type => <DropdownMenuRadioItem key={type} value={type} aria-label={loginTypeLabels[type]} className="login-channel-option">
+                          <ChannelBadge app={loginScanApp(type)} />
+                          <span className="login-channel-copy">
+                            <strong>{loginTypeLabels[type]}</strong>
+                            <span>{loginScanApp(type)}扫码 · {channelDevice(type)}账号</span>
+                          </span>
                         </DropdownMenuRadioItem>)}
                       </DropdownMenuRadioGroup>
                     </DropdownMenuContent>
@@ -422,27 +447,26 @@ export default function App() {
               )}
 
               {auth.user && (
-                <label className="equipment-options mt-3 flex w-full max-w-sm items-start gap-3 rounded-xl border border-primary/15 bg-white/40 px-4 py-3" data-editable={canEditShownOptions}>
-                  <span className="equipment-switch">
-                    <input
-                      type="checkbox"
-                      className="mt-0.5 size-4 shrink-0 accent-primary disabled:cursor-not-allowed"
-                      checked={displayedUserOptions.secretRealmOnce}
-                      disabled={auth.busy || !canEditShownOptions}
-                      onChange={event => setSecretRealmOnce(event.target.checked)}
-                      aria-labelledby="secret-realm-once-label"
-                      aria-describedby="secret-realm-once-help"
-                    />
-                    <span className="equipment-switch-track" aria-hidden="true" />
-                  </span>
-                  <span>
-                    <span id="secret-realm-once-label" className="block text-sm font-medium max-sm:text-xs max-sm:text-[#eee4ef]">秘境仅刷一次</span>
-                    <span className="mobile-option-caption" aria-hidden="true">本次任务设置</span>
-                    <span id="secret-realm-once-help" className="mt-1 hidden text-xs leading-5 text-muted-foreground sm:block">
-                      {canEditShownOptions ? '开启后，成功完成一次秘境或发现扫荡券为 0，即结束本次日常；不勾选则按原流程扫荡。' : '本次申请的选择已保存，重新申请时可修改。'}
-                    </span>
-                  </span>
-                </label>
+                <fieldset className="secret-realm-options mt-4 w-full max-w-sm" role="radiogroup"
+                  aria-labelledby="secret-realm-mode-label" aria-describedby="secret-realm-mode-help"
+                  disabled={auth.busy || !canEditShownOptions} data-editable={canEditShownOptions}>
+                  <legend><span id="secret-realm-mode-label">秘境探险</span><span>{canEditShownOptions ? '本次任务设置' : '已保存'}</span></legend>
+                  <div className="secret-realm-choices">
+                    {secretRealmChoices.map(choice => <label key={choice.value} className="secret-realm-option"
+                      data-selected={displayedUserOptions.secretRealmMode === choice.value}>
+                      <input type="radio" name="secret-realm-mode" value={choice.value}
+                        checked={displayedUserOptions.secretRealmMode === choice.value}
+                        onChange={() => setSecretRealmMode(choice.value)}
+                        aria-labelledby={`secret-realm-${choice.value}-label`} aria-describedby={`secret-realm-${choice.value}-help`} />
+                      <span className="secret-realm-radio" aria-hidden="true"><Check className="size-3" /></span>
+                      <span className="secret-realm-copy">
+                        <strong id={`secret-realm-${choice.value}-label`}>{choice.title}</strong>
+                        <span id={`secret-realm-${choice.value}-help`}>{choice.description}</span>
+                      </span>
+                    </label>)}
+                  </div>
+                  <p id="secret-realm-mode-help">{canEditShownOptions ? '选择本次秘境的执行方式。' : '本次申请的选择已保存，重新申请时可修改。'}</p>
+                </fieldset>
               )}
 
               {!auth.loading && <Button
@@ -531,7 +555,6 @@ export default function App() {
               <div className="mobile-login-help flex flex-wrap items-center justify-center gap-x-2 gap-y-1 sm:hidden">
                 <LoginHelp />
                 {auth.user && !canEditShownOptions && <span className="text-xs text-muted-foreground">{displayedUserOptions.equipmentStamina ? '装备栏体力刷取已开启' : '装备栏体力刷取未开启'}</span>}
-                {auth.user && !canEditShownOptions && <span className="text-xs text-muted-foreground">{displayedUserOptions.secretRealmOnce ? '秘境仅刷一次已开启' : '秘境按原流程扫荡'}</span>}
               </div>
             </CardFooter>
           </Card>

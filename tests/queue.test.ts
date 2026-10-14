@@ -10,7 +10,7 @@ const config = { redisUrl: 'redis://localhost:6379', redisQueueKey: 'naruto:logi
 const task: Submission = { id: '123e4567-e89b-42d3-a456-426614174000',
   userId: '456e7890-e89b-42d3-a456-426614174000', accessToken: 'a'.repeat(64),
   createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 120000).toISOString(),
-  userOptions: { equipmentStamina: true, secretRealmOnce: false } };
+  userOptions: { equipmentStamina: true, secretRealmMode: 'all' } };
 const stored = { id: task.id, userId: task.userId, status: 'queued', createdAt: task.createdAt, expiresAt: task.expiresAt,
   simulation: true, tokenHash: createHash('sha256').update(task.accessToken).digest('hex') };
 
@@ -113,14 +113,16 @@ test('Redis 返回既有会话时视为成功，重复提交保留原申请内�
   await assert.rejects(invalid.enqueue(task), { status: 502 });
 });
 
-test('装备体力和秘境单次选择的四种组合随统一 userOptions JSON 入队，不拆成独立字段或 key', async () => {
-  for (const equipmentStamina of [true, false]) for (const secretRealmOnce of [true, false]) {
-    const userOptions = { equipmentStamina, secretRealmOnce };
+test('装备体力和三种秘境模式随统一 userOptions JSON 入队，不拆成独立字段或 key', async () => {
+  for (const equipmentStamina of [true, false]) for (const secretRealmMode of ['once', 'all', 'skip'] as const) {
+    const userOptions = { equipmentStamina, secretRealmMode };
     const service = new TaskService(config, () => driver({ eval: async (_script, options) => {
       const payload = JSON.parse(options.arguments[2]);
       assert.deepEqual(payload.userOptions, userOptions);
       assert.equal(Object.hasOwn(payload, 'equipmentStamina'), false);
       assert.equal(Object.hasOwn(payload, 'secretRealmOnce'), false);
+      assert.equal(Object.hasOwn(payload, 'secretRealmMode'), false);
+      assert.equal(Object.hasOwn(payload.userOptions, 'secretRealmOnce'), false);
       assert.deepEqual(JSON.parse(options.arguments[0]).userOptions, userOptions);
       assert.equal(options.keys.length, 4, 'options share the task payload and session, without another Redis key');
       return 1;
@@ -130,9 +132,9 @@ test('装备体力和秘境单次选择的四种组合随统一 userOptions JSON
   }
 });
 
-test('刷新二维码沿用会话内两项选择，旧会话的秘境选项补为默认关闭，损坏选项拒绝读取', async () => {
-  for (const equipmentStamina of [true, false]) for (const secretRealmOnce of [true, false]) {
-    const userOptions = { equipmentStamina, secretRealmOnce };
+test('刷新二维码沿用三种秘境选择，旧会话默认为全部刷取，损坏选项拒绝读取', async () => {
+  for (const equipmentStamina of [true, false]) for (const secretRealmMode of ['once', 'all', 'skip'] as const) {
+    const userOptions = { equipmentStamina, secretRealmMode };
     const service = new TaskService(config, () => driver({ eval: async (script, options) => {
       assert.deepEqual(options.keys, [`${config.redisQueueKey}:sessions:${task.id}`,
         `${config.redisQueueKey}:refresh:${task.id}`, `${config.redisQueueKey}:runs:${task.id}`]);
@@ -147,11 +149,24 @@ test('刷新二维码沿用会话内两项选择，旧会话的秘境选项补�
       get: async () => JSON.stringify({ ...stored, userOptions: { equipmentStamina } }),
     }), () => now);
     assert.deepEqual((await service.getForUser(task.id, task.userId)).userOptions,
-      { equipmentStamina, secretRealmOnce: false });
+      { equipmentStamina, secretRealmMode: 'all' });
+  }
+  for (const secretRealmOnce of [true, false]) {
+    const service = new TaskService(config, () => driver({
+      get: async () => JSON.stringify({ ...stored, userOptions: { equipmentStamina: false, secretRealmOnce } }),
+    }), () => now);
+    assert.deepEqual((await service.getForUser(task.id, task.userId)).userOptions,
+      { equipmentStamina: false, secretRealmMode: secretRealmOnce ? 'once' : 'all' });
   }
   for (const secretRealmOnce of ['true', 1, null, [], {}]) {
     const service = new TaskService(config, () => driver({
       get: async () => JSON.stringify({ ...stored, userOptions: { equipmentStamina: true, secretRealmOnce } }),
+    }), () => now);
+    await assert.rejects(service.getForUser(task.id, task.userId), { status: 502 });
+  }
+  for (const secretRealmMode of ['invalid', true, null, [], {}]) {
+    const service = new TaskService(config, () => driver({
+      get: async () => JSON.stringify({ ...stored, userOptions: { equipmentStamina: true, secretRealmMode } }),
     }), () => now);
     await assert.rejects(service.getForUser(task.id, task.userId), { status: 502 });
   }

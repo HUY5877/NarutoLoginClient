@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { loginFailure } from '../../shared/task-errors';
-import { DEFAULT_USER_OPTIONS, parseUserOptions, type UserOptions } from '../../shared/user-options';
+import { DEFAULT_USER_OPTIONS, parseUserOptions, secretRealmModes, type SecretRealmMode, type UserOptions } from '../../shared/user-options';
 import { DEFAULT_LOGIN_TYPE, parseLoginType, type LoginType } from '../../shared/login-types';
 import { expireLoginSession } from '../lib/login-expiry';
 
@@ -488,8 +488,10 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     setEquipmentStamina: (equipmentStamina: boolean) => {
       if (canEditUserOptions && !runningRef.current) setUserOptions(previous => ({ ...previous, equipmentStamina }));
     },
-    setSecretRealmOnce: (secretRealmOnce: boolean) => {
-      if (canEditUserOptions && !runningRef.current) setUserOptions(previous => ({ ...previous, secretRealmOnce }));
+    setSecretRealmMode: (secretRealmMode: SecretRealmMode) => {
+      if (canEditUserOptions && !runningRef.current && secretRealmModes.includes(secretRealmMode)) {
+        setUserOptions(previous => ({ ...previous, secretRealmMode }));
+      }
     },
     retryQuery: () => run(userId && readPending(userId) ? 'recover' : 'query'), handleQrError,
   };

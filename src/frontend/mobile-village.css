@@ -208,8 +208,15 @@
   .equipment-options { width: 100%; min-height: 3.5rem; margin-top: 0.875rem; padding: 0.625rem 0.75rem; border: 1px solid #d5c4da29; border-radius: 0.75rem; background: linear-gradient(100deg, #e4d1ef0a, #d7c0e60d); align-items: center; flex-direction: row-reverse; justify-content: space-between; gap: 0.625rem; cursor: pointer; }
   .login-channel { margin-top: 0.875rem; }
   .login-channel > label { font-size: 0.75rem; color: #eee4ef; }
-  .login-channel-trigger { border-color: #d5c4da3d; background: #302b34; color: #f6f1ed; }
+  .login-channel-trigger { min-height: 3.75rem; height: 3.75rem; padding: .5rem .625rem; }
   .login-channel > p { color: #c7bcc8; }
+  .secret-realm-options { margin-top: .875rem; }
+  .secret-realm-options > legend { font-size: .75rem; }
+  .secret-realm-choices { gap: .375rem; margin-top: .5rem; }
+  .secret-realm-option { min-height: 3.5rem; gap: .625rem; padding: .5rem .625rem; }
+  .secret-realm-copy > strong { font-size: .75rem; }
+  .secret-realm-copy > span { font-size: .625rem; }
+  .secret-realm-options[data-editable='false'] .secret-realm-option:not([data-selected='true']) { display: none; }
   .equipment-options [id='equipment-stamina-label'] { font-size: 0.75rem; color: #eee4ef; }
   .mobile-option-caption { display: block; margin-top: 0.1875rem; color: #b2a2b6; font-size: 0.625rem; }
   .equipment-options [id='equipment-stamina-help'],

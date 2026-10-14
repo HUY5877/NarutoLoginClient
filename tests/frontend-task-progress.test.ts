@@ -188,7 +188,7 @@ test('首次秘境完成后继续扫荡显示初步完成，二维码过期或�
 test('秘境仅刷一次完成标记到达后显示正在结算结束，完整终态仍显示任务已完成', () => {
   for (const phase of ['queued', 'expired', 'query_failed', 'idle'] as const) {
     const current = input('running_daily', { phase, session: phase === 'idle' ? null : { ...session, status: 'expired' } });
-    current.view.task = { ...current.view.task!, userOptions: { equipmentStamina: true, secretRealmOnce: true } };
+    current.view.task = { ...current.view.task!, userOptions: { equipmentStamina: true, secretRealmMode: 'once' } };
     current.view.run!.secretRealmCompletedAt = at;
     const progress = deriveTaskProgress(current);
     assert.equal(progress.summary, '日常任务已初步完成');
@@ -201,6 +201,31 @@ test('秘境仅刷一次完成标记到达后显示正在结算结束，完整�
     current.view.run!.finishedAt = at;
     assert.equal(deriveTaskProgress(current).summary, '任务已完成');
     assert.deepEqual(states(current), ['completed', 'completed', 'completed']);
+  }
+});
+
+test('不刷秘境模式忽略旧秘境完成标记，完整日常完成仍正常显示', () => {
+  for (const status of ['running_daily', 'failed', 'interrupted', 'completed'] as const) {
+    const current = input(status);
+    current.view.task = { ...current.view.task!, userOptions: { equipmentStamina: false, secretRealmMode: 'skip' } };
+    Object.assign(current.view.run!, { startedAt: at, secretRealmCompletedAt: at,
+      ...(status === 'failed' ? { errorCode: 'daily_timeout' } : {}) });
+    const progress = deriveTaskProgress(current);
+    assert.equal(progress.summary, status === 'completed' ? '任务已完成' : status === 'running_daily' ? '脚本执行中' : '脚本执行失败');
+    assert.equal(progress.steps[2].state, status === 'completed' ? 'completed' : status === 'running_daily' ? 'active' : 'failed');
+    assert.doesNotMatch(`${progress.steps[2].description} ${progress.hint}`, /秘境|扫荡券|初步完成/);
+  }
+});
+
+test('单次秘境结算后的超时或异常不声称仍有后续秘境扫荡', () => {
+  for (const errorCode of ['daily_timeout', 'daily_failed']) {
+    const current = input('failed');
+    current.view.task = { ...current.view.task!, userOptions: { equipmentStamina: true, secretRealmMode: 'once' } };
+    Object.assign(current.view.run!, { startedAt: at, secretRealmCompletedAt: at, errorCode });
+    const progress = deriveTaskProgress(current);
+    assert.equal(progress.summary, '日常任务已初步完成');
+    assert.equal(progress.steps[2].state, errorCode === 'daily_timeout' ? 'completed' : 'failed');
+    assert.doesNotMatch(`${progress.steps[2].description} ${progress.hint}`, /剩余秘境扫荡|后续秘境扫荡|还在扫荡/);
   }
 });
 

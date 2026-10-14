@@ -596,7 +596,7 @@ test('任务日志接口使用 Cookie 身份，独立于二维码过期且不调
   const unexpected = async (): Promise<never> => assert.fail('run logs must not touch login dispatch or QR storage');
   const calls: unknown[][] = [];
   const task = { id, status: 'expired' as const, createdAt: baseTask.createdAt, expiresAt: baseTask.createdAt,
-    userOptions: { equipmentStamina: false, secretRealmOnce: true } };
+    userOptions: { equipmentStamina: false, secretRealmMode: 'once' as const } };
   const result = { task, run: null, logs: [], nextCursor: '123-4', hasMore: false, truncated: false };
   await withApi({ events: events({ create: unexpected, getForUser: unexpected, getActive: unexpected, recordStatus: unexpected }),
     storage: { exists: unexpected, read: unexpected }, runs: {
@@ -636,35 +636,43 @@ test('日志游标拒绝重复参数和非法范围，服务错误仅返回脱�
   });
 });
 
-test('用户选项通过统一 JSON 传入服务，兼容旧请求且严格区分布尔开关', async () => {
+test('用户选项通过统一 JSON 传入三种秘境模式，兼容旧布尔请求且拒绝冲突参数', async () => {
   const received: unknown[] = [];
   const combinations = [true, false].flatMap(equipmentStamina =>
-    [true, false].map(secretRealmOnce => ({ equipmentStamina, secretRealmOnce })));
+    (['once', 'all', 'skip'] as const).map(secretRealmMode => ({ equipmentStamina, secretRealmMode })));
   await withApi({ events: events({ create: async (_userId, _requestId, userOptions) => {
     received.push(userOptions);
     return { ...baseTask, userOptions };
   } }) }, async base => {
     for (const body of [{}, { userOptions: {} }, { userOptions: { equipmentStamina: true } },
-      { userOptions: { equipmentStamina: false } }, { userOptions: { secretRealmOnce: true } },
+      { userOptions: { equipmentStamina: false } }, { userOptions: { secretRealmMode: 'once' } },
+      { userOptions: { secretRealmOnce: true } }, { userOptions: { secretRealmOnce: false } },
+      { userOptions: { secretRealmMode: 'once', secretRealmOnce: true } },
+      { userOptions: { secretRealmMode: 'all', secretRealmOnce: false } },
       ...combinations.map(userOptions => ({ userOptions }))]) {
       const response = await fetch(`${base}/api/login-sessions`, { ...post, body: JSON.stringify({ requestId, ...body }) });
       assert.equal(response.status, 202);
       assert.deepEqual((await response.json() as Task).userOptions, received.at(-1));
     }
-    assert.deepEqual(received, [{ equipmentStamina: true, secretRealmOnce: false },
-      { equipmentStamina: true, secretRealmOnce: false }, { equipmentStamina: true, secretRealmOnce: false },
-      { equipmentStamina: false, secretRealmOnce: false }, { equipmentStamina: true, secretRealmOnce: true },
+    assert.deepEqual(received, [{ equipmentStamina: true, secretRealmMode: 'all' },
+      { equipmentStamina: true, secretRealmMode: 'all' }, { equipmentStamina: true, secretRealmMode: 'all' },
+      { equipmentStamina: false, secretRealmMode: 'all' }, { equipmentStamina: true, secretRealmMode: 'once' },
+      { equipmentStamina: true, secretRealmMode: 'once' }, { equipmentStamina: true, secretRealmMode: 'all' },
+      { equipmentStamina: true, secretRealmMode: 'once' }, { equipmentStamina: true, secretRealmMode: 'all' },
       ...combinations]);
     for (const userOptions of [null, [], 'false', true, { equipmentStamina: 'false' },
       { equipmentStamina: 0 }, { equipmentStamina: null }, { equipmentStamina: false, workerId: 'forged' },
       { secretRealmOnce: 'true' }, { secretRealmOnce: 1 }, { secretRealmOnce: null },
       { secretRealmOnce: [] }, { secretRealmOnce: {}, equipmentStamina: false },
-      { secretRealmOnce: true, unknownOption: false }]) {
+      { secretRealmMode: 'once', unknownOption: false }, { secretRealmMode: 'invalid' },
+      { secretRealmMode: true }, { secretRealmMode: null }, { secretRealmMode: 0 }, { secretRealmMode: [] },
+      { secretRealmMode: 'skip', secretRealmOnce: false }, { secretRealmMode: 'all', secretRealmOnce: true },
+      { secretRealmMode: 'once', secretRealmOnce: false }]) {
       const response = await fetch(`${base}/api/login-sessions`, { ...post, body: JSON.stringify({ requestId, userOptions }) });
       assert.equal(response.status, 400, JSON.stringify(userOptions));
       assert.equal((await response.json() as { code: string }).code, 'INVALID_USER_OPTIONS');
     }
-    assert.equal(received.length, 9, 'invalid options must not reserve or dispatch a task');
+    assert.equal(received.length, 15, 'invalid options must not reserve or dispatch a task');
   });
 });
 
