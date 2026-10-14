@@ -16,6 +16,7 @@ import {
   ScanLine,
   ShieldCheck,
   Smartphone,
+  Sparkles,
   TimerOff,
   UserRound,
 } from 'lucide-react';
@@ -89,10 +90,10 @@ import { deriveDailyCompletion } from '@/lib/daily-completion';
 import { DEFAULT_USER_OPTIONS, parseUserOptions, type SecretRealmMode } from '../shared/user-options';
 import { DEFAULT_LOGIN_TYPE, loginTypes, loginTypeLabels, loginScanApp, parseLoginType } from '../shared/login-types';
 
-const secretRealmChoices: Array<{ value: SecretRealmMode; title: string; description: string }> = [
-  { value: 'once', title: '只刷一次就退出', description: '成功结算一次或扫荡券为 0 后，结束本次日常。' },
-  { value: 'all', title: '用完所有扫荡卷', description: '持续扫荡，直到券用完或到达执行时限。' },
-  { value: 'skip', title: '不刷秘境', description: '跳过秘境探险，完成其余日常。' },
+const secretRealmChoices: Array<{ value: SecretRealmMode; title: string }> = [
+  { value: 'once', title: '只刷一次就退出' },
+  { value: 'all', title: '用完所有扫荡卷' },
+  { value: 'skip', title: '不刷秘境' },
 ];
 
 function ChannelBadge({ app }: { app: 'QQ' | '微信' }) {
@@ -447,26 +448,29 @@ export default function App() {
               )}
 
               {auth.user && (
-                <fieldset className="secret-realm-options mt-4 w-full max-w-sm" role="radiogroup"
-                  aria-labelledby="secret-realm-mode-label" aria-describedby="secret-realm-mode-help"
-                  disabled={auth.busy || !canEditShownOptions} data-editable={canEditShownOptions}>
-                  <legend><span id="secret-realm-mode-label">秘境探险</span><span>{canEditShownOptions ? '本次任务设置' : '已保存'}</span></legend>
-                  <div className="secret-realm-choices">
-                    {secretRealmChoices.map(choice => <label key={choice.value} className="secret-realm-option"
-                      data-selected={displayedUserOptions.secretRealmMode === choice.value}>
-                      <input type="radio" name="secret-realm-mode" value={choice.value}
-                        checked={displayedUserOptions.secretRealmMode === choice.value}
-                        onChange={() => setSecretRealmMode(choice.value)}
-                        aria-labelledby={`secret-realm-${choice.value}-label`} aria-describedby={`secret-realm-${choice.value}-help`} />
-                      <span className="secret-realm-radio" aria-hidden="true"><Check className="size-3" /></span>
-                      <span className="secret-realm-copy">
-                        <strong id={`secret-realm-${choice.value}-label`}>{choice.title}</strong>
-                        <span id={`secret-realm-${choice.value}-help`}>{choice.description}</span>
-                      </span>
-                    </label>)}
-                  </div>
-                  <p id="secret-realm-mode-help">{canEditShownOptions ? '选择本次秘境的执行方式。' : '本次申请的选择已保存，重新申请时可修改。'}</p>
-                </fieldset>
+                <div className="secret-realm-options mt-4 w-full max-w-sm space-y-2">
+                  <label id="secret-realm-mode-label" htmlFor="secret-realm-mode-trigger" className="text-sm font-medium">秘境探险</label>
+                  <DropdownMenu modal={false}>
+                    <DropdownMenuTrigger asChild>
+                      <Button id="secret-realm-mode-trigger" type="button" variant="outline"
+                        aria-labelledby="secret-realm-mode-label" aria-describedby="secret-realm-mode-value" disabled={auth.busy || !canEditShownOptions}
+                        className="login-channel-trigger w-full justify-between font-normal">
+                        <span className="login-channel-selection">
+                          <span className="channel-app-badge" aria-hidden="true"><Sparkles className="size-5" /></span>
+                          <span className="login-channel-copy"><strong id="secret-realm-mode-value">{secretRealmChoices.find(choice => choice.value === displayedUserOptions.secretRealmMode)?.title ?? '用完所有扫荡卷'}</strong></span>
+                        </span>
+                        <span className="channel-chevron"><ChevronDown aria-hidden="true" className="size-4" /></span>
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" collisionPadding={8} className="login-channel-menu secret-realm-menu">
+                      <DropdownMenuRadioGroup value={displayedUserOptions.secretRealmMode} aria-labelledby="secret-realm-mode-label"
+                        onValueChange={value => { const choice = secretRealmChoices.find(choice => choice.value === value); if (choice) setSecretRealmMode(choice.value); }}>
+                        {secretRealmChoices.map(choice => <DropdownMenuRadioItem key={choice.value} value={choice.value}
+                          className="login-channel-option">{choice.title}</DropdownMenuRadioItem>)}
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
               )}
 
               {!auth.loading && <Button

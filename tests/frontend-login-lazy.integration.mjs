@@ -45,7 +45,19 @@ function deferred() {
 const callsToLogin = calls => calls.filter(call => call.path.startsWith('/api/login-sessions'));
 const generate = page => page.getByRole('button', { name: '启动模拟器获取二维码', exact: true });
 const equipmentStamina = page => page.locator('input[aria-labelledby="equipment-stamina-label"]');
-const secretRealmMode = (page, mode = 'once') => page.locator(`input[name="secret-realm-mode"][value="${mode}"]`);
+const secretRealmTitles = { once: '只刷一次就退出', all: '用完所有扫荡卷', skip: '不刷秘境' };
+const secretRealmTrigger = page => page.getByRole('button', { name: '秘境探险', exact: true });
+const secretRealmMode = (page, mode = 'once') => ({
+  async check() {
+    if (await this.isChecked()) return;
+    await secretRealmTrigger(page).click();
+    await page.getByRole('menuitemradio', { name: secretRealmTitles[mode], exact: true }).click();
+    await page.getByRole('menu').waitFor({ state: 'hidden' });
+  },
+  isChecked: async () => (await secretRealmTrigger(page).getByText(secretRealmTitles[mode], { exact: true }).count()) > 0,
+  isDisabled: () => secretRealmTrigger(page).isDisabled(),
+  isEnabled: () => secretRealmTrigger(page).isEnabled(),
+});
 const expandRecords = page => page.getByRole('button', { name: '展开记录', exact: true });
 async function waitFor(predicate, message, timeout = 8_000) {
   const deadline = Date.now() + timeout;
@@ -131,7 +143,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         async close() { await context.close(); assert.deepEqual(state.errors, []); } };
     }
 
-    await t.test('channel menu keeps page scrolling, background and layout stable on desktop and touch screens', async () => {
+    await t.test('channel and secret realm menus keep page scrolling, background and layout stable on desktop and touch screens', async () => {
       for (const width of [1280, 390]) {
         const touch = width === 390;
         const f = await fixture({ viewport: { width, height: 844 }, hasTouch: touch });
@@ -174,6 +186,22 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           await f.page.getByRole('menu').waitFor({ state: 'hidden' });
           assert.equal(await selector.locator('strong').innerText(), 'iOS QQ 区');
           assert.deepEqual(await readLayout(), before);
+          const realm = secretRealmTrigger(f.page);
+          await realm.scrollIntoViewIfNeeded();
+          await f.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          const beforeRealm = await readLayout();
+          if (touch) await realm.tap(); else await realm.click();
+          await f.page.getByRole('menuitemradio', { name: secretRealmTitles.all, exact: true }).waitFor();
+          assert.deepEqual(await f.page.getByRole('menuitemradio').allTextContents(), Object.values(secretRealmTitles));
+          assert.equal(await f.page.getByRole('menuitemradio', { name: secretRealmTitles.all, exact: true }).getAttribute('aria-checked'), 'true');
+          for (let frame = 0; frame < 8; frame += 1) {
+            await f.page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+            assert.deepEqual(await readLayout(), beforeRealm, 'opening the secret realm menu must not lock body or move the page');
+          }
+          await f.page.keyboard.press('Escape');
+          await f.page.getByRole('menu').waitFor({ state: 'hidden' });
+          assert.deepEqual(await readLayout(), beforeRealm);
+          assert.equal(await realm.evaluate(element => document.activeElement === element), true);
           assert.deepEqual(callsToLogin(f.state.calls), [], 'choosing a channel does not start a login task');
         } finally { await f.close(); }
       }
@@ -299,7 +327,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           await f.open();
           assert.equal(await secretRealmMode(f.page).isChecked(), false);
           assert.equal(await secretRealmMode(f.page, 'all').isChecked(), true, 'All tickets is the default');
-          assert.equal(await f.page.getByRole('radiogroup', { name: '秘境探险', exact: true }).getByRole('radio').count(), 3);
+          assert.equal(await f.page.getByRole('menuitemradio').count(), 0, 'Secret realm choices remain collapsed until opened');
           assert.equal(await secretRealmMode(f.page).isEnabled(), true);
           assert.equal(await equipmentStamina(f.page).isChecked(), true);
           await secretRealmMode(f.page).check();
@@ -313,23 +341,33 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           assert.deepEqual(Object.keys(posts[0].body).sort(), ['loginType', 'requestId', 'userOptions']);
           assert.equal(await secretRealmMode(f.page, mode).isChecked(), true);
           for (const option of ['once', 'all', 'skip']) assert.equal(await secretRealmMode(f.page, option).isDisabled(), true);
-          if (mobile) assert.equal(await f.page.getByRole('radiogroup', { name: '秘境探险', exact: true }).getByRole('radio').count(), 1, 'Saved mobile settings keep the selected card visible');
+          await secretRealmTrigger(f.page).click({ force: true });
+          assert.equal(await f.page.getByRole('menuitemradio').count(), 0, 'Locked settings cannot open the menu');
+          assert.equal(await secretRealmTrigger(f.page).isVisible(), true, 'The saved selection stays visible on desktop and mobile');
         } finally { await f.close(); }
       });
     }
 
-    await t.test('secret realm radio choices support keyboard selection with reduced motion', async () => {
+    await t.test('secret realm menu supports keyboard selection with reduced motion', async () => {
       const f = await fixture({ viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
       try {
         await f.open();
-        await secretRealmMode(f.page, 'all').focus();
-        await secretRealmMode(f.page, 'all').press('ArrowRight');
+        const trigger = secretRealmTrigger(f.page);
+        await trigger.focus();
+        await trigger.press('ArrowDown');
+        const menu = f.page.getByRole('menu');
+        await menu.waitFor();
+        assert.ok(await menu.evaluate(element => parseFloat(getComputedStyle(element).animationDuration) < .001));
+        await f.page.keyboard.press('End');
+        await f.page.keyboard.press('Enter');
+        await menu.waitFor({ state: 'hidden' });
         assert.equal(await secretRealmMode(f.page, 'skip').isChecked(), true);
-        await secretRealmMode(f.page, 'skip').press('ArrowLeft');
-        assert.equal(await secretRealmMode(f.page, 'all').isChecked(), true);
-        await secretRealmMode(f.page, 'all').press('ArrowLeft');
+        await trigger.press('ArrowDown');
+        await menu.waitFor();
+        await f.page.keyboard.press('Home');
+        await f.page.keyboard.press('Enter');
+        await menu.waitFor({ state: 'hidden' });
         assert.equal(await secretRealmMode(f.page).isChecked(), true);
-        assert.ok(await f.page.locator('.secret-realm-option').first().evaluate(element => parseFloat(getComputedStyle(element).transitionDuration) < .001));
         assert.deepEqual(callsToLogin(f.state.calls), [], 'Choosing a mode never dispatches a login task');
       } finally { await f.close(); }
     });

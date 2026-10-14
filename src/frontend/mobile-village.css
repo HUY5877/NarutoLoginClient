@@ -211,12 +211,7 @@
   .login-channel-trigger { min-height: 3.75rem; height: 3.75rem; padding: .5rem .625rem; }
   .login-channel > p { color: #c7bcc8; }
   .secret-realm-options { margin-top: .875rem; }
-  .secret-realm-options > legend { font-size: .75rem; }
-  .secret-realm-choices { gap: .375rem; margin-top: .5rem; }
-  .secret-realm-option { min-height: 3.5rem; gap: .625rem; padding: .5rem .625rem; }
-  .secret-realm-copy > strong { font-size: .75rem; }
-  .secret-realm-copy > span { font-size: .625rem; }
-  .secret-realm-options[data-editable='false'] .secret-realm-option:not([data-selected='true']) { display: none; }
+  .secret-realm-options > label { font-size: .75rem; color: #eee4ef; }
   .equipment-options [id='equipment-stamina-label'] { font-size: 0.75rem; color: #eee4ef; }
   .mobile-option-caption { display: block; margin-top: 0.1875rem; color: #b2a2b6; font-size: 0.625rem; }
   .equipment-options [id='equipment-stamina-help'],

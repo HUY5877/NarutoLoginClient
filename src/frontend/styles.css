@@ -194,37 +194,7 @@
 .login-channel-option[data-state='checked'] { border-color: #d7c0e65c; background: #d7c0e620; }
 .login-channel-option [data-slot='dropdown-menu-radio-item-indicator'] { color: #e4d1ef; }
 
-.secret-realm-options { min-inline-size: 0; padding: 0; border: 0; color: #f6f1ed; }
-.secret-realm-options > legend { display: flex; width: 100%; justify-content: space-between; padding: 0; font-size: .8125rem; font-weight: 600; }
-.secret-realm-options > legend > span:last-child { color: #c7bcc8; font-size: .6875rem; font-weight: 400; }
-.secret-realm-choices { display: grid; gap: .5rem; margin-top: .625rem; }
-.secret-realm-option {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: .75rem;
-  min-height: 3.75rem;
-  padding: .625rem .75rem;
-  border: 1px solid #d7c0e62e;
-  border-radius: .875rem;
-  background: #d7c0e609;
-  cursor: pointer;
-  transition: border-color 150ms ease, background 150ms ease;
-}
-.secret-realm-option:hover { border-color: #d7c0e659; background: #d7c0e612; }
-.secret-realm-option[data-selected='true'] { border-color: #d7c0e680; background: linear-gradient(105deg, #d7c0e623, #d7c0e60d); box-shadow: inset 2px 0 0 #d7c0e6; }
-.secret-realm-option:has(input:focus-visible) { outline: 2px solid #d7c0e6; outline-offset: 3px; }
-.secret-realm-option > input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
-.secret-realm-radio { display: grid; place-items: center; flex-shrink: 0; width: 1.125rem; height: 1.125rem; border: 1px solid #d7c0e659; border-radius: 50%; color: #302932; }
-.secret-realm-radio > svg { opacity: 0; }
-.secret-realm-option[data-selected='true'] .secret-realm-radio { border-color: #d7c0e6; background: #d7c0e6; }
-.secret-realm-option[data-selected='true'] .secret-realm-radio > svg { opacity: 1; }
-.secret-realm-copy { display: flex; min-width: 0; flex-direction: column; gap: .125rem; }
-.secret-realm-copy > strong { font-size: .8125rem; font-weight: 500; line-height: 1.5; }
-.secret-realm-copy > span,
-.secret-realm-options > p { color: #c7bcc8; font-size: .6875rem; line-height: 1.5; }
-.secret-realm-options > p { margin-top: .5rem; }
-.secret-realm-options:disabled .secret-realm-option { cursor: default; opacity: .78; }
+.secret-realm-menu .login-channel-option { min-height: 2.75rem; font-size: .8125rem; }
 
 @media (min-width: 640px) {
   .login-shell {

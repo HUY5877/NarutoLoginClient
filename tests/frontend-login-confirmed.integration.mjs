@@ -180,15 +180,12 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         const f = await fixture({ runStatus: 'running_daily', dailyStarted: true, secretRealmCompleted: true, secretRealmMode: 'once', mobile });
         try {
           let details = f.page.locator('#task-run-details');
+          const option = f.page.getByRole('button', { name: '秘境探险', exact: true });
+          await option.getByText('只刷一次就退出', { exact: true }).waitFor();
+          assert.equal(await option.isDisabled(), true);
           if (mobile) {
-            await f.page.getByRole('radio', { name: '只刷一次就退出', exact: true }).waitFor();
             await f.page.getByRole('button', { name: '任务进度与记录', exact: true }).click();
             details = f.page.getByRole('dialog', { name: '本次任务', exact: true });
-          } else {
-            const option = f.page.locator('input[name="secret-realm-mode"][value="once"]');
-            await f.page.waitForFunction(() => document.querySelector('input[name="secret-realm-mode"][value="once"]')?.checked === true);
-            assert.equal(await option.isChecked(), true);
-            assert.equal(await option.isDisabled(), true);
           }
           await details.getByText('日常任务已初步完成，已完成一次秘境探险，正在完成结算并结束本次日常。', { exact: true }).last().waitFor();
           assert.doesNotMatch(await f.page.locator('body').innerText(), /还在扫荡未用完的秘境扫荡券/);
