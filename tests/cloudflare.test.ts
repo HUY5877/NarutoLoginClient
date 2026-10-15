@@ -44,6 +44,7 @@ test('只读取所选独立 namespace，同连接的不同数据库、任务和�
       DATABASE_URL: 'postgresql://obsolete:secret@production.invalid/obsolete',
       REDIS_QUEUE_KEY: 'obsolete:production', OSS_KEY_PREFIX: 'obsolete', PORT: '4400' }, fetch: kv(profiles[profile], calls) });
     const config = await loader();
+    assert.equal(config.appEnv, profile);
     assert.equal(config.databaseUrl, profiles[profile].DATABASE_URL);
     assert.equal(config.redisUrl, profiles[profile].REDIS_URL);
     assert.equal(config.redisQueueKey, profiles[profile].REDIS_QUEUE_KEY);
@@ -61,6 +62,7 @@ test('默认选择 prod；并发及后续初始化复用同一次完整配置读
   const loader = createRuntimeConfigLoader({ env, fetch: kv(profiles.prod, calls) });
   const [first, second] = await Promise.all([loader(), loader()]);
   assert.equal(first, second);
+  assert.equal(first.appEnv, 'prod');
   assert.equal(await loader(), first);
   assert.equal(calls.length, 2);
   assert.match(calls[0].pathname, /\/fixture-prod\/keys$/);
@@ -99,6 +101,7 @@ test('业务连接缺失维持未配置状态，远端引导变量不能改变 p
   assert.equal(config.databaseUrl, undefined);
   assert.equal(config.redisUrl, undefined);
   assert.equal(config.jwtSecret, undefined);
+  assert.equal(config.appEnv, 'test');
   assert(calls.every(url => url.pathname.includes('fixture-account/storage/kv/namespaces/fixture-test/')));
 });
 
@@ -133,6 +136,9 @@ test('缺失监听端口、Cookie、存储方式或本地根目录时拒绝启�
 });
 
 test('缺少引导、无效环境、读取超时及非完整文本值不会发布部分配置或泄漏错误详情', async () => {
+  assert.equal(loadConfig({}).appEnv, 'prod');
+  assert.equal(loadConfig({ APP_ENV: 'test' }).appEnv, 'test');
+  assert.throws(() => loadConfig({ APP_ENV: 'staging' }), /APP_ENV/);
   await assert.rejects(createRuntimeConfigLoader({ env: {} })(), /CLOUDFLARE_API_TOKEN/);
   await assert.rejects(createRuntimeConfigLoader({ env: { ...cloudflareTestEnv, APP_ENV: 'staging' } })(), /APP_ENV/);
   let calls = 0;
@@ -159,7 +165,8 @@ test('同域正式与测试 Cookie 的读取、写入和退出均使用配置名
   const auth: Dependencies['auth'] = { getUser: async token => { received.push(token); return null; },
     login: async () => ({ user: { id: 'fixture', username: 'fixture', isAdmin: false }, token, expiresAt: new Date(Date.now() + 60000) }),
     register: async () => assert.fail(), listApplications: async () => assert.fail(), reviewApplication: async () => assert.fail() };
-  const app = createApp(loadConfig({ SESSION_COOKIE_NAME: cookieName }), { auth,
+  const app = createApp(loadConfig({ APP_ENV: 'test', SESSION_COOKIE_NAME: cookieName,
+    JWT_SECRET: 'private-health-fixture-key-32-bytes', DATABASE_URL: 'postgresql://fixture:private@db.invalid/test' }), { auth,
     storage: { exists: async () => false, read: async () => null },
     events: { create: async () => assert.fail(), getActive: async () => null, getForUser: async () => assert.fail(), recordStatus: async () => {} } });
   const server = app.listen(0, '127.0.0.1');
@@ -168,6 +175,9 @@ test('同域正式与测试 Cookie 的读取、写入和退出均使用配置名
   assert(address && typeof address !== 'string');
   const base = `http://127.0.0.1:${address.port}`;
   try {
+    const health = await fetch(`${base}/api/health`);
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { ok: true, storage: 'local', simulation: true, environment: 'test' });
     await fetch(`${base}/api/auth/me`, { headers: { Cookie: `naruto_session=prod.fixture.signature; ${cookieName}=${token}` } });
     await fetch(`${base}/api/auth/me`, { headers: { Cookie: 'naruto_session=prod.fixture.signature' } });
     assert.deepEqual(received, [token, undefined]);

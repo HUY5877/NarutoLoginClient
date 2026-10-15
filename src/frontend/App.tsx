@@ -28,6 +28,7 @@ import { MobileVillageHero } from '@/components/mobile-village-hero';
 import { KonanPortrait } from '@/components/konan-portrait';
 import { MobileTaskSheet } from '@/components/mobile-task-sheet';
 import { TaskProgressCards } from '@/components/task-progress-cards';
+import { SiteEnvironmentBadge } from '@/components/site-environment-badge';
 import {
   Accordion,
   AccordionContent,
@@ -226,7 +227,7 @@ export default function App() {
             <span className="headband-mark" aria-hidden="true">
               <img src="/icons/leaf-village.svg" alt="" width="32" height="32" />
             </span>
-            <span className="text-base font-bold tracking-wide">忍者日常</span>
+            <span className="text-base font-bold tracking-wide">忍者日常<SiteEnvironmentBadge /></span>
             <Separator orientation="vertical" className="mx-1 hidden h-5! sm:block" />
             <span className="hidden text-xs text-muted-foreground sm:block">扫码清日常</span>
           </div>

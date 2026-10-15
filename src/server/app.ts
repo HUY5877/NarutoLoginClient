@@ -59,7 +59,9 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     requestLogContext.run({ requestId, method: req.method, path: logPath(req), ...(vercelRequestId ? { vercelRequestId } : {}) }, next);
   });
   app.use(express.json({ limit: '2kb' }));
-  app.get('/api/health', (_req, res) => res.json({ ok: true, storage: config.storageDriver, simulation: true }));
+  app.get('/api/health', (_req, res) => res.json({
+    ok: true, storage: config.storageDriver, simulation: true, environment: config.appEnv ?? 'prod',
+  }));
 
   app.use('/api', (req, _res, next) => {
     if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();

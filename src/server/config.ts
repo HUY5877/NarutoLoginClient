@@ -6,6 +6,7 @@ const moduleDir = dirname(fileURLToPath(import.meta.url));
 const serverRoot = existsSync(resolve(moduleDir, 'package.json')) ? moduleDir : resolve(moduleDir, '..');
 
 export interface Config {
+  appEnv?: 'prod' | 'test';
   host: string;
   port: number;
   redisUrl?: string;
@@ -33,6 +34,8 @@ function integer(env: NodeJS.ProcessEnv, key: string, fallback: number, min: num
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  const appEnv = env.APP_ENV ?? 'prod';
+  if (appEnv !== 'prod' && appEnv !== 'test') throw new Error('APP_ENV 必须为 prod 或 test');
   const storageDriver = env.STORAGE_DRIVER ?? 'local';
   if (storageDriver !== 'local' && storageDriver !== 'oss') throw new Error('STORAGE_DRIVER 必须为 local 或 oss');
   const redisUrl = env.REDIS_URL?.trim() || undefined;
@@ -58,6 +61,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const sessionCookieName = env.SESSION_COOKIE_NAME ?? 'naruto_session';
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(sessionCookieName)) throw new Error('SESSION_COOKIE_NAME 格式不正确');
   const config: Config = {
+    appEnv,
     host: env.HOST ?? '127.0.0.1', port: integer(env, 'PORT', 4300, 1, 65535),
     redisUrl, redisQueueKey, databaseUrl, jwtSecret,
     localObjectsDir: resolve(env.LOCAL_OBJECTS_DIR ?? resolve(serverRoot, '../../.data/login-objects')),

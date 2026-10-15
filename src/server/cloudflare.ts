@@ -102,7 +102,7 @@ async function load({ env = process.env, fetch: request = globalThis.fetch, time
     ...(selected.STORAGE_DRIVER === 'local' ? ['LOCAL_OBJECTS_DIR'] : [])]) {
     if (!selected[key]?.trim()) throw new Error(`Cloudflare ${profile} 缺少 ${key}，不会回退其他环境配置`);
   }
-  return loadConfig(selected);
+  return loadConfig({ ...selected, APP_ENV: profile });
 }
 
 export const loadRuntimeConfig = createRuntimeConfigLoader();

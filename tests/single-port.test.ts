@@ -151,7 +151,7 @@ test('开发页面、模块、HMR 和 API 共用一个端口，未知 API 保持
 
   assert.equal(health.status, 200);
   assert.match(health.headers.get('content-type') ?? '', /application\/json/);
-  assert.deepEqual(await health.json(), { ok: true, storage: 'local', simulation: true });
+  assert.deepEqual(await health.json(), { ok: true, storage: 'local', simulation: true, environment: 'prod' });
   assert.equal(missing.status, 404);
   assert.match(missing.headers.get('content-type') ?? '', /application\/json/);
   assert.deepEqual(await missing.json(), { error: '接口不存在。' });
