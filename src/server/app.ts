@@ -22,7 +22,6 @@ export interface Dependencies {
   now?: () => number;
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const cookieName = 'naruto_session';
 
 function sessionId(req: Request): string {
   const id = req.params.id;
@@ -30,7 +29,7 @@ function sessionId(req: Request): string {
   return id;
 }
 
-function sessionToken(req: Request): string | undefined {
+function sessionToken(req: Request, cookieName: string): string | undefined {
   const value = req.get('Cookie')?.split(';').map(part => part.trim()).find(part => part.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
   return value && value.length <= 2048 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value) ? value : undefined;
 }
@@ -48,6 +47,7 @@ function logPath(req: Request): string {
 
 export function createApp(config: Config, { events, auth, storage, runs, admin, now = Date.now }: Dependencies) {
   const app = express();
+  const cookieName = config.sessionCookieName ?? 'naruto_session';
   app.disable('x-powered-by');
   app.use('/api', (req, res, next) => {
     const requestId = randomUUID();
@@ -74,7 +74,7 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     next();
   });
 
-  app.get('/api/auth/me', async (req, res) => res.json({ user: await auth.getUser(sessionToken(req)) }));
+  app.get('/api/auth/me', async (req, res) => res.json({ user: await auth.getUser(sessionToken(req, cookieName)) }));
   app.post('/api/auth/register', async (req, res) => {
     res.status(201).json(await auth.register(req.body));
   });
@@ -89,7 +89,7 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
   });
 
   app.use('/api/admin', async (req, res, next) => {
-    const user = await auth.getUser(sessionToken(req));
+    const user = await auth.getUser(sessionToken(req, cookieName));
     if (!user) throw new ApiError(401, '请先登录管理员账号。', 'AUTH_REQUIRED');
     if (!user.isAdmin) throw new ApiError(403, '仅管理员可以访问管理功能。', 'ADMIN_REQUIRED');
     res.locals.user = user;
@@ -132,7 +132,7 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
   });
 
   app.use(['/api/login-sessions', '/api/task-runs'], async (req, res, next) => {
-    const user = await auth.getUser(sessionToken(req));
+    const user = await auth.getUser(sessionToken(req, cookieName));
     if (!user) throw new ApiError(401, '请先登录账号，再获取二维码。', 'AUTH_REQUIRED');
     res.locals.user = user;
     next();

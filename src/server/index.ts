@@ -8,7 +8,7 @@ import { createApp } from './app.js';
 import { AuthService } from './auth.js';
 import { PgAuthStore } from './database.js';
 import { LoginEventService } from './login-events.js';
-import { loadConfig } from './config.js';
+import { loadRuntimeConfig } from './cloudflare.js';
 import { releasePort } from './port.js';
 import { createObjectReader } from './storage.js';
 import { TaskService } from './queue.js';
@@ -20,7 +20,7 @@ const serverRoot = existsSync(resolve(moduleDir, 'package.json')) ? moduleDir : 
 const projectRoot = resolve(serverRoot, '../..');
 const frontendRoot = resolve(serverRoot, '../frontend');
 loadEnv({ path: process.env.DOTENV_CONFIG_PATH ?? resolve(projectRoot, '.env') });
-const config = loadConfig();
+const config = await loadRuntimeConfig();
 try {
   await releasePort(config.host, config.port);
 } catch (error) {

@@ -23,6 +23,7 @@ export interface Config {
   ossAccessKeySecret?: string;
   ossStsToken?: string;
   allowedOrigins: string[];
+  sessionCookieName?: string;
 }
 
 function integer(env: NodeJS.ProcessEnv, key: string, fallback: number, min: number, max: number): number {
@@ -54,6 +55,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!/^[a-zA-Z0-9_:{}-]{1,128}$/.test(redisQueueKey)) throw new Error('REDIS_QUEUE_KEY 格式不正确');
   const ossPrefix = (env.OSS_KEY_PREFIX ?? 'login').replace(/^\/+|\/+$/g, '');
   if (!/^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(ossPrefix)) throw new Error('OSS_KEY_PREFIX 格式不正确');
+  const sessionCookieName = env.SESSION_COOKIE_NAME ?? 'naruto_session';
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(sessionCookieName)) throw new Error('SESSION_COOKIE_NAME 格式不正确');
   const config: Config = {
     host: env.HOST ?? '127.0.0.1', port: integer(env, 'PORT', 4300, 1, 65535),
     redisUrl, redisQueueKey, databaseUrl, jwtSecret,
@@ -64,6 +67,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ossAccessKeyId: env.OSS_ACCESS_KEY_ID, ossAccessKeySecret: env.OSS_ACCESS_KEY_SECRET,
     ossStsToken: env.OSS_STS_TOKEN || undefined,
     allowedOrigins: (env.ALLOWED_ORIGINS ?? '').split(',').map(s => s.trim()).filter(Boolean),
+    sessionCookieName,
   };
   if (storageDriver === 'oss' && [config.ossRegion, config.ossBucket, config.ossAccessKeyId, config.ossAccessKeySecret].some(v => !v)) {
     throw new Error('OSS 模式缺少 OSS_REGION、OSS_BUCKET、OSS_ACCESS_KEY_ID 或 OSS_ACCESS_KEY_SECRET');

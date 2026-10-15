@@ -9,6 +9,7 @@ import { dirname, resolve } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { cloudflarePreload, cloudflareTestEnv } from './cloudflare-fixture.js';
 
 async function availablePort() {
   const server = createServer().listen(0, '127.0.0.1');
@@ -78,11 +79,11 @@ test('开发页面、模块、HMR 和 API 共用一个端口，未知 API 保持
   // Only inherit OS essentials; never load the developer's .env or credentials.
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
     /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|TEMP|TMP|HOME|USERPROFILE|APPDATA|LOCALAPPDATA)$/i.test(key)));
-  const child = spawn(process.execPath, ['--import', 'tsx', 'index.ts', '--dev'], {
+  const child = spawn(process.execPath, ['--import', cloudflarePreload, '--import', 'tsx', 'index.ts', '--dev'], {
     cwd: resolve(root, 'src/server'),
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...env, DOTENV_CONFIG_PATH: devNull, NODE_ENV: 'test', NO_COLOR: '1',
+    env: { ...env, ...cloudflareTestEnv, DOTENV_CONFIG_PATH: devNull, NODE_ENV: 'test', NO_COLOR: '1',
       HOST: '127.0.0.1', PORT: String(port), STORAGE_DRIVER: 'local',
       REDIS_URL: '' },
   });

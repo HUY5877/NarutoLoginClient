@@ -4,14 +4,36 @@ import type { Server } from 'node:http';
 import { test } from 'node:test';
 import { AuthService } from '../src/server/auth.js';
 import { TaskRunService } from '../src/server/task-runs.js';
+import { cloudflareTestEnv } from './cloudflare-fixture.js';
+
+async function vercelApp() {
+  const previous = { ...process.env };
+  const originalFetch = globalThis.fetch;
+  try {
+    Object.assign(process.env, cloudflareTestEnv, { REDIS_URL: 'redis://obsolete-production.invalid:6379/0',
+      DATABASE_URL: 'postgresql://obsolete:secret@production.invalid/prod', STORAGE_DRIVER: 'oss' });
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(String(input));
+      assert.equal(url.hostname, 'api.cloudflare.com');
+      if (url.pathname.endsWith('/keys')) {
+        assert.equal(url.searchParams.has('prefix'), false);
+        assert.match(url.pathname, /\/fixture-prod\/keys$/);
+        return Response.json({ success: true, result: ['REDIS_QUEUE_KEY', 'OSS_KEY_PREFIX', 'STORAGE_DRIVER',
+          'PORT', 'SESSION_COOKIE_NAME', 'LOCAL_OBJECTS_DIR'].map(name => ({ name })), result_info: { cursor: '' } });
+      }
+      assert.equal(url.pathname.endsWith('/bulk/get'), true);
+      assert.equal(init?.method, 'POST');
+      return Response.json({ success: true, result: { values: {
+        REDIS_QUEUE_KEY: 'fixture:login:tasks', OSS_KEY_PREFIX: 'fixture-login', STORAGE_DRIVER: 'local',
+        PORT: '4300', SESSION_COOKIE_NAME: 'naruto_session', LOCAL_OBJECTS_DIR: 'fixture-objects',
+      } } });
+    };
+    return (await import('../api/index.js')).default;
+  } finally { process.env = previous; globalThis.fetch = originalFetch; }
+}
 
 test('Vercel 入口无需本地监听配置，识别 HTTPS 同源请求并保留 API 错误响应', async () => {
-  const previous = { ...process.env };
-  delete process.env.REDIS_URL;
-  delete process.env.DATABASE_URL;
-  process.env.STORAGE_DRIVER = 'local';
-  const { default: app } = await import('../api/index.js');
-  process.env = previous;
+  const app = await vercelApp();
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
@@ -62,14 +84,7 @@ test('Vercel 重写参数兼容日志分页，并保留权限、游标及 URL �
   };
   let server: Server | undefined;
   try {
-    const previous = { ...process.env };
-    let app;
-    try {
-      delete process.env.REDIS_URL;
-      delete process.env.DATABASE_URL;
-      process.env.STORAGE_DRIVER = 'local';
-      app = (await import('../api/index.js')).default;
-    } finally { process.env = previous; }
+    const app = await vercelApp();
     server = app.listen(0, '127.0.0.1');
     await once(server, 'listening');
     const address = server.address();

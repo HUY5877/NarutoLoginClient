@@ -4,29 +4,46 @@ React 前端与 TypeScript API 共用一个站点。用户扫码登录后，由�
 
 ## 启动
 
-需要 Node.js 22.12+、npm，以及 PostgreSQL、Redis。首次安装后，将 `.env.example` 复制为 `.env` 并填写配置；已有 `.env` 请保留。
+需要 Node.js 22.12+、npm，以及 PostgreSQL、Redis 和 Cloudflare KV。首次安装后，将 `.env.example` 复制为 `.env`，填写环境选择和 Cloudflare 引导配置；已有 `.env` 请保留。
 
 ```powershell
 npm ci
 npm run dev
 ```
 
-访问 http://127.0.0.1:4300。开发、页面和 API 共用此端口；启动命令会清理占用该端口的旧进程。
+页面与 API 共用一个端口，由选定 Cloudflare namespace 的 `PORT` 决定。启动命令在完整加载、验证云配置后，才清理占用此端口的旧进程。
 
-## 配置
+## 环境与 Cloudflare 配置
+
+本地 `.env` 和 Vercel 环境变量仅保存环境选择和 Cloudflare 引导信息。`APP_ENV` 只能为 `prod` 或 `test`，缺省 `prod`；两套配置共用 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`，分别设置 `CLOUDFLARE_KV_NAMESPACE_ID_PROD` 和 `CLOUDFLARE_KV_NAMESPACE_ID_TEST`。API Token 需具备选定 namespace 的 KV 读取权限。凭据只由后端读取，不使用 `VITE_` 变量。
+
+正式与测试使用两个独立 namespace，各自保存普通字符串键，键名保持一致，例如 `REDIS_QUEUE_KEY`、`DATABASE_URL`。`APP_ENV=test` 只读取测试 namespace；缺少测试 namespace ID 或配置时，不会读取正式 namespace，也不会回退本地已有的业务环境变量。正式环境优先使用 `CLOUDFLARE_KV_NAMESPACE_ID_PROD`，也兼容旧的 `CLOUDFLARE_KV_NAMESPACE_ID`。环境选择、账号、Token 和 namespace ID 始终只来自本地引导信息，不能被远端业务键覆盖。
+
+本地和 Vercel 入口都先加载所选 namespace 的完整配置，再创建 Redis、数据库与 OSS 依赖。每个进程只加载一次；KV 更新后需重启或重新部署。缺少引导信息、读取失败、配置无效或缺少 `REDIS_QUEUE_KEY`、`OSS_KEY_PREFIX`、`PORT`、`SESSION_COOKIE_NAME`、`STORAGE_DRIVER` 时，启动失败；`local` 模式还必须提供 `LOCAL_OBJECTS_DIR`。缺少数据库、Redis 或 JWT 时，相应接口继续返回未配置错误。
+
+下表列出各 namespace 内的普通业务键名。
 
 | 配置 | 用途 |
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL，保存账号、审批与申请记录 |
 | `JWT_SECRET` | 至少 32 字节的随机签名密钥，同环境保持一致 |
 | `REDIS_URL` | 与 ADB 执行端连接同一实例、同一 DB |
-| `STORAGE_DRIVER` | 线上使用 `oss`；本地模拟可用 `local` |
+| `STORAGE_DRIVER` | 必填；线上使用 `oss`，本地模拟可用 `local` |
 | `OSS_REGION`、`OSS_BUCKET` | 二维码所在区域与私有 Bucket |
 | `OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET` | 后端读取 OSS 的凭据 |
+| `REDIS_QUEUE_KEY` | 环境独立的任务队列；会话、锁、刷新指令、执行状态与日志均由此派生 |
+| `OSS_KEY_PREFIX` | 环境独立的二维码对象前缀，必须显式配置 |
+| `SESSION_COOKIE_NAME` | 必填；正式配置 `naruto_session`，同域测试站配置独立名称 |
+| `HOST`、`PORT` | 本地监听地址及端口；`HOST` 缺省 `127.0.0.1`，`PORT` 必填 |
+| `LOCAL_OBJECTS_DIR` | `local` 模式必填的存储根目录，最终路径仍包含 `OSS_KEY_PREFIX` |
+| `REQUEST_TIMEOUT_MS`、`SESSION_TTL_MS` | 依赖请求超时与排队有效期，缺省 5000 / 300000 毫秒 |
+| `OSS_STS_TOKEN`、`ALLOWED_ORIGINS` | 可选的 OSS 临时凭证、逗号分隔的额外允许来源 |
 
-客户端与执行端的 `REDIS_QUEUE_KEY`、Bucket 和 `OSS_KEY_PREFIX` 必须一致。默认队列为 `naruto:login:tasks`，对象前缀为 `login`。其他配置见 [.env.example](.env.example)，密钥不要提交到 Git。
+客户端与同环境 ADB 执行端的 Redis 实例、Redis DB、`REDIS_QUEUE_KEY`、Bucket 和 `OSS_KEY_PREFIX` 必须一致。PostgreSQL 使用同服务器、同账号上的独立数据库；Redis 可共用 DB 并用配置前缀隔离，或配置独立 DB，两端必须一致。前缀与端口的具体值由 Cloudflare 配置决定，业务代码不拼接测试后缀。测试 Cookie 也应在测试 namespace 中设置独立名称，避免同域不同端口覆盖登录状态。引导示例见 [.env.example](.env.example)，密钥不要提交到 Git。
 
-数据库使用独立的 `naruto_login` 库，首次使用时自动初始化表。注册需管理员审核，首个管理员需在数据库中指定。当前密码按项目既有约定明文存储，API 不返回密码。
+当前测试 namespace 的 `OSS_BUCKET` 配置为 `huy1-hyrz-test`，测试客户端与执行端均读取该配置。
+
+正式账号库为 `naruto_login`，测试使用独立的 `naruto_login_test`。数据库由运维预先创建；应用首次使用时自动初始化所选库中的表，不复制正式账号与记录。注册需管理员审核，首个管理员需在对应数据库中指定。当前密码按项目既有约定明文存储，API 不返回密码。
 
 ## 使用
 
@@ -53,9 +70,9 @@ npm run build
 npm start
 ```
 
-生产预览仍使用 4300 端口。构建产物位于 `src/frontend/dist` 和 `src/server/dist`，不提交到 Git。
+预览端口遵循选定 namespace 的配置。构建产物位于 `src/frontend/dist` 和 `src/server/dist`，不提交到 Git。测试使用模拟 Cloudflare、数据库和 Redis，不访问真实业务服务。
 
-仓库已关联 Vercel 项目 `sust-acmer/naruto-login-client`，生产分支为 `main`，推送后由 Vercel 自动构建。线上环境变量需在 Vercel 配置；修改后重新部署才生效。ADB 执行端独立运行，更新执行端代码后需重启对应服务。
+仓库已关联 Vercel 项目 `sust-acmer/naruto-login-client`，生产分支为 `main`，推送后由 Vercel 自动构建。为测试部署设置 `APP_ENV=test`，正式部署设为 `prod`，并提供共用的 Cloudflare Token、账号及对应环境的 namespace ID；Vercel 中旧的业务环境变量不再被本分支读取。修改 KV 或部署变量后重新部署才生效。ADB 执行端独立运行，选择相同环境并重启对应服务。
 
 接口和依赖异常会写入结构化错误日志，可在 Vercel Logs 中用响应头 `X-Request-Id` 关联同一次请求。日志保留失败阶段、错误码及必要耗时，不记录请求正文、Cookie、SQL 参数或连接凭证；正常请求不新增日志。
 

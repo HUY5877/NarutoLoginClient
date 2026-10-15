@@ -11,6 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { releasePort } from '../src/server/port.js';
+import { cloudflarePreload, cloudflareTestEnv } from './cloudflare-fixture.js';
 
 const execFileAsync = promisify(execFile);
 const host = '127.0.0.1';
@@ -165,13 +166,29 @@ test('无效端口在执行清理前被拒绝，现有测试监听进程不受�
   await assertOccupied(existing.port);
 });
 
+test('Cloudflare 配置未就绪时启动失败，且不会先清理已有监听进程', { timeout: 15000 }, async t => {
+  const existing = await listener(t);
+  const child = spawn(process.execPath, ['--import', 'tsx', 'index.ts'], {
+    cwd: serverRoot, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...isolatedEnv(), DOTENV_CONFIG_PATH: devNull, HOST: host, PORT: String(existing.port) },
+  });
+  const startup = trackChild(t, child);
+  await bounded(startup.closed, 5000, '缺失 Cloudflare 配置的进程应立即退出');
+  assert.notEqual(child.exitCode, 0);
+  assert.match(startup.output, /CLOUDFLARE_API_TOKEN/);
+  assert.equal(existing.child.exitCode, null);
+  assert.equal(existing.child.signalCode, null);
+  await assertOccupied(existing.port);
+});
+
 test('Windows 重启开发服务释放配置端口，并退出旧 tsx watch 父进程', {
   skip: process.platform !== 'win32', timeout: 60000,
 }, async t => {
   const port = await assertBindable(0);
   assert.notEqual(port, 4300);
   const cli = createRequire(resolve(serverRoot, 'package.json')).resolve('tsx/cli');
-  const env = { ...isolatedEnv(), DOTENV_CONFIG_PATH: devNull, NODE_ENV: 'test', NO_COLOR: '1',
+  const env = { ...isolatedEnv(), ...cloudflareTestEnv, NODE_OPTIONS: `--import=${cloudflarePreload}`,
+    DOTENV_CONFIG_PATH: devNull, NODE_ENV: 'test', NO_COLOR: '1',
     HOST: host, PORT: String(port), STORAGE_DRIVER: 'local',
     REDIS_URL: '' };
   const child = spawn(process.execPath, [cli, 'watch', 'index.ts', '--dev'], {
