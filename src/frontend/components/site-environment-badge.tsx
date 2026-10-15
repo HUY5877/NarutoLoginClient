@@ -7,7 +7,7 @@ export function SiteEnvironmentBadge() {
   useEffect(() => {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 5000);
-    void fetch('/api/health', { credentials: 'omit', signal: controller.signal })
+    void fetch('/api/health', { credentials: 'same-origin', signal: controller.signal })
       .then(async response => {
         if (!response.ok) return;
         const body: unknown = await response.json();
