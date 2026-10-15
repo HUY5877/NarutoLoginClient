@@ -19,6 +19,8 @@ npm run dev
 
 正式与测试使用两个独立 namespace，各自保存普通字符串键，键名保持一致，例如 `REDIS_QUEUE_KEY`、`DATABASE_URL`。`APP_ENV=test` 只读取测试 namespace；缺少测试 namespace ID 或配置时，不会读取正式 namespace，也不会回退本地已有的业务环境变量。正式环境优先使用 `CLOUDFLARE_KV_NAMESPACE_ID_PROD`，也兼容旧的 `CLOUDFLARE_KV_NAMESPACE_ID`。环境选择、账号、Token 和 namespace ID 始终只来自本地引导信息，不能被远端业务键覆盖。
 
+`main` 与 `codex/jev-multimodal-test` 使用同一套启动和配置代码，运行时通过 `APP_ENV=prod` / `APP_ENV=test` 选择对应 namespace。分支名不决定运行环境，资源值的差异保存在各自 namespace 中；本地测试需将未提交的 `.env` 中 `APP_ENV` 设为 `test`。
+
 本地和 Vercel 入口都先加载所选 namespace 的完整配置，再创建 Redis、数据库与 OSS 依赖。每个进程只加载一次；KV 更新后需重启或重新部署。缺少引导信息、读取失败、配置无效或缺少 `REDIS_QUEUE_KEY`、`OSS_KEY_PREFIX`、`PORT`、`SESSION_COOKIE_NAME`、`STORAGE_DRIVER` 时，启动失败；`local` 模式还必须提供 `LOCAL_OBJECTS_DIR`。缺少数据库、Redis 或 JWT 时，相应接口继续返回未配置错误。
 
 下表列出各 namespace 内的普通业务键名。
@@ -72,7 +74,7 @@ npm start
 
 预览端口遵循选定 namespace 的配置。构建产物位于 `src/frontend/dist` 和 `src/server/dist`，不提交到 Git。测试使用模拟 Cloudflare、数据库和 Redis，不访问真实业务服务。
 
-仓库已关联 Vercel 项目 `sust-acmer/naruto-login-client`，生产分支为 `main`，推送后由 Vercel 自动构建。为测试部署设置 `APP_ENV=test`，正式部署设为 `prod`，并提供共用的 Cloudflare Token、账号及对应环境的 namespace ID；Vercel 中旧的业务环境变量不再被本分支读取。修改 KV 或部署变量后重新部署才生效。ADB 执行端独立运行，选择相同环境并重启对应服务。
+仓库已关联 Vercel 项目 `sust-acmer/naruto-login-client`，生产分支为 `main`，推送后由 Vercel 自动构建。正式部署设置 `APP_ENV=prod`，`codex/jev-multimodal-test` 的测试部署设置 `APP_ENV=test`，并提供 Cloudflare Token、账号及对应环境的 namespace ID。Cloudflare 凭据只配置在 Vercel 服务端，不能传入前端；旧的业务环境变量不再被读取。修改 KV 或部署变量后重新部署才生效。ADB 执行端独立运行，选择相同环境并重启对应服务。
 
 接口和依赖异常会写入结构化错误日志，可在 Vercel Logs 中用响应头 `X-Request-Id` 关联同一次请求。日志保留失败阶段、错误码及必要耗时，不记录请求正文、Cookie、SQL 参数或连接凭证；正常请求不新增日志。
 
