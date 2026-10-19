@@ -31,8 +31,9 @@ const sessionId = '11111111-1111-4111-8111-111111111111';
 const revisionId = '22222222-2222-4222-8222-222222222222';
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7nwAAAAASUVORK5CYII=', 'base64');
 const weeklyOptions = { equipmentStamina: true, secretRealmMode: 'all', mainTask: 'arena_weekly' };
-const daily = page => page.getByRole('radio', { name: '日常任务', exact: true });
-const weekly = page => page.getByRole('radio', { name: '决斗场周胜', exact: true });
+const daily = page => page.getByRole('tab', { name: '日常任务', exact: true });
+const weekly = page => page.getByRole('tab', { name: '决斗场周胜', exact: true });
+const isSelected = async tab => (await tab.getAttribute('aria-selected')) === 'true';
 const weeklyRegion = page => page.getByRole('region', { name: '决斗场周胜任务', exact: true });
 const generate = page => page.getByRole('button', { name: '启动模拟器获取二维码', exact: true });
 const equipment = page => page.locator('input[aria-labelledby="equipment-stamina-label"]');
@@ -57,16 +58,40 @@ async function waitFor(predicate, message, timeout = 8_000) {
   }
 }
 async function selectTask(page, task) {
-  const radio = task === 'arena_weekly' ? weekly(page) : daily(page);
-  // Clicking the associated label also supports visually hidden native radio inputs.
-  await radio.check();
-  assert.equal(await radio.isChecked(), true);
+  const tab = task === 'arena_weekly' ? weekly(page) : daily(page);
+  await tab.click();
+  assert.equal(await isSelected(tab), true);
 }
 async function assertNoHorizontalOverflow(page) {
   const size = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth,
     document: document.documentElement.scrollWidth, body: document.body.scrollWidth }));
   assert.ok(size.document <= size.viewport + 1 && size.body <= size.viewport + 1,
     `Page must fit the viewport: ${JSON.stringify(size)}`);
+}
+async function assertPortraitOnlyHero(page) {
+  assert.equal(await page.locator('#welcome-title, #mobile-welcome-title, .village-hero-copy').count(), 0,
+    'The old hero headline, platform label and explanation have been removed');
+  assert.doesNotMatch(await page.locator('body').innerText(), /上号，\s*清日常。|上场，\s*拿下周胜。/);
+  const portrait = page.locator('.village-portrait:visible, .mobile-character:visible');
+  assert.equal(await portrait.count(), 1, 'The current viewport must keep one visible character portrait');
+  assert.equal(await portrait.isVisible(), true);
+  const bounds = await portrait.boundingBox();
+  assert.ok(bounds && bounds.width >= 64 && bounds.height >= 96, 'The retained portrait must have a usable visible size');
+  await portrait.locator('.konan-portrait-base').evaluate(image => image.decode());
+  assert.equal(await portrait.locator('.konan-portrait-base').evaluate(image => image.naturalWidth > 0), true);
+}
+async function assertTaskPanelLinks(page) {
+  const tabs = page.getByRole('tablist', { name: '主任务', exact: true }).getByRole('tab');
+  for (const tab of await tabs.all()) {
+    const controlledId = await tab.getAttribute('aria-controls');
+    assert.ok(controlledId, 'Every task tab references its task panel');
+    assert.equal(await page.evaluate(id => !!document.getElementById(id), controlledId), true,
+      'An inactive task tab must not reference a missing panel');
+  }
+  const selected = page.getByRole('tab', { selected: true });
+  const panel = page.getByRole('tabpanel');
+  assert.equal(await panel.getAttribute('id'), await selected.getAttribute('aria-controls'));
+  assert.equal(await panel.getAttribute('aria-labelledby'), await selected.getAttribute('id'));
 }
 
 test('main task selection preserves task options and session ownership', { skip: unavailable || false, timeout: 180_000 }, async t => {
@@ -137,21 +162,34 @@ test('main task selection preserves task options and session ownership', { skip:
         const f = await fixture({ viewport: { width, height: 844 }, hasTouch: width < 640 }, false);
         try {
           await f.open();
-          assert.ok(await f.page.getByRole('group', { name: '主任务', exact: true }).count()
-            + await f.page.getByRole('radiogroup', { name: '主任务', exact: true }).count() >= 1,
-          'The task choices must have a named accessible group');
-          assert.equal(await daily(f.page).isChecked(), true, 'An absent mainTask keeps the daily default');
+          const tablist = f.page.getByRole('tablist', { name: '主任务', exact: true });
+          assert.equal(await tablist.getAttribute('data-slot'), 'tabs-list', 'The task choices use shadcn Tabs');
+          assert.equal(await tablist.getByRole('tab').count(), 2);
+          assert.equal(await daily(f.page).getAttribute('data-slot'), 'tabs-trigger');
+          assert.equal(await isSelected(daily(f.page)), true, 'An absent mainTask keeps the daily default');
           assert.equal(await weekly(f.page).isEnabled(), true);
+          await assertTaskPanelLinks(f.page);
+          await assertPortraitOnlyHero(f.page);
           await assertNoHorizontalOverflow(f.page);
-          await selectTask(f.page, 'arena_weekly');
-          await weeklyRegion(f.page).waitFor();
-          assert.equal(await equipment(f.page).isVisible(), false);
-          assert.equal(await secretRealm(f.page).isVisible(), false);
-          await assertNoHorizontalOverflow(f.page);
-          if (process.env.MAIN_TASK_SCREENSHOT_DIR && width !== 320) {
-            const screenshot = path.resolve(process.env.MAIN_TASK_SCREENSHOT_DIR, `arena-weekly-${width}.png`);
+
+          await daily(f.page).focus();
+          await f.page.keyboard.press('ArrowRight');
+          assert.equal(await weekly(f.page).evaluate(tab => tab === document.activeElement), true);
+          assert.equal(await isSelected(daily(f.page)), true, 'Arrow navigation changes focus without activating a task');
+          await f.page.keyboard.press('Enter');
+          assert.equal(await isSelected(weekly(f.page)), true, 'Enter activates the focused task');
+          await f.page.keyboard.press('ArrowLeft');
+          assert.equal(await daily(f.page).evaluate(tab => tab === document.activeElement), true);
+          assert.equal(await isSelected(weekly(f.page)), true);
+          await f.page.keyboard.press('Space');
+          assert.equal(await isSelected(daily(f.page)), true, 'Space also activates the focused task');
+
+          async function screenshotTask(task) {
+            if (!process.env.MAIN_TASK_SCREENSHOT_DIR || width === 320) return;
+            const screenshot = path.resolve(process.env.MAIN_TASK_SCREENSHOT_DIR, `${task}-${width}.png`);
             await mkdir(path.dirname(screenshot), { recursive: true });
             await f.page.evaluate(async () => {
+              if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
               await document.fonts.ready;
               await Promise.all([...document.images].map(image => image.decode().catch(() => {})));
               await Promise.all(document.getAnimations().filter(animation => animation.effect?.getTiming().iterations !== Infinity)
@@ -159,9 +197,18 @@ test('main task selection preserves task options and session ownership', { skip:
               window.scrollTo(0, 0);
               await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             });
-            await f.page.screenshot({ path: screenshot, fullPage: true });
-            t.diagnostic(`Weekly task screenshot: ${screenshot}`);
+            await f.page.screenshot({ path: screenshot });
+            t.diagnostic(`Task screenshot: ${screenshot}`);
           }
+          await screenshotTask('daily');
+          await selectTask(f.page, 'arena_weekly');
+          await weeklyRegion(f.page).waitFor();
+          await assertTaskPanelLinks(f.page);
+          assert.equal(await equipment(f.page).isVisible(), false);
+          assert.equal(await secretRealm(f.page).isVisible(), false);
+          await assertPortraitOnlyHero(f.page);
+          await assertNoHorizontalOverflow(f.page);
+          await screenshotTask('arena-weekly');
           await selectTask(f.page, 'daily');
           assert.equal(await weeklyRegion(f.page).isVisible(), false);
           await assertNoHorizontalOverflow(f.page);
@@ -200,13 +247,13 @@ test('main task selection preserves task options and session ownership', { skip:
         await dialog.getByRole('button', { name: '登录', exact: true }).click();
         await dialog.waitFor({ state: 'hidden' });
         await f.page.getByTitle(user.username, { exact: true }).waitFor();
-        assert.equal(await weekly(f.page).isChecked(), true);
+        assert.equal(await isSelected(weekly(f.page)), true);
         assert.deepEqual(loginCalls(f.state), [], 'Account login must not implicitly submit the chosen task');
         await generate(f.page).click();
         await f.page.locator('img[src^="blob:"]').waitFor();
         assert.equal(posts(f.state).length, 1);
         assert.equal(posts(f.state)[0].body.userOptions.mainTask, 'arena_weekly');
-        assert.equal(await weekly(f.page).isChecked(), true);
+        assert.equal(await isSelected(weekly(f.page)), true);
       } finally { await f.close(); }
     });
 
@@ -233,14 +280,14 @@ test('main task selection preserves task options and session ownership', { skip:
         assert.equal(loginCalls(f.state).length, beforeReload, 'Reload remains lazy and does not read the QR session');
         await generate(f.page).click();
         await f.page.locator('img[src^="blob:"]').waitFor();
-        assert.equal(await weekly(f.page).isChecked(), true);
+        assert.equal(await isSelected(weekly(f.page)), true);
         assert.equal(await daily(f.page).isDisabled(), true);
         await f.page.getByRole('button', { name: '刷新二维码', exact: true }).click();
         await f.page.locator('img[src^="blob:"]').waitFor();
         assert.equal(posts(f.state).length, 2, 'Recovery reuses the existing session');
         assert.equal(posts(f.state)[1].path, `/api/login-sessions/${sessionId}/refresh`);
         assert.deepEqual(posts(f.state)[1].body, {}, 'Refresh reuses saved server options');
-        assert.equal(await weekly(f.page).isChecked(), true);
+        assert.equal(await isSelected(weekly(f.page)), true);
         assert.equal(await weekly(f.page).isDisabled(), true);
         await weeklyRegion(f.page).waitFor();
       } finally { gate.resolve(); await f.close(); }
@@ -259,13 +306,13 @@ test('main task selection preserves task options and session ownership', { skip:
             nextCursor: url.searchParams.get('after') || '0-0', hasMore: false, truncated: false };
         };
         await f.open();
-        await waitFor(() => weekly(f.page).isChecked(), 'Running weekly selection should be recovered');
+        await waitFor(() => isSelected(weekly(f.page)), 'Running weekly selection should be recovered');
         assert.equal(await daily(f.page).isDisabled(), true);
         assert.equal(await weekly(f.page).isDisabled(), true);
         await weeklyRegion(f.page).waitFor();
         assert.deepEqual(loginCalls(f.state), []);
         await f.page.reload({ waitUntil: 'networkidle' });
-        await waitFor(() => weekly(f.page).isChecked(), 'Reload should keep the running task selection');
+        await waitFor(() => isSelected(weekly(f.page)), 'Reload should keep the running task selection');
         assert.equal(await weekly(f.page).isDisabled(), true);
         assert.deepEqual(loginCalls(f.state), []);
         status = 'completed';
@@ -295,7 +342,7 @@ test('main task selection preserves task options and session ownership', { skip:
         const beforeReload = loginCalls(f.state).length;
         await f.page.reload({ waitUntil: 'networkidle' });
         await generate(f.page).waitFor();
-        assert.equal(await weekly(f.page).isChecked(), true);
+        assert.equal(await isSelected(weekly(f.page)), true);
         assert.equal(await weekly(f.page).isDisabled(), true, 'An unconfirmed saved intent cannot change task type');
         assert.equal(loginCalls(f.state).length, beforeReload, 'Reload waits for an explicit recovery click');
         await generate(f.page).click();

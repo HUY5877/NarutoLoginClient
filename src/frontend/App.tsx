@@ -17,7 +17,6 @@ import {
   ShieldCheck,
   Smartphone,
   Sparkles,
-  Swords,
   TimerOff,
   UserRound,
 } from 'lucide-react';
@@ -272,6 +271,7 @@ export default function App() {
       </header>
 
       <main className="village-main mx-auto max-w-5xl px-5 py-6 sm:px-8 sm:py-8" data-mobile-qr-ready={ready}>
+        <h1 className="sr-only">任务中心</h1>
         {auth.error && !authOpen && (
           <Alert variant="destructive" className="village-glass auth-notice mb-5" role="alert">
             <CircleAlert aria-hidden="true" />
@@ -284,23 +284,8 @@ export default function App() {
           </Alert>
         )}
         <MainTaskSwitch value={mainTask} disabled={auth.loading || auth.busy || Boolean(auth.user && !canEditShownOptions)}
-          locked={Boolean(auth.user && !canEditShownOptions)} onChange={setMainTask} />
-        <section className="village-hero mb-6" aria-labelledby="welcome-title">
-          <div className="village-hero-copy">
-            <Badge variant="outline" className="mb-4 gap-1.5 border-primary/20 bg-card/80 px-2.5 py-1 text-xs font-medium text-primary">
-              <Smartphone className="size-3" aria-hidden="true" />
-              火影忍者手游 · {loginTypeLabels[displayedLoginType]}
-            </Badge>
-            <h1 id="welcome-title" className="village-title">{isArenaWeekly ? '上场，' : '上号，'}<span className="desktop-hero-accent">{isArenaWeekly ? '拿下周胜。' : '清日常。'}</span></h1>
-            <p className="mt-3 max-w-70 text-sm leading-6 text-muted-foreground sm:max-w-none">
-              用手机{scanApp}扫码登录，<span className="inline-block">{isArenaWeekly ? '这次只为决斗场周胜。' : '日常任务会自动接着跑。'}</span>
-            </p>
-          </div>
-          {isArenaWeekly ? <Swords className="hero-seal" width="240" height="240" aria-hidden="true" />
-            : <img className="hero-seal" src="/icons/leaf-village.svg" alt="" width="240" height="240" aria-hidden="true" />}
-          <KonanPortrait className="village-portrait" />
-        </section>
-        <MobileVillageHero loginType={displayedLoginType} mainTask={mainTask} />
+          locked={Boolean(auth.user && !canEditShownOptions)} onChange={setMainTask}>
+        <MobileVillageHero />
         {isArenaWeekly && <ArenaWeeklyBrief />}
 
         <div className="village-workspace grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6">
@@ -576,12 +561,14 @@ export default function App() {
           </Card>
 
           <div id="login-progress-details" className="village-side-panels space-y-5 lg:space-y-6">
+            <div className="village-portrait-stage"><KonanPortrait className="village-portrait" /></div>
             <TaskProgressCards progress={progress} />
           </div>
         </div>
         <div id="task-run-details" className="task-run-details">
           {auth.user && <TaskRunPanel view={visibleRun} retry={taskRun.retry} />}
         </div>
+        </MainTaskSwitch>
       </main>
       <AuthDialog open={authOpen} onOpenChange={setAuthOpen} busy={auth.busy}
         error={auth.error} clearError={auth.clearError} authenticate={auth.authenticate} />
