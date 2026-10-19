@@ -1,8 +1,9 @@
 import { isRunTerminal, type TaskRun } from './task-run';
 import { taskFailureMessage } from '../../shared/task-errors';
-import { parseUserOptions, type UserOptions } from '../../shared/user-options';
+import { getMainTask, parseUserOptions, type UserOptions } from '../../shared/user-options';
 
 export function deriveDailyCompletion(run: TaskRun | null, userOptions?: UserOptions) {
+  if (getMainTask(userOptions) === 'arena_weekly') return null;
   const mode = parseUserOptions(userOptions)?.secretRealmMode ?? 'all';
   if (mode === 'skip' || !run?.startedAt || !run.secretRealmCompletedAt || run.status === 'completed'
     || run.status !== 'running_daily' && !isRunTerminal(run.status)) return null;

@@ -6,8 +6,9 @@ import { Button } from '@/components/ui/button';
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Spinner } from '@/components/ui/spinner';
 import type { RunStatus, TaskRunView } from '@/lib/task-run';
-import { taskFailureMessage } from '../../shared/task-errors';
 import { deriveDailyCompletion } from '@/lib/daily-completion';
+import { mainTaskFailureMessage } from '@/lib/main-task';
+import { getMainTask } from '../../shared/user-options';
 
 const labels: Record<RunStatus, string> = {
   starting_emulator: '准备游戏环境', opening_game: '打开游戏', preparing_qr: '获取二维码',
@@ -19,6 +20,8 @@ const timeLabel = (value: string) => new Date(value).toLocaleTimeString('zh-CN',
 
 export function TaskRunPanel({ view, retry }: { view: TaskRunView; retry: () => void }) {
   const detailsId = useId();
+  const mainTask = getMainTask(view.task?.userOptions);
+  const arena = mainTask === 'arena_weekly';
   const taskId = view.task?.id ?? '';
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const expanded = expandedTaskId === taskId;
@@ -31,7 +34,7 @@ export function TaskRunPanel({ view, retry }: { view: TaskRunView; retry: () => 
   }, [expanded, lastLog, view.task?.id]);
   const initialCompletion = deriveDailyCompletion(view.run, view.task?.userOptions);
   const bad = view.run && ['failed', 'interrupted', 'expired'].includes(view.run.status) && !initialCompletion?.timedOut;
-  const label = initialCompletion?.summary ?? (view.run ? labels[view.run.status] : view.unavailable ? '无执行记录'
+  const label = initialCompletion?.summary ?? (view.run ? arena && view.run.status === 'running_daily' ? '周胜任务执行中' : labels[view.run.status] : view.unavailable ? '无执行记录'
     : view.loading ? '正在读取' : view.task ? '等待任务开始' : '待开始');
   const hasSummary = Boolean(initialCompletion || view.error || bad && view.run?.errorCode || view.run?.actionIndex !== undefined);
   return (
@@ -40,7 +43,7 @@ export function TaskRunPanel({ view, retry }: { view: TaskRunView; retry: () => 
         <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base">
           <ListChecks className="size-5 text-primary" aria-hidden="true" />任务执行记录
         </CardTitle>
-        <CardDescription>本次登录和日常的运行记录，刷新页面也能继续看。</CardDescription>
+        <CardDescription>本次登录和{arena ? '周胜任务' : '日常'}的运行记录，刷新页面也能继续看。</CardDescription>
         <CardAction className="flex flex-wrap items-center justify-between gap-2 max-sm:w-full sm:justify-end">
           <Badge variant={bad ? 'destructive' : 'secondary'} className="gap-1.5">
             {view.polling && <Spinner className="size-3 motion-reduce:animate-none" aria-hidden="true" />}{label}
@@ -64,7 +67,7 @@ export function TaskRunPanel({ view, retry }: { view: TaskRunView; retry: () => 
         </Alert>}
         {bad && view.run?.errorCode && <Alert variant="destructive" aria-label="任务失败原因">
           <CircleAlert aria-hidden="true" />
-          <AlertDescription>{taskFailureMessage(view.run.errorCode)}</AlertDescription>
+          <AlertDescription>{mainTaskFailureMessage(mainTask, view.run.errorCode)}</AlertDescription>
         </Alert>}
         {view.run?.actionIndex !== undefined && <p className="text-sm font-medium" role="status">
           当前动作 {view.run.actionIndex}{view.run.actionTotal !== undefined ? ` / ${view.run.actionTotal}` : ''}
@@ -90,7 +93,7 @@ export function TaskRunPanel({ view, retry }: { view: TaskRunView; retry: () => 
             </div> : !view.unavailable && <p className="rounded-lg border border-dashed p-5 text-center text-sm leading-6 text-muted-foreground">
               {view.loading ? '正在读取执行记录…' : bad ? '本次任务未留下详细执行日志。' : view.task ? '任务开始后，执行进度和日志会显示在这里。' : '生成登录二维码后，在这里查看本次任务的执行进度。'}
             </p>}
-            {view.run?.status === 'running_daily' && <p className="text-xs leading-5 text-muted-foreground">二维码到期不会停止已开始的日常任务，执行记录会继续更新。</p>}
+            {view.run?.status === 'running_daily' && <p className="text-xs leading-5 text-muted-foreground">二维码到期不会停止已开始的{arena ? '周胜任务' : '日常任务'}，执行记录会继续更新。</p>}
           </>}
         </div>
       </CardContent>

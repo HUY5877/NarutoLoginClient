@@ -152,13 +152,14 @@ test('事件表保留请求幂等约束和每账号唯一有效事件约束，�
 
 test('附加参数以 JSONB 参数化保存，新建服务实例仍能恢复原选择', async t => {
   const { store, rows, operations } = fixture(t);
-  const submission = { ...candidate(), userOptions: { equipmentStamina: false, secretRealmMode: 'once' as const } };
+  const submission = { ...candidate(), userOptions: { mainTask: 'arena_weekly' as const,
+    equipmentStamina: false, secretRealmMode: 'once' as const } };
   const saved = await store.reserve(submission, date());
-  assert.deepEqual(saved.userOptions, { equipmentStamina: false, secretRealmMode: 'once' });
-  assert.deepEqual(rows.get(saved.id)?.userOptions, { equipmentStamina: false, secretRealmMode: 'once' });
+  assert.deepEqual(saved.userOptions, submission.userOptions);
+  assert.deepEqual(rows.get(saved.id)?.userOptions, submission.userOptions);
   const insert = operations.find(operation => operation.sql.startsWith('INSERT INTO naruto_login.login_events'))!;
   assert.equal(insert.values[9], JSON.stringify(submission.userOptions));
-  assert.doesNotMatch(insert.sql, /equipmentStamina|secretRealmMode|secretRealmOnce|secret_realm_mode/);
+  assert.doesNotMatch(insert.sql, /mainTask|main_task|equipmentStamina|secretRealmMode|secretRealmOnce|secret_realm_mode/);
 
   const restored = new PgAuthStore('postgresql://fixture:fixture@127.0.0.1:5432/fixture');
   try {
@@ -240,7 +241,8 @@ test('非法的数据库附加参数拒绝读取，不静默恢复为默认选�
     { secretRealmOnce: 'true' }, { secretRealmOnce: 1 }, { secretRealmOnce: null },
     { secretRealmOnce: [] }, { secretRealmMode: 'once', unexpected: false },
     { secretRealmMode: 'invalid' }, { secretRealmMode: true }, { secretRealmMode: null },
-    { secretRealmMode: 'skip', secretRealmOnce: false }, { secretRealmMode: 'once', secretRealmOnce: false }]) {
+    { secretRealmMode: 'skip', secretRealmOnce: false }, { secretRealmMode: 'once', secretRealmOnce: false },
+    ...[null, '', 'arena', true, 1, [], {}].map(mainTask => ({ mainTask }))]) {
     rows.get(saved.id)!.userOptions = invalid;
     await assert.rejects(store.getEvent(saved.id, owner), /Stored login event user options are invalid/);
   }

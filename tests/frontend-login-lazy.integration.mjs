@@ -116,7 +116,8 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         state.calls.push({ path: url.pathname, method: request.method(), query: url.search,
           body: request.method() === 'POST' ? request.postDataJSON() : null });
         let body;
-        if (url.pathname === '/api/auth/me') body = { user: state.user };
+        if (url.pathname === '/api/health') body = { ok: true, environment: 'development' };
+        else if (url.pathname === '/api/auth/me') body = { user: state.user };
         else if (url.pathname === '/api/login-sessions/active') body = await state.active(request);
         else if (url.pathname === '/api/login-sessions' && request.method() === 'POST') body = await state.submit(request);
         else if (url.pathname === `/api/login-sessions/${sessionId}/refresh`) body = await state.refresh(request);

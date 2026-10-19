@@ -94,23 +94,29 @@ test('store defends self mutations and missing targets and deletes through the e
   }
 });
 
-test('daily events query selects only rows in the Beijing day and never selects internal access tokens', async t => {
+test('日常列表的总数与分页仅统计日常任务，缺省主任务兼容旧记录且不读取内部凭证', async t => {
   const f = fixture(t), start = new Date('2026-10-07T16:00:00Z'), end = new Date('2026-10-08T16:00:00Z');
   const result = await f.store.listDailyEvents(start, end, 20, 20);
   assert.equal(result.total, 41); assert.equal(result.items[0].createdAt, now.toISOString());
   assert.doesNotMatch(JSON.stringify(result), /accessToken|private-token/);
   const query = f.calls.find(call => call.sql.includes('FROM naruto_login.login_events e'))!;
+  const count = f.calls.find(call => call.sql.startsWith('SELECT count(*)') && call.sql.includes('FROM naruto_login.login_events'))!;
+  assert.match(count.sql, /AND COALESCE\(user_options ->> 'mainTask', 'daily'\) = 'daily'/);
+  assert.match(query.sql, /AND COALESCE\(e.user_options ->> 'mainTask', 'daily'\) = 'daily'/);
   assert.match(query.sql, /e.created_at >= \$1 AND e.created_at < \$2/);
   assert.doesNotMatch(query.sql, /access_token|request_id|password/);
   assert.deepEqual(query.values, [start, end, 20, 20]);
 });
 
-test('monthly stats count durable requests and distinct Beijing dates across all statuses with stable ranking', async t => {
+test('月榜总数与排名只统计日常申请，兼容旧记录并按北京日期去重且保留所有执行状态', async t => {
   const f = fixture(t), start = new Date('2026-09-30T16:00:00Z'), end = new Date('2026-10-31T16:00:00Z');
   for (const sort of ['requests', 'days'] as const) {
     const result = await f.store.listMonthlyStats(start, end, sort, 20, 20);
     assert.deepEqual(result, { items: [{ userId: id, username: 'Naruto', requestCount: 9, requestDays: 3, rank: 1 }], total: 41, totalRequests: 120 });
     const query = f.calls.filter(call => call.sql.startsWith('WITH stats AS')).at(-1)!;
+    const count = f.calls.filter(call => call.sql.startsWith('SELECT count(DISTINCT user_id)')).at(-1)!;
+    assert.match(count.sql, /AND COALESCE\(user_options ->> 'mainTask', 'daily'\) = 'daily'/);
+    assert.match(query.sql, /AND COALESCE\(user_options ->> 'mainTask', 'daily'\) = 'daily'/);
     assert.match(query.sql, /count\(DISTINCT \(created_at AT TIME ZONE 'Asia\/Shanghai'\)::date\)/);
     assert.match(query.sql, /created_at >= \$1 AND created_at < \$2/);
     assert.match(query.sql, sort === 'days' ? /dense_rank\(\) OVER \(ORDER BY request_days DESC\)/ : /dense_rank\(\) OVER \(ORDER BY request_count DESC\)/);

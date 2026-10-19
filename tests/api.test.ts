@@ -698,3 +698,27 @@ test('已失败申请的明确安全原因不被原二维码到期覆盖，不�
     assert.deepEqual(await response.json(), { ...failed, showGetButton: true });
   });
 });
+
+test('主任务通过 userOptions 传入日常或周胜，缺省保持旧请求且非法选择不派发', async () => {
+  const received: unknown[] = [];
+  await withApi({ events: events({ create: async (_userId, _requestId, userOptions) => {
+    received.push(userOptions);
+    return { ...baseTask, userOptions };
+  } }) }, async base => {
+    for (const selected of [{}, { mainTask: 'daily' }, { mainTask: 'arena_weekly' }]) {
+      const userOptions = { equipmentStamina: true, secretRealmMode: 'all', ...selected };
+      const response = await fetch(`${base}/api/login-sessions`, { ...post,
+        body: JSON.stringify({ requestId, userOptions }) });
+      assert.equal(response.status, 202);
+      assert.deepEqual((await response.json() as Task).userOptions, userOptions);
+      assert.deepEqual(received.at(-1), userOptions);
+    }
+    for (const mainTask of [null, '', 'arena', 'DAILY', true, 1, [], {}]) {
+      const response = await fetch(`${base}/api/login-sessions`, { ...post,
+        body: JSON.stringify({ requestId, userOptions: { mainTask } }) });
+      assert.equal(response.status, 400, JSON.stringify(mainTask));
+      assert.equal((await response.json() as { code: string }).code, 'INVALID_USER_OPTIONS');
+    }
+    assert.equal(received.length, 3, 'invalid main tasks must not reserve or dispatch a task');
+  });
+});

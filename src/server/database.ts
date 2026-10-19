@@ -389,11 +389,12 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
     return this.transaction(async client => {
       await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
       const count = await client.query<{ total: number }>(`SELECT count(*)::int AS total FROM naruto_login.login_events
-        WHERE created_at >= $1 AND created_at < $2`, [start, end]);
+        WHERE created_at >= $1 AND created_at < $2 AND COALESCE(user_options ->> 'mainTask', 'daily') = 'daily'`, [start, end]);
       const result = await client.query<Omit<DailyEvent, 'createdAt' | 'expiresAt'> & { createdAt: Timestamp; expiresAt: Timestamp }>(
         `SELECT e.id, u.username, e.created_at AS "createdAt", e.expires_at AS "expiresAt", e.status, e.login_type AS "loginType"
          FROM naruto_login.login_events e JOIN naruto_login.users u ON u.id = e.user_id
-         WHERE e.created_at >= $1 AND e.created_at < $2 ORDER BY e.created_at DESC, e.id DESC LIMIT $3 OFFSET $4`, [start, end, limit, offset]);
+         WHERE e.created_at >= $1 AND e.created_at < $2 AND COALESCE(e.user_options ->> 'mainTask', 'daily') = 'daily'
+         ORDER BY e.created_at DESC, e.id DESC LIMIT $3 OFFSET $4`, [start, end, limit, offset]);
       return { items: result.rows.map(row => ({ id: row.id, username: row.username, status: row.status, loginType: row.loginType ?? DEFAULT_LOGIN_TYPE,
         createdAt: new Date(row.createdAt).toISOString(), expiresAt: new Date(row.expiresAt).toISOString() })), total: count.rows[0].total };
     });
@@ -420,12 +421,14 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
       await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
       const count = await client.query<{ total: number; totalRequests: number }>(
         `SELECT count(DISTINCT user_id)::int AS total, count(*)::int AS "totalRequests"
-         FROM naruto_login.login_events WHERE created_at >= $1 AND created_at < $2`, [start, end]);
+         FROM naruto_login.login_events WHERE created_at >= $1 AND created_at < $2
+           AND COALESCE(user_options ->> 'mainTask', 'daily') = 'daily'`, [start, end]);
       const result = await client.query<MonthlyUserStats>(
         `WITH stats AS (
            SELECT user_id, count(*)::int AS request_count,
              count(DISTINCT (created_at AT TIME ZONE 'Asia/Shanghai')::date)::int AS request_days
-           FROM naruto_login.login_events WHERE created_at >= $1 AND created_at < $2 GROUP BY user_id
+           FROM naruto_login.login_events WHERE created_at >= $1 AND created_at < $2
+             AND COALESCE(user_options ->> 'mainTask', 'daily') = 'daily' GROUP BY user_id
          )
          SELECT s.user_id AS "userId", u.username, s.request_count AS "requestCount", s.request_days AS "requestDays",
            dense_rank() OVER (ORDER BY ${primary} DESC)::int AS rank

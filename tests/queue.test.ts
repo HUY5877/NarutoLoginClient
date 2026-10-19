@@ -172,6 +172,37 @@ test('刷新二维码沿用三种秘境选择，旧会话默认为全部刷取�
   }
 });
 
+test('周胜主任务沿用原队列和 Redis key，提交、会话恢复及刷新保留首次选择', async () => {
+  const userOptions = { ...task.userOptions, mainTask: 'arena_weekly' as const };
+  const service = new TaskService(config, () => driver({
+    eval: async (_script, options) => {
+      if (options.keys.length === 4) {
+        assert.deepEqual(options.keys, [config.redisQueueKey, `${config.redisQueueKey}:sessions:${task.id}`,
+          `${config.redisQueueKey}:users:${task.userId}:active`, `${config.redisQueueKey}:logs:${task.id}`]);
+        const payload = JSON.parse(options.arguments[2]);
+        assert.deepEqual(payload.userOptions, userOptions);
+        assert.equal(Object.hasOwn(payload, 'mainTask'), false);
+        assert.deepEqual(JSON.parse(options.arguments[0]).userOptions, userOptions);
+        return 1;
+      }
+      assert.deepEqual(options.keys, [`${config.redisQueueKey}:sessions:${task.id}`,
+        `${config.redisQueueKey}:refresh:${task.id}`, `${config.redisQueueKey}:runs:${task.id}`]);
+      assert.equal(Object.hasOwn(JSON.parse(options.arguments[3]), 'userOptions'), false);
+      return JSON.stringify({ ...stored, userOptions, status: 'preparing_qr' });
+    },
+    get: async () => JSON.stringify({ ...stored, userOptions }),
+  }), () => now);
+  await service.enqueue({ ...task, userOptions });
+  assert.deepEqual((await service.getForUser(task.id, task.userId)).userOptions, userOptions);
+  assert.deepEqual((await service.requestRefresh(task.id, task.userId)).userOptions, userOptions);
+  for (const mainTask of [null, '', 'arena', true, 1, [], {}]) {
+    const invalid = new TaskService(config, () => driver({
+      get: async () => JSON.stringify({ ...stored, userOptions: { ...task.userOptions, mainTask } }),
+    }), () => now);
+    await assert.rejects(invalid.getForUser(task.id, task.userId), { status: 502 });
+  }
+});
+
 test('Outbox 重发 Lua 契约只核验不可变身份字段，在账户锁检查和任何写入之前幂等返回', async () => {
   let captured = '';
   const service = new TaskService(config, () => driver({ eval: async script => {

@@ -10,6 +10,7 @@ import type { deriveTaskProgress } from '@/lib/task-progress';
 const stepIcons = { submission: ArrowRight, qr: QrCode, script: ListChecks };
 
 export function TaskProgressCards({ progress }: { progress: ReturnType<typeof deriveTaskProgress> }) {
+  const arena = progress.mainTask === 'arena_weekly';
   return (
     <>
       <Card className="village-glass preparation-card gap-4">
@@ -17,7 +18,7 @@ export function TaskProgressCards({ progress }: { progress: ReturnType<typeof de
           <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base">
             <img src="/icons/shuriken.svg" alt="" width="19" height="19" aria-hidden="true" />任务进度
           </CardTitle>
-          <CardDescription className="text-sm">二维码准备到哪了、日常跑到哪了，都在这里看。</CardDescription>
+          <CardDescription className="text-sm">{arena ? '登录准备、周胜进展，在这里接着看。' : '二维码准备到哪了、日常跑到哪了，都在这里看。'}</CardDescription>
           <CardAction>
             <Badge variant={progress.tone === 'danger' ? 'destructive' : 'outline'} className="font-normal" aria-label="任务整体状态">{progress.summary}</Badge>
           </CardAction>
@@ -59,7 +60,8 @@ export function TaskProgressCards({ progress }: { progress: ReturnType<typeof de
             <AccordionItem value="simulation">
               <AccordionTrigger className="text-sm font-medium">现在可以登录游戏吗？</AccordionTrigger>
               <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                选择安卓或 iOS 的 QQ 区、微信区后获取二维码。QQ 区用手机 QQ，微信区用微信扫码并确认授权。授权完成后系统会继续进入游戏和执行日常脚本。
+                {arena ? '当前可完成客户端任务选择与扫码流程，周胜自动执行仍在接入。'
+                  : '选择安卓或 iOS 的 QQ 区、微信区后获取二维码。QQ 区用手机 QQ，微信区用微信扫码并确认授权。授权完成后系统会继续进入游戏和执行日常脚本。'}
               </AccordionContent>
             </AccordionItem>
             <AccordionItem value="account">

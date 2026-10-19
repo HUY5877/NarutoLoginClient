@@ -59,7 +59,8 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         if (!url.pathname.startsWith('/api/')) return route.continue();
         state.calls.push(url.pathname);
         let body;
-        if (url.pathname === '/api/auth/me') body = { user: { id: 'confirmed-user', username: '授权测试', isAdmin: false } };
+        if (url.pathname === '/api/health') body = { ok: true, environment: 'development' };
+        else if (url.pathname === '/api/auth/me') body = { user: { id: 'confirmed-user', username: '授权测试', isAdmin: false } };
         else if (url.pathname === '/api/login-sessions/active') body = { session, showGetButton: false };
         else if (url.pathname === `/api/login-sessions/${taskId}`) {
           return route.fulfill({ status: state.detailHttpStatus,

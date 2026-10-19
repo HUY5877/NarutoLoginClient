@@ -2,9 +2,11 @@ import { useEffect, useRef } from 'react';
 import { ChakraSeal } from '@/components/chakra-seal';
 import { KonanPortrait } from '@/components/konan-portrait';
 import { DEFAULT_LOGIN_TYPE, loginScanApp, loginTypeLabels, type LoginType } from '../../shared/login-types';
+import type { MainTask } from '../../shared/user-options';
 
-export function MobileVillageHero({ loginType = DEFAULT_LOGIN_TYPE }: { loginType?: LoginType }) {
+export function MobileVillageHero({ loginType = DEFAULT_LOGIN_TYPE, mainTask = 'daily' }: { loginType?: LoginType; mainTask?: MainTask }) {
   const scene = useRef<HTMLElement>(null);
+  const arena = mainTask === 'arena_weekly';
 
   useEffect(() => {
     const mobile = window.matchMedia('(max-width: 639px)');
@@ -40,8 +42,8 @@ export function MobileVillageHero({ loginType = DEFAULT_LOGIN_TYPE }: { loginTyp
       <div className="mobile-hero-wordmark" aria-hidden="true">忍</div>
       <div className="mobile-hero-copy">
         <p className="mobile-game-label">火影忍者手游</p>
-        <h1 id="mobile-welcome-title">上号，<br /><em>清日常。</em></h1>
-        <p className="mobile-hero-caption">手机{loginScanApp(loginType)}扫码<br />登录后自动接着跑</p>
+        <h1 id="mobile-welcome-title">{arena ? '上场，' : '上号，'}<br /><em>{arena ? '拿下周胜。' : '清日常。'}</em></h1>
+        <p className="mobile-hero-caption">手机{loginScanApp(loginType)}扫码<br />{arena ? '这次只为决斗场周胜' : '登录后自动接着跑'}</p>
       </div>
       <div className="mobile-character-scene" aria-hidden="true">
         <ChakraSeal active className="hero-chakra-seal" />

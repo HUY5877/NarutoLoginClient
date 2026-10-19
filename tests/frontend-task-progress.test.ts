@@ -4,6 +4,7 @@ import { deriveTaskProgress, hasGameAuthorization, selectProgressRun, type Progr
 import { emptyTaskRun, type RunStatus } from '../src/frontend/lib/task-run';
 import type { Session } from '../src/frontend/hooks/use-login-session';
 import { expireLoginSession } from '../src/frontend/lib/login-expiry';
+import { deriveDailyCompletion } from '../src/frontend/lib/daily-completion';
 
 const at = '2026-09-24T01:00:00.000Z';
 const session: Session = { id: 'new-task', status: 'queued', createdAt: at, expiresAt: '2026-09-24T01:02:00.000Z', simulation: true };
@@ -274,4 +275,56 @@ test('缺首次完成标记、未开始日常及新申请均不能继承其他�
   const submitting = { ...previous, session: previous.view.task as Session, phase: 'submitting' as const, awaitingSubmission: true };
   assert.deepEqual(selectProgressRun(submitting), emptyTaskRun());
   assert.equal(deriveTaskProgress(submitting).taskId, null);
+});
+
+test('周胜任务在准备、执行和完成阶段保持独立语义，不继承秘境初步完成', () => {
+  const options = { equipmentStamina: true, secretRealmMode: 'all' as const, mainTask: 'arena_weekly' as const };
+  for (const status of [undefined, 'finishing_login', 'running_daily', 'completed'] as const) {
+    const current = input(status);
+    current.view.task = { ...session, userOptions: options };
+    if (current.view.run) current.view.run.secretRealmCompletedAt = at;
+    const progress = deriveTaskProgress(current);
+    assert.equal(progress.mainTask, 'arena_weekly');
+    assert.doesNotMatch(JSON.stringify(progress), /日常|秘境|初步完成/);
+    assert.equal(deriveDailyCompletion(current.view.run, options), null);
+    if (status === 'running_daily') {
+      assert.equal(progress.summary, '周胜任务执行中');
+      assert.equal(progress.steps[2].state, 'active');
+    }
+    if (status === 'completed') assert.equal(progress.steps[2].state, 'completed');
+  }
+  const fresh = deriveTaskProgress(input(undefined, { phase: 'idle', session: null, view: emptyTaskRun(), mainTask: 'arena_weekly' }));
+  assert.equal(fresh.mainTask, 'arena_weekly');
+  assert.match(fresh.steps[2].description, /周胜/);
+});
+
+test('主任务选择只作用于新申请，历史日常和周胜各自按已提交选项显示', () => {
+  const dailyHistory = input('running_daily', { phase: 'idle', session: null, mainTask: 'arena_weekly' });
+  assert.equal(deriveTaskProgress(dailyHistory).mainTask, 'daily');
+  assert.match(deriveTaskProgress(dailyHistory).steps[2].description, /日常/);
+  const arenaHistory = input('running_daily', { phase: 'idle', session: null, mainTask: 'daily' });
+  arenaHistory.view.task = { ...session,
+    userOptions: { equipmentStamina: true, secretRealmMode: 'all', mainTask: 'arena_weekly' } };
+  assert.equal(deriveTaskProgress(arenaHistory).mainTask, 'arena_weekly');
+  assert.doesNotMatch(JSON.stringify(deriveTaskProgress(arenaHistory)), /日常|秘境/);
+  const newRequest = input(undefined, { view: emptyTaskRun(), session: { ...session,
+    userOptions: { equipmentStamina: true, secretRealmMode: 'all', mainTask: 'arena_weekly' } } });
+  assert.equal(deriveTaskProgress(newRequest).mainTask, 'arena_weekly');
+  const submitting = { ...dailyHistory, phase: 'submitting' as const, awaitingSubmission: true };
+  assert.equal(deriveTaskProgress(submitting).mainTask, 'arena_weekly');
+});
+
+test('周胜兼容旧执行失败与超时代码，失败仍然保留且不显示日常完成语义', () => {
+  for (const errorCode of ['daily_failed', 'daily_timeout']) {
+    const current = input('failed');
+    current.view.task = { ...session,
+      userOptions: { equipmentStamina: true, secretRealmMode: 'all', mainTask: 'arena_weekly' } };
+    Object.assign(current.view.run!, { startedAt: at, secretRealmCompletedAt: at, errorCode });
+    const progress = deriveTaskProgress(current);
+    assert.equal(progress.tone, 'danger');
+    assert.equal(progress.steps[2].state, 'failed');
+    assert.equal(progress.summary, '周胜任务执行失败');
+    assert.doesNotMatch(JSON.stringify(progress), /日常|秘境|初步完成/);
+    assert.match(progress.steps[2].description, errorCode === 'daily_timeout' ? /周胜任务执行超时/ : /周胜任务执行失败/);
+  }
 });
