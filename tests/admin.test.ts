@@ -6,6 +6,7 @@ import { UserManagementError, UsernameTakenError, type AdminStore, type DailyEve
 import type { User } from '../src/server/auth.js';
 import type { TaskRun } from '../src/server/task-runs.js';
 import type { ManagedUser } from '../src/shared/admin.js';
+import type { UserOptions } from '../src/shared/user-options.js';
 
 const admin: User = { id: '10000000-0000-4000-8000-000000000001', username: 'Admin', isAdmin: true };
 const id = '10000000-0000-4000-8000-000000000002';
@@ -174,6 +175,52 @@ test('QR expiration never overrides an executing script and failed/mock runs do 
   assert.deepEqual(result.items.map(item => item.status), ['running_daily', 'failed', 'completed', 'unavailable']);
   assert.deepEqual(result.items.map(item => item.completedAt), [null, null, null, null]);
   assert.equal(result.items[3].scannedAt, null);
+});
+
+test('首次秘境已完成的日常在后续超时、失败、中断或过期后仍显示已完成且保留首次完成时间', async () => {
+  const markerAt = new Date(now - 2000).toISOString();
+  for (const secretRealmMode of [undefined, 'once', 'all'] as const)
+    for (const status of ['failed', 'interrupted', 'expired'] as const)
+      for (const errorCode of ['daily_timeout', 'daily_failed']) {
+        const event: DailyEvent = { id, username: user.username, createdAt: new Date(now - 5000).toISOString(),
+          expiresAt: new Date(now - 1000).toISOString(), status: 'failed',
+          ...(secretRealmMode ? { userOptions: { equipmentStamina: true, secretRealmMode } } : {}) };
+        const run: TaskRun = { taskId: id, status, errorCode, updatedAt: new Date(now).toISOString(),
+          authorizedAt: new Date(now - 4500).toISOString(), startedAt: new Date(now - 4000).toISOString(),
+          secretRealmCompletedAt: markerAt, finishedAt: new Date(now).toISOString() };
+        const before = JSON.stringify(run);
+        const f = fixture({ listDailyEvents: async () => ({ items: [event], total: 1 }) }, [run]);
+        const [item] = (await f.service.dailyTasks(admin, {})).items;
+        assert.equal(item.status, 'completed');
+        assert.equal(item.completedAt, markerAt);
+        assert.equal(item.scannedAt, run.authorizedAt);
+        assert.equal(Object.hasOwn(item, 'errorCode'), false);
+        assert.equal(Object.hasOwn(item, 'errorMessage'), false);
+        assert.equal(JSON.stringify(run), before, 'Presentation must not rewrite the worker snapshot');
+      }
+});
+
+test('管理员日常完成判定不影响运行中任务、无效标记、跳过秘境或周胜任务，完整完成优先', async () => {
+  const run: TaskRun = { taskId: id, status: 'failed', errorCode: 'daily_timeout',
+    updatedAt: new Date(now).toISOString(), startedAt: new Date(now - 4000).toISOString(),
+    secretRealmCompletedAt: new Date(now - 2000).toISOString(), finishedAt: new Date(now).toISOString() };
+  const cases: Array<{ run: TaskRun; userOptions?: UserOptions }> = [
+    { run: { ...run, status: 'running_daily', finishedAt: null } },
+    { run: { ...run, startedAt: null } },
+    { run: { ...run, startedAt: 'invalid' } },
+    { run: { ...run, secretRealmCompletedAt: undefined } },
+    { run: { ...run, secretRealmCompletedAt: 'invalid' } },
+    { run, userOptions: { equipmentStamina: true, secretRealmMode: 'skip' } },
+    { run, userOptions: { mainTask: 'arena_weekly', equipmentStamina: true, secretRealmMode: 'all' } },
+    { run: { ...run, status: 'completed' } },
+  ];
+  const events: DailyEvent[] = cases.map(({ userOptions }, index) => ({ id: `${id}-${index}`, username: user.username,
+    createdAt: new Date(now - 5000).toISOString(), expiresAt: new Date(now - 1000).toISOString(), status: 'failed', userOptions }));
+  const runs = cases.map((value, index) => ({ ...value.run, taskId: events[index].id }));
+  const f = fixture({ listDailyEvents: async () => ({ items: events, total: events.length }) }, runs);
+  const result = await f.service.dailyTasks(admin, {});
+  assert.deepEqual(result.items.map(item => item.status), ['running_daily', 'failed', 'failed', 'failed', 'failed', 'failed', 'failed', 'completed']);
+  assert.deepEqual(result.items.map(item => item.completedAt), [null, null, null, null, null, null, null, run.finishedAt]);
 });
 
 test('daily failures expose each run error with honest fallbacks without adding errors to other statuses', async () => {

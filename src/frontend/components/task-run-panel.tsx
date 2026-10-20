@@ -33,7 +33,7 @@ export function TaskRunPanel({ view, retry }: { view: TaskRunView; retry: () => 
     if (expanded && following.current && scrollArea.current) scrollArea.current.scrollTop = scrollArea.current.scrollHeight;
   }, [expanded, lastLog, view.task?.id]);
   const initialCompletion = deriveDailyCompletion(view.run, view.task?.userOptions);
-  const bad = view.run && ['failed', 'interrupted', 'expired'].includes(view.run.status) && !initialCompletion?.timedOut;
+  const bad = view.run && ['failed', 'interrupted', 'expired'].includes(view.run.status) && !initialCompletion;
   const label = initialCompletion?.summary ?? (view.run ? arena && view.run.status === 'running_daily' ? '周胜任务执行中' : labels[view.run.status] : view.unavailable ? '无执行记录'
     : view.loading ? '正在读取' : view.task ? '等待任务开始' : '待开始');
   const hasSummary = Boolean(initialCompletion || view.error || bad && view.run?.errorCode || view.run?.actionIndex !== undefined);

@@ -11,7 +11,7 @@ import { Spinner } from '@/components/ui/spinner';
 export function AdminTaskLogDetails({ task, onAccessLost }: { task: DailyTask; onAccessLost: () => void }) {
   const [open, setOpen] = useState(false);
   const { status, logs, loading, error, loadMore, hasMore, truncated } = useAdminTaskLogs(task.id, open, onAccessLost);
-  const currentStatus = status ?? task.status;
+  const currentStatus = task.status === 'completed' && task.completedAt ? 'completed' : status ?? task.status;
   const failed = ['failed', 'interrupted', 'expired'].includes(currentStatus);
   const failureMessage = failed ? task.errorMessage : undefined;
   const errorCode = failed ? task.errorCode : undefined;

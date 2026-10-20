@@ -13,7 +13,7 @@ const changes: UserChanges = { username: 'Naruto_2', usernameKey: 'naruto_2', is
 
 function fixture(t: TestContext) {
   const calls: Array<{ sql: string; values: unknown[] }> = [];
-  let actor = true, missing = false, failure: unknown;
+  let actor = true, missing = false, failure: unknown, userOptions: unknown;
   async function query(text: string, values: unknown[] = []) {
     const sql = text.replace(/\s+/g, ' ').trim(); calls.push({ sql, values });
     if (sql.includes('FOR SHARE')) return { rows: actor ? [{ id: adminId }] : [] };
@@ -25,13 +25,14 @@ function fixture(t: TestContext) {
     if (sql.startsWith('SELECT count(DISTINCT user_id)')) return { rows: [{ total: 41, totalRequests: 120 }] };
     if (sql.startsWith('WITH stats AS')) return { rows: [{ userId: id, username: 'Naruto', requestCount: 9, requestDays: 3, rank: 1, password: 'private-fixture' }] };
     if (sql.includes('FROM naruto_login.users u')) return { rows: missing ? [] : [{ ...row, password: 'private-fixture' }] };
-    if (sql.includes('FROM naruto_login.login_events e')) return { rows: [{ id, username: row.username, createdAt: now, expiresAt: new Date(now.getTime() + 300000), status: 'qr_ready', accessToken: 'private-token' }] };
+    if (sql.includes('FROM naruto_login.login_events e')) return { rows: [{ id, username: row.username, createdAt: now, expiresAt: new Date(now.getTime() + 300000), status: 'qr_ready', userOptions, accessToken: 'private-token' }] };
     return { rows: [] };
   }
   t.mock.method(Pool.prototype, 'connect', async () => ({ query, release() {} }));
   t.mock.method(Pool.prototype, 'query', query);
   const store = new PgAuthStore('postgresql://fixture:fixture@127.0.0.1/fixture'); t.after(() => store.close());
-  return { store, calls, setActor(value: boolean) { actor = value; }, setMissing(value: boolean) { missing = value; }, setFailure(value: unknown) { failure = value; } };
+  return { store, calls, setActor(value: boolean) { actor = value; }, setMissing(value: boolean) { missing = value; },
+    setFailure(value: unknown) { failure = value; }, setUserOptions(value: unknown) { userOptions = value; } };
 }
 
 test('admin lists use literal parameterized search, consistent count/page snapshots and public fields', async t => {
@@ -103,9 +104,26 @@ test('日常列表的总数与分页仅统计日常任务，缺省主任务兼�
   const count = f.calls.find(call => call.sql.startsWith('SELECT count(*)') && call.sql.includes('FROM naruto_login.login_events'))!;
   assert.match(count.sql, /AND COALESCE\(user_options ->> 'mainTask', 'daily'\) = 'daily'/);
   assert.match(query.sql, /AND COALESCE\(e.user_options ->> 'mainTask', 'daily'\) = 'daily'/);
+  assert.match(query.sql, /e.user_options AS "userOptions"/);
   assert.match(query.sql, /e.created_at >= \$1 AND e.created_at < \$2/);
   assert.doesNotMatch(query.sql, /access_token|request_id|password/);
   assert.deepEqual(query.values, [start, end, 20, 20]);
+});
+
+test('日常列表读取持久选项供首次完成判定，兼容旧记录且保留跳过秘境选择', async t => {
+  const f = fixture(t);
+  for (const [saved, expected] of [
+    [undefined, { equipmentStamina: true, secretRealmMode: 'all' }],
+    [{}, { equipmentStamina: true, secretRealmMode: 'all' }],
+    [{ equipmentStamina: false, secretRealmOnce: true }, { equipmentStamina: false, secretRealmMode: 'once' }],
+    [{ equipmentStamina: true, secretRealmMode: 'skip' }, { equipmentStamina: true, secretRealmMode: 'skip' }],
+  ]) {
+    f.setUserOptions(saved);
+    const result = await f.store.listDailyEvents(now, new Date(now.getTime() + 300000), 0, 20);
+    assert.deepEqual(result.items[0].userOptions, expected);
+  }
+  f.setUserOptions({ secretRealmMode: 'invalid' });
+  await assert.rejects(f.store.listDailyEvents(now, new Date(now.getTime() + 300000), 0, 20), /Stored daily event user options are invalid/);
 });
 
 test('月榜总数与排名只统计日常申请，兼容旧记录并按北京日期去重且保留所有执行状态', async t => {

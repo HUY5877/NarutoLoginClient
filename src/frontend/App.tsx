@@ -507,7 +507,7 @@ export default function App() {
                       : id === 'submission' ? state === 'completed' ? '已提交' : '提交申请'
                         : id === 'qr' ? '二维码'
                           : currentRun?.status === 'finishing_login' ? '进入游戏'
-                            : initialDailyCompletion?.tone === 'success' ? '初步完成' : state === 'completed' ? '已完成' : progress.mainTask === 'arena_weekly' ? '刷周胜' : '清日常';
+                            : state === 'completed' ? '已完成' : initialDailyCompletion ? '初步完成' : progress.mainTask === 'arena_weekly' ? '刷周胜' : '清日常';
                     const stateLabel = waitingForScan ? 'active' : state;
                     const StepIcon = stepIcons[id];
                     return <span key={id} data-stage={id} data-state={stateLabel} aria-label={`${title}：${description}`}>

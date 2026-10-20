@@ -7,6 +7,7 @@ import type { TaskRunService } from './task-runs.js';
 import type { DailyTask, DailyTaskFailureDetails, DailyTaskLogPage, DailyTaskPage, ManagedUser, PageResult, MonthlyStatsPage } from '../shared/admin.js';
 import { DEFAULT_LOGIN_TYPE } from '../shared/login-types.js';
 import { taskFailureMessage } from '../shared/task-errors.js';
+import { getDailyMilestoneAt } from '../shared/daily-completion.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const pageSize = 20;
@@ -109,12 +110,14 @@ export class AdminService {
     const summaries = await this.options.runs.getSummaries(events.items.map(event => event.id));
     const items: DailyTask[] = events.items.map((event, index) => {
       const run = summaries[index];
-      const status: DailyTask['status'] = run?.status ?? (event.status === 'failed' ? 'failed'
+      const milestoneAt = getDailyMilestoneAt(run, event.userOptions);
+      const milestoneCompleted = Boolean(milestoneAt && run && ['failed', 'interrupted', 'expired'].includes(run.status));
+      const status: DailyTask['status'] = milestoneCompleted ? 'completed' : run?.status ?? (event.status === 'failed' ? 'failed'
         : Date.parse(event.expiresAt) <= now ? 'unavailable' : event.status === 'qr_ready' ? 'waiting_scan' : event.status);
       return { id: event.id, username: event.username, requestedAt: event.createdAt, loginType: event.loginType ?? DEFAULT_LOGIN_TYPE,
         scannedAt: run?.authorizedAt ?? null,
-        // finishedAt on a failed/expired run does not mean the daily script completed.
-        completedAt: run?.status === 'completed' && run.startedAt ? run.finishedAt : null,
+        // A later sweep failure cannot erase an already recorded daily milestone.
+        completedAt: run?.status === 'completed' && run.startedAt ? run.finishedAt : milestoneCompleted ? milestoneAt : null,
         status,
         ...(status === 'failed' ? {
           ...(run?.errorCode ? { errorCode: run.errorCode } : {}),

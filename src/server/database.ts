@@ -2,7 +2,7 @@ import { Pool, type PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { logBackend, requestLogContext } from './logging.js';
-import { parseUserOptions } from '../shared/user-options.js';
+import { parseUserOptions, type UserOptions } from '../shared/user-options.js';
 import { DEFAULT_LOGIN_TYPE, parseLoginType, type LoginType } from '../shared/login-types.js';
 import type { Status, Submission } from './queue.js';
 import type { ManagedUser, MonthlySort, MonthlyUserStats } from '../shared/admin.js';
@@ -43,6 +43,7 @@ export interface UserChanges { username: string; usernameKey: string; password?:
 export interface DailyEvent {
   id: string; username: string; createdAt: string; expiresAt: string; status: Status;
   loginType?: LoginType;
+  userOptions?: UserOptions;
 }
 export interface AdminStore {
   initialize(): Promise<void>;
@@ -390,13 +391,20 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
       await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
       const count = await client.query<{ total: number }>(`SELECT count(*)::int AS total FROM naruto_login.login_events
         WHERE created_at >= $1 AND created_at < $2 AND COALESCE(user_options ->> 'mainTask', 'daily') = 'daily'`, [start, end]);
-      const result = await client.query<Omit<DailyEvent, 'createdAt' | 'expiresAt'> & { createdAt: Timestamp; expiresAt: Timestamp }>(
-        `SELECT e.id, u.username, e.created_at AS "createdAt", e.expires_at AS "expiresAt", e.status, e.login_type AS "loginType"
+      const result = await client.query<Omit<DailyEvent, 'createdAt' | 'expiresAt' | 'userOptions'> & {
+        createdAt: Timestamp; expiresAt: Timestamp; userOptions: unknown;
+      }>(
+        `SELECT e.id, u.username, e.created_at AS "createdAt", e.expires_at AS "expiresAt", e.status, e.login_type AS "loginType",
+           e.user_options AS "userOptions"
          FROM naruto_login.login_events e JOIN naruto_login.users u ON u.id = e.user_id
          WHERE e.created_at >= $1 AND e.created_at < $2 AND COALESCE(e.user_options ->> 'mainTask', 'daily') = 'daily'
          ORDER BY e.created_at DESC, e.id DESC LIMIT $3 OFFSET $4`, [start, end, limit, offset]);
-      return { items: result.rows.map(row => ({ id: row.id, username: row.username, status: row.status, loginType: row.loginType ?? DEFAULT_LOGIN_TYPE,
-        createdAt: new Date(row.createdAt).toISOString(), expiresAt: new Date(row.expiresAt).toISOString() })), total: count.rows[0].total };
+      return { items: result.rows.map(row => {
+        const userOptions = parseUserOptions(row.userOptions);
+        if (!userOptions) throw new Error('Stored daily event user options are invalid');
+        return { id: row.id, username: row.username, status: row.status, loginType: row.loginType ?? DEFAULT_LOGIN_TYPE, userOptions,
+          createdAt: new Date(row.createdAt).toISOString(), expiresAt: new Date(row.expiresAt).toISOString() };
+      }), total: count.rows[0].total };
     });
   }
 
