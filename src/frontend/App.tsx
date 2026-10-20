@@ -235,8 +235,6 @@ export default function App() {
               <img src="/icons/leaf-village.svg" alt="" width="32" height="32" />
             </span>
             <span className="text-base font-bold tracking-wide">忍者日常<SiteEnvironmentBadge /></span>
-            <Separator orientation="vertical" className="mx-1 hidden h-5! sm:block" />
-            <span className="hidden text-xs text-muted-foreground sm:block">{isArenaWeekly ? '扫码拿周胜' : '扫码清日常'}</span>
           </div>
           <div className="village-account flex flex-wrap items-center justify-end gap-1.5 sm:gap-3">
             {auth.loading ? <Spinner aria-label="正在读取账户状态" className="size-4" /> : auth.user ? (
