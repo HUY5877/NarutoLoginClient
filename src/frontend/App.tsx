@@ -30,7 +30,7 @@ import { MobileTaskSheet } from '@/components/mobile-task-sheet';
 import { TaskProgressCards } from '@/components/task-progress-cards';
 import { SiteEnvironmentBadge } from '@/components/site-environment-badge';
 import { RegistrationNotice } from '@/components/registration-notice';
-import { ArenaWeeklyBrief, MainTaskSwitch } from '@/components/main-task-switch';
+import { MainTaskSwitch } from '@/components/main-task-switch';
 import {
   Accordion,
   AccordionContent,
@@ -286,7 +286,6 @@ export default function App() {
           locked={Boolean(auth.user && !canEditShownOptions)} onChange={setMainTask}
           notice={<RegistrationNotice className="registration-home-notice" />}>
         <MobileVillageHero />
-        {isArenaWeekly && <ArenaWeeklyBrief />}
 
         <div className="village-workspace grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6">
           <Card className="village-glass login-card gap-0 overflow-hidden shadow-sm" data-authorized={authorizationComplete} data-phase={ready ? 'qr_ready' : authorizationComplete ? 'authorized' : phase}>

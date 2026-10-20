@@ -30,21 +30,6 @@
 .main-task-locked { display: inline-flex; align-items: center; gap: .375rem; margin-left: auto; padding-block: .5rem; color: #c7bcc8; font-size: .6875rem; }
 .main-task-locked svg { width: .75rem; height: .75rem; }
 .main-task-content { min-width: 0; }
-.arena-weekly-brief {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: .625rem;
-  margin-bottom: 1.25rem;
-  padding: .75rem 1rem;
-  border-radius: .75rem;
-  background: #2d2928d9;
-  color: #e9c795;
-  backdrop-filter: blur(12px);
-}
-.arena-weekly-brief > svg { flex-shrink: 0; }
-.arena-preview-label { flex-shrink: 0; border: 1px solid #d9b98b45; border-radius: .375rem; padding: .0625rem .375rem; font-size: .625rem; line-height: 1.5; }
-.arena-weekly-notice { min-width: 0; color: #ddd0c0; font-size: .75rem; line-height: 1.7; }
 @media (min-width: 640px) {
   .main-task-toolbar {
     width: 100%;
@@ -88,8 +73,6 @@
   .main-task-list { gap: .25rem; }
   .main-task-trigger { padding-inline: .625rem; font-size: .8125rem; }
   .main-task-trigger::after { right: .625rem; left: .625rem; }
-  .arena-weekly-brief { margin: 0 .875rem 1rem; padding: .625rem .75rem; gap: .5rem; }
-  .arena-weekly-notice { font-size: .6875rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .main-task-trigger,

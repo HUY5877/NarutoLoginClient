@@ -34,7 +34,7 @@ const weeklyOptions = { equipmentStamina: true, secretRealmMode: 'all', mainTask
 const daily = page => page.getByRole('tab', { name: '日常任务', exact: true });
 const weekly = page => page.getByRole('tab', { name: '决斗场周胜', exact: true });
 const isSelected = async tab => (await tab.getAttribute('aria-selected')) === 'true';
-const weeklyRegion = page => page.getByRole('region', { name: '决斗场周胜任务', exact: true });
+const weeklyPanel = page => page.getByRole('tabpanel', { name: '决斗场周胜', exact: true });
 const generate = page => page.getByRole('button', { name: '启动模拟器获取二维码', exact: true });
 const equipment = page => page.locator('input[aria-labelledby="equipment-stamina-label"]');
 const secretRealm = page => page.getByRole('button', { name: '秘境探险', exact: true });
@@ -202,7 +202,7 @@ test('main task selection preserves task options and session ownership', { skip:
           }
           await screenshotTask('daily');
           await selectTask(f.page, 'arena_weekly');
-          await weeklyRegion(f.page).waitFor();
+          await weeklyPanel(f.page).waitFor();
           await assertTaskPanelLinks(f.page);
           assert.equal(await equipment(f.page).isVisible(), false);
           assert.equal(await secretRealm(f.page).isVisible(), false);
@@ -210,7 +210,7 @@ test('main task selection preserves task options and session ownership', { skip:
           await assertNoHorizontalOverflow(f.page);
           await screenshotTask('arena-weekly');
           await selectTask(f.page, 'daily');
-          assert.equal(await weeklyRegion(f.page).isVisible(), false);
+          assert.equal(await weeklyPanel(f.page).isVisible(), false);
           await assertNoHorizontalOverflow(f.page);
           assert.deepEqual(loginCalls(f.state), [], 'Task previews must not read, submit or refresh QR sessions');
         } finally { await f.close(); }
@@ -225,7 +225,7 @@ test('main task selection preserves task options and session ownership', { skip:
         await secretRealm(f.page).click();
         await f.page.getByRole('menuitemradio', { name: '只刷一次就退出', exact: true }).click();
         await selectTask(f.page, 'arena_weekly');
-        await weeklyRegion(f.page).waitFor();
+        await weeklyPanel(f.page).waitFor();
         assert.equal(await equipment(f.page).isVisible(), false);
         assert.equal(await secretRealm(f.page).isVisible(), false);
         await selectTask(f.page, 'daily');
@@ -289,7 +289,7 @@ test('main task selection preserves task options and session ownership', { skip:
         assert.deepEqual(posts(f.state)[1].body, {}, 'Refresh reuses saved server options');
         assert.equal(await isSelected(weekly(f.page)), true);
         assert.equal(await weekly(f.page).isDisabled(), true);
-        await weeklyRegion(f.page).waitFor();
+        await weeklyPanel(f.page).waitFor();
       } finally { gate.resolve(); await f.close(); }
     });
 
@@ -309,7 +309,7 @@ test('main task selection preserves task options and session ownership', { skip:
         await waitFor(() => isSelected(weekly(f.page)), 'Running weekly selection should be recovered');
         assert.equal(await daily(f.page).isDisabled(), true);
         assert.equal(await weekly(f.page).isDisabled(), true);
-        await weeklyRegion(f.page).waitFor();
+        await weeklyPanel(f.page).waitFor();
         assert.deepEqual(loginCalls(f.state), []);
         await f.page.reload({ waitUntil: 'networkidle' });
         await waitFor(() => isSelected(weekly(f.page)), 'Reload should keep the running task selection');
@@ -319,7 +319,7 @@ test('main task selection preserves task options and session ownership', { skip:
         await waitFor(() => daily(f.page).isEnabled(), 'Completed execution should allow configuring the next task');
         await selectTask(f.page, 'daily');
         assert.equal(await equipment(f.page).isVisible(), true);
-        assert.equal(await weeklyRegion(f.page).isVisible(), false);
+        assert.equal(await weeklyPanel(f.page).isVisible(), false);
         assert.deepEqual(loginCalls(f.state), [], 'Changing the next task never starts it implicitly');
       } finally { await f.close(); }
     });

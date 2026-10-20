@@ -36,11 +36,3 @@ export function MainTaskSwitch({ value, disabled, locked = false, onChange, noti
     <TabsContent id={panelId} value={value} className="main-task-content">{children}</TabsContent>
   </Tabs>;
 }
-
-export function ArenaWeeklyBrief() {
-  return <section className="arena-weekly-brief" aria-label="决斗场周胜任务">
-    <Swords aria-hidden="true" className="size-4" />
-    <span className="arena-preview-label">测试中</span>
-    <p className="arena-weekly-notice">周胜执行正在接入，当前为客户端测试入口。</p>
-  </section>;
-}
