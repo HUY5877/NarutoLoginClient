@@ -52,6 +52,26 @@ test('仅手动加载下一页且固定快照，累计超过2000条日志也不�
   pager.dispose();
 });
 
+test('管理员待入库页明确等待，可手动重试且不冻结尚未生成的初始水位', async () => {
+  for (const upper of ['0-0', '2-0']) {
+    let view = emptyTaskLogs();
+    const paths: string[] = [];
+    const pager = new TaskLogPager(taskId, next => { view = next; }, () => {}, async path => {
+      paths.push(path);
+      return paths.length === 1
+        ? page({ logs: [], nextCursor: '0-0', snapshotCursor: upper, hasMore: false, logsPending: true })
+        : page({ logs: [log(1), log(2)], nextCursor: '2-0', hasMore: false, logsPending: false });
+    });
+    await pager.load();
+    assert.equal(view.logsPending, true); assert.equal(view.error, ''); assert.equal(paths.length, 1);
+    await pager.load();
+    assert.equal(paths[1], '/api/admin/daily-tasks/task-one/logs?after=0-0' + (upper === '0-0' ? '' : '&snapshot=2-0'));
+    assert.equal(view.logsPending, false); assert.equal(view.logs.length, 2); assert.equal(view.error, '');
+    await pager.load(); assert.equal(paths.length, 2); pager.dispose();
+  }
+  assert.throws(() => parseTaskLogPage(page({ logs: [], nextCursor: '1-0', hasMore: false, logsPending: true }), taskId, '0-0', null));
+});
+
 test('下一页读取失败保留已有日志，重试沿同一游标，坏快照不合并', async () => {
   let view = emptyTaskLogs();
   const paths: string[] = [];

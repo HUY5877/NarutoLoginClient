@@ -3,11 +3,13 @@ import { ChevronUp, ListChecks, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { useMediaQuery } from '@/hooks/use-media-query';
+import type { MainTask } from '../../shared/user-options';
 
-export function MobileTaskSheet({ open, onOpenChange, children }: {
+export function MobileTaskSheet({ open, onOpenChange, children, mainTask = 'daily' }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   children: ReactNode;
+  mainTask?: MainTask;
 }) {
   const mobile = useMediaQuery('(max-width: 639px)');
   const gesture = useRef<{ y: number; time: number; distance: number } | null>(null);
@@ -64,7 +66,7 @@ export function MobileTaskSheet({ open, onOpenChange, children }: {
         </button>
         <DialogHeader className="task-sheet-heading">
           <DialogTitle>本次任务</DialogTitle>
-          <DialogDescription>登录进度、日常状态和执行记录</DialogDescription>
+          <DialogDescription>登录进度、{mainTask === 'arena_weekly' ? '周胜' : '日常'}状态和执行记录</DialogDescription>
         </DialogHeader>
         <DialogClose asChild><Button variant="ghost" size="icon" className="task-sheet-close" aria-label="关闭任务进度"><X aria-hidden="true" /></Button></DialogClose>
         <div className="task-sheet-body">{children}</div>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { loginFailure } from '../../shared/task-errors';
-import { DEFAULT_USER_OPTIONS, parseUserOptions, secretRealmModes, type SecretRealmMode, type UserOptions } from '../../shared/user-options';
+import { DEFAULT_USER_OPTIONS, mainTasks, parseUserOptions, secretRealmModes, type MainTask, type SecretRealmMode, type UserOptions } from '../../shared/user-options';
 import { DEFAULT_LOGIN_TYPE, parseLoginType, type LoginType } from '../../shared/login-types';
 import { expireLoginSession } from '../lib/login-expiry';
 
@@ -121,6 +121,7 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
   const [showGetButton, setShowGetButton] = useState(false);
   const [pendingUntil, setPendingUntil] = useState<number | null>(null);
   const [userOptions, setUserOptions] = useState<UserOptions>({ ...DEFAULT_USER_OPTIONS });
+  const guestMainTask = useRef<MainTask>('daily');
   const [loginType, setLoginType] = useState<LoginType>(DEFAULT_LOGIN_TYPE);
   const [acceptedRevision, setAcceptedRevision] = useState(0);
   const [confirmedTaskId, setConfirmedTaskId] = useState<string | null>(null);
@@ -358,7 +359,9 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     setRetrying(false);
     const savedIntent = userId ? readPending(userId) : null;
     setPendingUntil(savedIntent?.expiresAt ?? null);
-    setUserOptions(savedIntent?.userOptions ?? { ...DEFAULT_USER_OPTIONS });
+    setUserOptions(savedIntent?.userOptions ?? { ...DEFAULT_USER_OPTIONS,
+      ...(userId && guestMainTask.current !== 'daily' ? { mainTask: guestMainTask.current } : {}) });
+    if (userId) guestMainTask.current = 'daily';
     setLoginType(savedIntent?.loginType ?? DEFAULT_LOGIN_TYPE);
     setAcceptedRevision(0);
     confirmedTaskRef.current = null;
@@ -480,7 +483,13 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     remainingSeconds, countdown, isError: ['failed', 'expired', 'query_failed'].includes(visiblePhase),
     statusLabel: pending && visibleSession?.refreshRequestId ? '正在刷新二维码，请稍候' : statusLabels[visiblePhase], startLogin, confirmLogin,
     refreshQr: () => run('refresh'),
-    userOptions: currentOwner ? userOptions : DEFAULT_USER_OPTIONS, canEditUserOptions,
+    userOptions: currentOwner || !userId ? userOptions : DEFAULT_USER_OPTIONS, canEditUserOptions,
+    setMainTask: (mainTask: MainTask) => {
+      if ((!userId || canEditUserOptions) && !runningRef.current && mainTasks.includes(mainTask)) {
+        if (!userId) guestMainTask.current = mainTask;
+        setUserOptions(previous => ({ ...previous, mainTask }));
+      }
+    },
     loginType: currentOwner ? loginType : DEFAULT_LOGIN_TYPE,
     setLoginType: (value: LoginType) => {
       if (canEditUserOptions && !runningRef.current && parseLoginType(value)) setLoginType(value);

@@ -28,6 +28,9 @@ import { MobileVillageHero } from '@/components/mobile-village-hero';
 import { KonanPortrait } from '@/components/konan-portrait';
 import { MobileTaskSheet } from '@/components/mobile-task-sheet';
 import { TaskProgressCards } from '@/components/task-progress-cards';
+import { SiteEnvironmentBadge } from '@/components/site-environment-badge';
+import { RegistrationNotice } from '@/components/registration-notice';
+import { MainTaskSwitch } from '@/components/main-task-switch';
 import {
   Accordion,
   AccordionContent,
@@ -87,7 +90,7 @@ import { TaskRunPanel } from '@/components/task-run-panel';
 import { deriveTaskProgress, hasGameAuthorization, isUnclaimedQueueTimeout, selectProgressRun } from '@/lib/task-progress';
 import { isRunTerminal } from '@/lib/task-run';
 import { deriveDailyCompletion } from '@/lib/daily-completion';
-import { DEFAULT_USER_OPTIONS, parseUserOptions, type SecretRealmMode } from '../shared/user-options';
+import { DEFAULT_USER_OPTIONS, getMainTask, parseUserOptions, type MainTask, type SecretRealmMode } from '../shared/user-options';
 import { DEFAULT_LOGIN_TYPE, loginTypes, loginTypeLabels, loginScanApp, parseLoginType } from '../shared/login-types';
 
 const secretRealmChoices: Array<{ value: SecretRealmMode; title: string }> = [
@@ -104,7 +107,7 @@ function ChannelBadge({ app }: { app: 'QQ' | '微信' }) {
 
 const channelDevice = (type: string) => type.startsWith('ios_') ? 'iOS' : '安卓';
 
-function LoginHelp() {
+function LoginHelp({ mainTask = 'daily' }: { mainTask?: MainTask }) {
   return (
     <Dialog>
       <DialogTrigger asChild>
@@ -122,7 +125,9 @@ function LoginHelp() {
           {[
             ['启动模拟器', '登录账户，选择登录渠道并点击「启动模拟器获取二维码」。同账户的多个页面共用一个实例。'],
             ['等待准备完成', '保持页面打开，页面会自动更新准备进度和二维码。'],
-            ['扫码授权并执行', 'QQ 区使用手机 QQ，微信区使用微信扫描二维码并确认授权；进入游戏后自动继续执行日常脚本。'],
+            ['扫码授权并执行', mainTask === 'arena_weekly'
+              ? 'QQ 区使用手机 QQ，微信区使用微信扫描二维码并确认授权。周胜自动执行仍在接入，当前用于客户端流程测试。'
+              : 'QQ 区使用手机 QQ，微信区使用微信扫描二维码并确认授权；进入游戏后自动继续执行日常脚本。'],
           ].map(([title, description], index) => (
             <Item key={title} role="listitem" size="sm" className="items-start px-0">
               <ItemMedia variant="icon" className="size-8 rounded-lg bg-primary/10 text-primary">
@@ -138,7 +143,7 @@ function LoginHelp() {
         <Alert>
           <Clock3 aria-hidden="true" />
           <AlertTitle>二维码失效后，点击「刷新二维码」</AlertTitle>
-          <AlertDescription>实例分配后保留 10 分钟供扫码，刷新不会延长占用时间。超时未扫码成功会自动关闭实例；扫码成功后继续执行日常。</AlertDescription>
+          <AlertDescription>实例分配后保留 10 分钟供扫码，刷新不会延长占用时间。超时未扫码成功会自动关闭实例。{mainTask === 'arena_weekly' ? '本次申请使用决斗场周胜任务，自动执行仍在接入。' : '扫码成功后继续执行日常。'}</AlertDescription>
         </Alert>
       </DialogContent>
     </Dialog>
@@ -172,6 +177,7 @@ export default function App() {
     confirmLogin,
     userOptions,
     canEditUserOptions,
+    setMainTask,
     setEquipmentStamina,
     setSecretRealmMode,
     loginType,
@@ -196,6 +202,8 @@ export default function App() {
   const restoringAuthorizedRun = !session && authorizedRun;
   const displayedUserOptions = restoringAuthorizedRun
     ? parseUserOptions(visibleRun.task?.userOptions) ?? DEFAULT_USER_OPTIONS : userOptions;
+  const mainTask = getMainTask(displayedUserOptions);
+  const isArenaWeekly = mainTask === 'arena_weekly';
   const canEditShownOptions = canEditUserOptions && !restoringAuthorizedRun;
   const displayedLoginType = restoringAuthorizedRun ? parseLoginType(visibleRun.task?.loginType) ?? DEFAULT_LOGIN_TYPE : loginType;
   const scanApp = loginScanApp(displayedLoginType);
@@ -203,7 +211,7 @@ export default function App() {
   const ready = progressInput.qrReady && !authorizationComplete;
   const qrPending = pending && !authorizationComplete;
   const qrError = isError && !authorizationComplete;
-  const progress = deriveTaskProgress({ ...progressInput, qrReady: ready });
+  const progress = deriveTaskProgress({ ...progressInput, qrReady: ready, mainTask });
   useEffect(() => {
     if (session && currentRun?.taskId === session.id && hasGameAuthorization(currentRun)) {
       confirmLogin(session.id, isRunTerminal(currentRun.status));
@@ -212,7 +220,7 @@ export default function App() {
   const stepIcons = { submission: ArrowRight, qr: QrCode, script: ListChecks };
 
   return (
-    <div className="login-shell min-h-svh text-foreground">
+    <div className="login-shell min-h-svh text-foreground" data-main-task={mainTask}>
       <div className="village-backdrop" aria-hidden="true">
         <picture>
           <source media="(max-width: 639px)" srcSet="/images/konoha-background-mobile.webp" />
@@ -226,9 +234,7 @@ export default function App() {
             <span className="headband-mark" aria-hidden="true">
               <img src="/icons/leaf-village.svg" alt="" width="32" height="32" />
             </span>
-            <span className="text-base font-bold tracking-wide">忍者日常</span>
-            <Separator orientation="vertical" className="mx-1 hidden h-5! sm:block" />
-            <span className="hidden text-xs text-muted-foreground sm:block">扫码清日常</span>
+            <span className="text-base font-bold tracking-wide">忍者日常<SiteEnvironmentBadge /></span>
           </div>
           <div className="village-account flex flex-wrap items-center justify-end gap-1.5 sm:gap-3">
             {auth.loading ? <Spinner aria-label="正在读取账户状态" className="size-4" /> : auth.user ? (
@@ -258,12 +264,13 @@ export default function App() {
                 <LogIn aria-hidden="true" />登录 / 注册
               </Button>
             )}
-            <span className="hidden sm:block"><LoginHelp /></span>
+            <span className="hidden sm:block"><LoginHelp mainTask={mainTask} /></span>
           </div>
         </div>
       </header>
 
       <main className="village-main mx-auto max-w-5xl px-5 py-6 sm:px-8 sm:py-8" data-mobile-qr-ready={ready}>
+        <h1 className="sr-only">任务中心</h1>
         {auth.error && !authOpen && (
           <Alert variant="destructive" className="village-glass auth-notice mb-5" role="alert">
             <CircleAlert aria-hidden="true" />
@@ -275,21 +282,10 @@ export default function App() {
             </AlertDescription>
           </Alert>
         )}
-        <section className="village-hero mb-6" aria-labelledby="welcome-title">
-          <div className="village-hero-copy">
-            <Badge variant="outline" className="mb-4 gap-1.5 border-primary/20 bg-card/80 px-2.5 py-1 text-xs font-medium text-primary">
-              <Smartphone className="size-3" aria-hidden="true" />
-              火影忍者手游 · {loginTypeLabels[displayedLoginType]}
-            </Badge>
-            <h1 id="welcome-title" className="village-title">上号，<span className="desktop-hero-accent">清日常。</span></h1>
-            <p className="mt-3 max-w-70 text-sm leading-6 text-muted-foreground sm:max-w-none">
-              用手机{scanApp}扫码登录，<span className="inline-block">日常任务会自动接着跑。</span>
-            </p>
-          </div>
-          <img className="hero-seal" src="/icons/leaf-village.svg" alt="" width="240" height="240" aria-hidden="true" />
-          <KonanPortrait className="village-portrait" />
-        </section>
-        <MobileVillageHero loginType={displayedLoginType} />
+        <MainTaskSwitch value={mainTask} disabled={auth.loading || auth.busy || Boolean(auth.user && !canEditShownOptions)}
+          locked={Boolean(auth.user && !canEditShownOptions)} onChange={setMainTask}
+          notice={<RegistrationNotice className="registration-home-notice" />}>
+        <MobileVillageHero />
 
         <div className="village-workspace grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6">
           <Card className="village-glass login-card gap-0 overflow-hidden shadow-sm" data-authorized={authorizationComplete} data-phase={ready ? 'qr_ready' : authorizationComplete ? 'authorized' : phase}>
@@ -301,7 +297,7 @@ export default function App() {
               </CardTitle>
               <CardDescription className="text-sm">
                 <span className="hidden sm:inline">生成二维码后，用手机{scanApp}扫一扫。</span>
-                <span className="sm:hidden">{authorizationComplete ? '进入游戏后，日常任务会自动接着跑。' : `用手机${scanApp}扫码，再确认登录。`}</span>
+                <span className="sm:hidden">{authorizationComplete ? isArenaWeekly ? '授权已完成，可查看本次周胜任务进度。' : '进入游戏后，日常任务会自动接着跑。' : `用手机${scanApp}扫码，再确认登录。`}</span>
               </CardDescription>
               <CardAction>
                 <Badge variant="secondary" className="gap-1.5 font-normal">
@@ -423,7 +419,7 @@ export default function App() {
                 </div>
               )}
 
-              {auth.user && (
+              {auth.user && !isArenaWeekly && (
                 <label className="equipment-options mt-6 flex w-full max-w-sm items-start gap-3 rounded-xl border border-primary/15 bg-white/40 px-4 py-3" data-editable={canEditShownOptions}>
                   <span className="equipment-switch">
                     <input
@@ -447,7 +443,7 @@ export default function App() {
                 </label>
               )}
 
-              {auth.user && (
+              {auth.user && !isArenaWeekly && (
                 <div className="secret-realm-options mt-4 w-full max-w-sm space-y-2">
                   <label id="secret-realm-mode-label" htmlFor="secret-realm-mode-trigger" className="text-sm font-medium">秘境探险</label>
                   <DropdownMenu modal={false}>
@@ -511,7 +507,7 @@ export default function App() {
                       : id === 'submission' ? state === 'completed' ? '已提交' : '提交申请'
                         : id === 'qr' ? '二维码'
                           : currentRun?.status === 'finishing_login' ? '进入游戏'
-                            : initialDailyCompletion?.tone === 'success' ? '初步完成' : state === 'completed' ? '已完成' : '清日常';
+                            : state === 'completed' ? '已完成' : initialDailyCompletion ? '初步完成' : progress.mainTask === 'arena_weekly' ? '刷周胜' : '清日常';
                     const stateLabel = waitingForScan ? 'active' : state;
                     const StepIcon = stepIcons[id];
                     return <span key={id} data-stage={id} data-state={stateLabel} aria-label={`${title}：${description}`}>
@@ -526,7 +522,7 @@ export default function App() {
                     </span>;
                   })}
                 </div>
-                <MobileTaskSheet open={mobileDetailsOpen} onOpenChange={setMobileDetailsOpen}>
+                <MobileTaskSheet open={mobileDetailsOpen} onOpenChange={setMobileDetailsOpen} mainTask={progress.mainTask}>
                   <div className="task-sheet-progress space-y-4"><TaskProgressCards progress={progress} /></div>
                   <TaskRunPanel view={visibleRun} retry={taskRun.retry} />
                   {session && <p className="task-sheet-session">申请编号 <code>{session.id}</code></p>}
@@ -537,9 +533,9 @@ export default function App() {
             <CardFooter className="login-card-footer flex-col items-stretch gap-4 border-t px-6 py-5 sm:px-8">
               <Alert className="login-explanation border-0 bg-transparent p-0 text-muted-foreground">
                 <CircleAlert aria-hidden="true" />
-                <AlertTitle className="text-sm font-medium text-foreground">确认登录后，日常会接着跑</AlertTitle>
+                <AlertTitle className="text-sm font-medium text-foreground">{isArenaWeekly ? '本次选择：决斗场周胜' : '确认登录后，日常会接着跑'}</AlertTitle>
                 <AlertDescription className="text-sm leading-6">
-                  在手机{scanApp}上确认登录就好。进入游戏后会自动清日常，下方可以查看进度。
+                  {isArenaWeekly ? `使用手机${scanApp}扫码授权。本次申请按周胜任务提交，执行功能仍在开发。` : `在手机${scanApp}上确认登录就好。进入游戏后会自动清日常，下方可以查看进度。`}
                 </AlertDescription>
               </Alert>
               {session && (
@@ -557,19 +553,21 @@ export default function App() {
                 </Accordion>
               )}
               <div className="mobile-login-help flex flex-wrap items-center justify-center gap-x-2 gap-y-1 sm:hidden">
-                <LoginHelp />
-                {auth.user && !canEditShownOptions && <span className="text-xs text-muted-foreground">{displayedUserOptions.equipmentStamina ? '装备栏体力刷取已开启' : '装备栏体力刷取未开启'}</span>}
+                <LoginHelp mainTask={mainTask} />
+                {auth.user && !isArenaWeekly && !canEditShownOptions && <span className="text-xs text-muted-foreground">{displayedUserOptions.equipmentStamina ? '装备栏体力刷取已开启' : '装备栏体力刷取未开启'}</span>}
               </div>
             </CardFooter>
           </Card>
 
           <div id="login-progress-details" className="village-side-panels space-y-5 lg:space-y-6">
+            <div className="village-portrait-stage"><KonanPortrait className="village-portrait" /></div>
             <TaskProgressCards progress={progress} />
           </div>
         </div>
         <div id="task-run-details" className="task-run-details">
           {auth.user && <TaskRunPanel view={visibleRun} retry={taskRun.retry} />}
         </div>
+        </MainTaskSwitch>
       </main>
       <AuthDialog open={authOpen} onOpenChange={setAuthOpen} busy={auth.busy}
         error={auth.error} clearError={auth.clearError} authenticate={auth.authenticate} />

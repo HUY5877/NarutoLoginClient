@@ -59,6 +59,7 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
         if (!url.pathname.startsWith('/api/')) return route.continue();
         const method = route.request().method();
         const reply = (json, status = 200) => route.fulfill({ status, json });
+        if (url.pathname === '/api/health') return reply({ ok: true, environment: 'test' });
         if (url.pathname === '/api/auth/me') return reply({ user: { ...admin, isAdmin: state.access } });
         if (url.pathname === '/api/task-runs/latest') return reply({ task: null });
         if (url.pathname.startsWith('/api/admin/')) {
@@ -79,7 +80,7 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
             const logs = remaining.slice(0, 100), hasMore = remaining.length > 100;
             const current = taskId === task.id ? task : taskId === 'running' ? { status: 'running_daily' }
               : taskId === 'failed' ? { status: 'failed' } : state.extraDaily.find(item => item.id === taskId);
-            return reply({ taskId: state.detailIdentityOverride || taskId, status: current?.status ?? null, logs,
+            return reply({ taskId: state.detailIdentityOverride || taskId, status: state.detailResponse.status ?? current?.status ?? null, logs,
               nextCursor: hasMore ? logs.at(-1).id : snapshotCursor, snapshotCursor, hasMore, truncated: state.detailResponse.truncated });
           }
           if (url.pathname === '/api/admin/monthly-stats') {
@@ -246,6 +247,56 @@ test('administrator menu, daily tasks and user CRUD', { skip: skip || false, tim
         assert.equal(await list.getByRole('cell', { name: user.username, exact: true }).count(), 1);
         assert.deepEqual(f.state.mutations, []);
       } finally { await f.close(); }
+    });
+
+    await t.test('confirmed daily completion stays completed when raw logs report a later worker timeout on desktop and mobile', async () => {
+      for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+        const f = await fixture(true, viewport, viewport.width < 768);
+        try {
+          const confirmed = { ...task, id: 'confirmed-daily', username: 'Confirmed_Daily',
+            errorCode: 'daily_timeout', errorMessage: '首次秘境已完成，后续 worker 进程超时。' };
+          const timeout = { errorCode: 'daily_timeout', errorMessage: '日常任务执行超时，请查看执行日志。' };
+          const errorLog = 'daily_timeout：首次秘境完成后，worker 执行超时。';
+          f.state.extraDaily.push(confirmed);
+          f.state.failureDetails = timeout;
+          f.state.detailResponse.status = 'failed';
+          f.state.detailResponse.errorCode = timeout.errorCode;
+          f.state.detailResponse.errorMessage = timeout.errorMessage;
+          f.state.detailResponse.logs = [
+            { id: '1000-0', time: task.completedAt, level: 'INFO', message: '首次秘境已完成。' },
+            { id: '1001-0', time: '2026-10-08T00:31:00.000Z', level: 'ERROR', message: errorLog },
+          ];
+          await f.open('近七天刷日常情况');
+          const list = f.page.getByRole('dialog', { name: '近七天刷日常情况', exact: true });
+          const completedRow = (viewport.width < 768
+            ? list.getByRole('list', { name: '近七天任务列表' }).getByRole('listitem')
+            : list.getByRole('row')).filter({ hasText: confirmed.username });
+          await completedRow.getByText('已完成', { exact: true }).waitFor();
+          await completedRow.getByRole('button', { name: `${confirmed.username}的日志详情`, exact: true }).click();
+          const details = f.page.getByRole('dialog', { name: '日志详情', exact: true });
+          await details.getByText('已加载 2 条', { exact: true }).waitFor();
+          await details.getByText('已完成', { exact: true }).waitFor();
+          assert.equal(await details.getByText('失败', { exact: true }).count(), 0,
+            'A saved daily completion is not replaced by the raw worker failure');
+          assert.equal(await details.getByText(confirmed.errorMessage, { exact: true }).count(), 0);
+          assert.equal(await details.getByText('错误码：daily_timeout', { exact: true }).count(), 0);
+          assert.equal(await details.getByText(errorLog, { exact: true }).isVisible(), true,
+            'The original ERROR log remains available after daily completion');
+          assert.match(await details.getByRole('listitem').last().innerText(), /ERROR/);
+          await details.getByRole('button', { name: '关闭日志详情' }).click();
+          await details.waitFor({ state: 'hidden' });
+
+          await list.getByRole('button', { name: 'Sakura_03的日志详情', exact: true }).click();
+          await details.getByText('已加载 2 条', { exact: true }).waitFor();
+          await details.getByText('失败', { exact: true }).waitFor();
+          assert.equal(await details.getByText('已完成', { exact: true }).count(), 0,
+            'A task without confirmed daily completion still shows its genuine failure');
+          assert.equal(await details.getByText(timeout.errorMessage, { exact: true }).isVisible(), true);
+          assert.equal(await details.getByText('错误码：daily_timeout', { exact: true }).isVisible(), true);
+          assert.equal(await details.getByText(errorLog, { exact: true }).isVisible(), true);
+          assert.deepEqual(f.state.mutations, []);
+        } finally { await f.close(); }
+      }
     });
 
     await t.test('log details manually load stable snapshot pages and preserve previous logs through retry', async () => {

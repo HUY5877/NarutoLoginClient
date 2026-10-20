@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
+import { RegistrationNotice } from '@/components/registration-notice';
 import type { AuthMode, AuthResult } from '@/hooks/use-auth';
 
 interface AuthDialogProps {
@@ -78,6 +79,7 @@ export function AuthDialog({ open, onOpenChange, busy, error, clearError, authen
               : registering ? '提交注册申请，管理员审批通过后即可登录。' : '登录后即可获取二维码，重新打开页面也能继续本次申请。'}
           </DialogDescription>
         </DialogHeader>
+        {(registering || submittedMessage) && <RegistrationNotice surface="dialog" />}
         {submittedMessage ? (
           <div className="space-y-5">
             <Alert className="border-primary/20 bg-white/40" role="status">

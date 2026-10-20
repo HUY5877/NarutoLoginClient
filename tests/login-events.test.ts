@@ -200,7 +200,7 @@ test('跨账户不能恢复或读取事件；数据库查询失败不能伪装�
   await assert.rejects(f.service().getActive(userId), { status: 503, code: 'LOGIN_EVENTS_UNAVAILABLE' });
 });
 
-test('选项先持久化，丢失投递响应后的重试和有效事件复用始终沿用原选择', async () => {
+test('主任务和日常选项先持久化，丢失投递响应后的重试和有效事件复用始终沿用原选择', async () => {
   const f = fixture(), userId = randomUUID(), requestId = randomUUID();
   const enqueue = f.tasks.enqueue;
   let first = true;
@@ -208,27 +208,29 @@ test('选项先持久化，丢失投递响应后的重试和有效事件复用�
     await enqueue(task);
     if (first) { first = false; throw new ApiError(503, 'lost reply'); }
   };
-  const selected: UserOptions = { equipmentStamina: false, secretRealmMode: 'once' };
+  const original: UserOptions = { mainTask: 'arena_weekly', equipmentStamina: false, secretRealmMode: 'once' };
+  const selected = { ...original };
   await assert.rejects(f.service().create(userId, requestId, selected), { status: 503 });
+  selected.mainTask = 'daily';
   selected.equipmentStamina = true;
   selected.secretRealmMode = 'skip';
   const recovered = await f.service().create(userId, requestId, selected);
-  assert.deepEqual(recovered.userOptions, { equipmentStamina: false, secretRealmMode: 'once' });
-  assert.deepEqual(f.records.get(recovered.id)?.userOptions, { equipmentStamina: false, secretRealmMode: 'once' });
+  assert.deepEqual(recovered.userOptions, original);
+  assert.deepEqual(f.records.get(recovered.id)?.userOptions, original);
   assert.equal(f.submissions.length, 2);
-  for (const submission of f.submissions) assert.deepEqual(submission.userOptions, { equipmentStamina: false, secretRealmMode: 'once' });
-  assert.deepEqual((await f.service().create(userId, randomUUID(), selected)).userOptions, { equipmentStamina: false, secretRealmMode: 'once' });
-  assert.deepEqual((await f.service().getForUser(recovered.id, userId)).userOptions, { equipmentStamina: false, secretRealmMode: 'once' });
+  for (const submission of f.submissions) assert.deepEqual(submission.userOptions, original);
+  assert.deepEqual((await f.service().create(userId, randomUUID(), selected)).userOptions, original);
+  assert.deepEqual((await f.service().getForUser(recovered.id, userId)).userOptions, original);
   assert.equal(f.queue.size, 1);
   assert.equal(f.submissions.length, 2);
   // Losing Redis must not lose the persisted selection or re-enqueue the task.
   f.queue.clear();
-  assert.deepEqual((await f.service().getActive(userId))?.userOptions, { equipmentStamina: false, secretRealmMode: 'once' });
+  assert.deepEqual((await f.service().getActive(userId))?.userOptions, original);
   assert.equal(f.submissions.length, 2);
   f.advance(120001);
   const next = await f.service().create(userId, randomUUID(), selected);
   assert.notEqual(next.id, recovered.id);
-  assert.deepEqual(next.userOptions, { equipmentStamina: true, secretRealmMode: 'skip' });
+  assert.deepEqual(next.userOptions, { mainTask: 'daily', equipmentStamina: true, secretRealmMode: 'skip' });
 });
 
 test('失败原因在首次读取、数据库已标记失败后的复查及原二维码到期后保持，不重新派发', async () => {

@@ -58,11 +58,39 @@ npm run dev
 
 登录渠道通过顶层 `loginType`（`android_qq`、`ios_qq`、`android_wechat`、`ios_wechat`）随申请、Redis 队列和刷新指令传给执行端，数据库与执行记录保留首次选择；旧申请默认安卓 QQ。需配套更新 NarutoDailyADB 执行端。
 
-任务设置统一放在 `userOptions` JSON 中，格式为 `{ "equipmentStamina": true, "secretRealmMode": "all" }`。`secretRealmMode` 可取 `once`、`all`、`skip`，分别对应只刷一次、刷完所有扫荡券、不刷秘境，缺省为 `all`。兼容旧 `secretRealmOnce` 布尔参数：`true` 映射为 `once`，`false` 映射为 `all`；服务响应及新入队数据统一使用模式字段。新旧字段同时提供时必须一致，否则拒绝申请。设置继续存入现有 JSONB 和 Redis 任务 JSON，不增加独立字段或 key；执行端需同步更新并重启服务。
+任务设置统一放在 `userOptions` JSON 中，例如 `{ "mainTask": "arena_weekly", "equipmentStamina": true, "secretRealmMode": "all" }`。`mainTask` 可取 `daily`（刷日常）或 `arena_weekly`（决斗场周胜），缺省继续执行原来的刷日常；旧请求和旧记录不会被补写此字段。主任务只随现有 `userOptions` JSON 传递，沿用原队列和所有 Redis key，也不增加 SQL 列。提交后，复用申请、重试投递、刷新二维码和执行记录恢复都保留首次主任务选择。当前已实现客户端选择和协议透传，周胜执行逻辑需由后续 worker 实现。
 
-近七天列表显示每次申请的登录渠道，可按日期筛选今天及之前六天，也可查看全部七天；月榜读取数据库中的历史申请，不受执行日志过期影响。执行记录默认保留七天，需要配套更新并重启 ADB 服务；已经过期的旧日志无法补回。
+日常设置中的 `secretRealmMode` 可取 `once`、`all`、`skip`，分别对应只刷一次、刷完所有扫荡券、不刷秘境，缺省为 `all`。兼容旧 `secretRealmOnce` 布尔参数：`true` 映射为 `once`，`false` 映射为 `all`；服务响应及新入队数据统一使用模式字段。新旧字段同时提供时必须一致，否则拒绝申请。切换主任务不会清空装备体力和秘境设置，这些选项仍随 `userOptions` 保存，但只对日常任务生效；周胜 worker 接入时应按 `mainTask` 分流，忽略日常专属设置。
+
+近七天日常列表和月榜仅统计日常申请，缺省主任务的历史记录仍计入日常，周胜申请不计入。列表显示每次申请的登录渠道，可按日期筛选今天及之前六天，也可查看全部七天；月榜读取数据库中的历史申请，不受执行日志过期影响。执行记录默认保留七天，需要配套更新并重启 ADB 服务；已经过期的旧日志无法补回。
 
 管理员列表的「日志详情」列对所有任务状态开放。打开列表只读取任务摘要；点击「查看日志」才读取首批 100 条，后续点击「加载更多」继续读取，直到显示全部保留的日志，不限制为最近 10 条。详情按打开时的日志快照分页，重新打开详情可读取新增日志；已过期或被裁剪的记录会提示缺失。
+
+### SLS 日志归档
+
+管理员日志详情、失败详情和普通用户实时日志优先读取阿里云 SLS。NarutoDailyADB 的 logger 在 emit 时生成日志 ID，由进程内发布器通过 Python SDK 异步批量直传 SLS，并附带覆盖范围 checkpoint。新日志不再写 Redis；关闭 SLS 时也不会恢复 Redis 日志写入。执行状态、队列、会话与账号锁仍由 Redis 管理，已有 Redis 历史日志保留兼容读取并按原有 TTL 自然过期。
+
+客户端提交申请只写入队列和已有 queued 会话状态，不上传日志。提交后的即时进度由排队状态展示；执行端领取或安全拒绝任务时补发提交/等待领取事件，再记录正式执行或拒绝原因。日志发布缓冲仅在执行端进程内存中保存，不使用 Redis Stream 或本地 SQLite；进程退出、缓冲溢出或长期无法上传可能导致日志缺失，不影响轻量执行状态读取。
+
+以下键放入对应环境的 Cloudflare KV namespace；正式和测试分别使用各自 Project/Logstore 和最小权限凭据，不能把正式凭据填入测试 namespace。目前同一环境的客户端和执行端共用这组配置，因此凭据须具备指定 Logstore 的 `log:GetLogStoreLogs` 读取和 `log:PostLogStoreLogs` 写入权限。若以后需要分别分配读写凭据，须先拆分配置键。不要复用浏览器变量或向前端传递密钥。
+
+| 配置键 | 说明 |
+| --- | --- |
+| `SLS_ENABLED` | `true` 启用 SLS；未配置或 `false` 时新任务不记录执行日志，历史 Redis 日志仍可读取 |
+| `SLS_ENDPOINT` | 区域域名，例如 `cn-hangzhou.log.aliyuncs.com`，可带 `https://`；只使用 HTTPS |
+| `SLS_PROJECT`、`SLS_LOGSTORE` | 当前环境的日志目标 |
+| `SLS_ACCESS_KEY_ID`、`SLS_ACCESS_KEY_SECRET` | 当前环境的服务端 RAM 凭据 |
+| `SLS_STS_TOKEN` | 可选 STS Token；采用临时凭据时到期前需更新配置并重新部署 |
+
+启用后缺配置或配置无效会拒绝启动；不回退其他环境或本地旧业务变量。Cloudflare 配置仍只在进程初始化时读取，更新后须重新部署。使用官方 Node SDK `@alicloud/sls20201230` 的 GetLogsV2，保持现有 `毫秒-序号` 游标及固定快照协议。
+
+日志契约为 `kind=event`、`taskId`、`environment`（`test` / `prod`）、`id`（logger 生成的 `ms-seq`）、`firstId`、`streamMs`、`streamSeq`、`time`、`level`、`message`，可选 `actionIndex`、`actionTotal`。ID 按毫秒和序号数值排序，不能按字符串排序。`kind=checkpoint` 记录当前 producer 的 `firstId`、`throughId`、`entryCount`、`truncated`，其中 `streamMs` / `streamSeq` 对应 `throughId`。事件的 `firstId` 用于隔离当前 producer 的计数，兼容缺少该字段的旧事件；日志页仍包含所有 producer 的历史。重复上传按任务、环境及 `id` 去重后分页。执行状态另保存 `logSource=sls|disabled` 与最新 emit 的 `logCursor`；不含这些字段的旧任务继续兼容 Redis。
+
+Logstore 使用支持 SQL 的 Standard 类型；关闭全文索引，给上述投影及过滤字段建立字段索引并启用统计。`streamMs`、`streamSeq`、`entryCount`、`actionIndex`、`actionTotal` 使用 `long`，其余使用 `text`；文本统计长度至少设为 8192 字节，避免最多 1000 个 Unicode 字符的正文被默认长度截断。标识字段无需分词。保留天数由 Logstore 配置控制；客户端查询最近八天的索引窗口，覆盖管理页面的七天范围。
+
+每次 SLS 读取先 GET Redis 的轻量执行状态，不读取 Stream 内容或边界；检查 checkpoint 的区间去重计数与执行状态的 `logCursor` 水位。重启后的 checkpoint 只证明自身区间，日志分页仍查询整个 `after..snapshot`，保留此前 producer 的历史日志。执行端继承旧游标但失去原内存发布状态时，后续 checkpoint 持续标记 `truncated=true`；客户端也保留已查询到的旧 checkpoint 缺失提示，不把新 producer 的完整区间当作整个任务无缺失。SLS 三次查询共用最多三秒预算，且不超过 `REQUEST_TIMEOUT_MS`；`Incomplete`、计数不匹配或正文缺失均不作为完整结果使用。
+
+旧任务在 SLS 不可用或无归档时回退 Redis。标记为 `logSource=sls` 的新任务没有 Redis 日志可回退：无 checkpoint、索引未追上水位或查询失败时返回 `logsPending`，保留原游标，管理员可手动重试。运行中的实时界面每 1.5 秒读取已完整入索引的日志前缀，不要求先追上不断增长的水位；终态严格等待最终水位，最多再等待 90 秒，仍未就绪则提示稍后重试，避免提前停止而丢掉最后一批日志或零间隔忙刷。`logSource=sls` 暂无 `logCursor` 的拒绝事件发布间隙也按待入库处理。`truncated` 表示发布器明确报告的缺失；纯内存发布无法证明进程崩溃前尚未上传的日志完整性。
 
 ## 构建与部署
 

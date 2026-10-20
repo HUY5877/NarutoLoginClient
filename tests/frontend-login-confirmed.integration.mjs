@@ -28,7 +28,7 @@ async function until(check) {
   while (!check()) { assert.ok(Date.now() < limit, 'mock request did not arrive'); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
 
-test('QR authorization confirmation and queue expiry', { skip: skip || false, timeout: 45_000 }, async t => {
+test('QR authorization confirmation and queue expiry', { skip: skip || false, timeout: 60_000 }, async t => {
   const { createServer } = await import(pathToFileURL(require.resolve('vite')).href);
   const { default: react } = await import(pathToFileURL(require.resolve('@vitejs/plugin-react')).href);
   const { default: tailwindcss } = await import(pathToFileURL(require.resolve('@tailwindcss/vite')).href);
@@ -51,7 +51,7 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         userOptions: { equipmentStamina: true, secretRealmMode } };
       const state = { status: runStatus, detailStatus: sessionStatus, detailHttpStatus: 200,
         startedAt: dailyStarted ? time : null, secretRealmCompletedAt: secretRealmCompleted ? time : undefined, errorCode: undefined,
-        calls: [], errors: [], oldRequested: false, oldGate: deferred() };
+        calls: [], errors: [], logs: [], oldRequested: false, oldGate: deferred() };
       page.on('pageerror', error => state.errors.push(error.message));
       await context.route('**/*', async route => {
         const url = new URL(route.request().url());
@@ -59,7 +59,8 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         if (!url.pathname.startsWith('/api/')) return route.continue();
         state.calls.push(url.pathname);
         let body;
-        if (url.pathname === '/api/auth/me') body = { user: { id: 'confirmed-user', username: '授权测试', isAdmin: false } };
+        if (url.pathname === '/api/health') body = { ok: true, environment: 'development' };
+        else if (url.pathname === '/api/auth/me') body = { user: { id: 'confirmed-user', username: '授权测试', isAdmin: false } };
         else if (url.pathname === '/api/login-sessions/active') body = { session, showGetButton: false };
         else if (url.pathname === `/api/login-sessions/${taskId}`) {
           return route.fulfill({ status: state.detailHttpStatus,
@@ -71,11 +72,13 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
           const id = url.pathname.split('/')[3];
           if (id === oldId) { state.oldRequested = true; await state.oldGate.promise; }
           const status = id === oldId ? 'finishing_login' : state.status;
+          const after = url.searchParams.get('after') || '0-0';
+          const logs = state.logs.filter(log => Number(log.id.split('-')[0]) > Number(after.split('-')[0]));
           body = { task: { ...session, id }, run: status ? { taskId: id, status, updatedAt: time, startedAt: state.startedAt, finishedAt: null,
             ...(state.secretRealmCompletedAt ? { secretRealmCompletedAt: state.secretRealmCompletedAt } : {}),
             ...(state.errorCode ? { errorCode: state.errorCode } : {}),
             ...(status === 'finishing_login' ? { authorizedAt: time } : {}) } : null,
-          logs: [], nextCursor: '0-0', hasMore: false, truncated: false };
+          logs, nextCursor: state.logs.at(-1)?.id || after, hasMore: false, truncated: false };
         } else { state.errors.push(`Unexpected API ${url.pathname}`); return route.fulfill({ status: 404, json: {} }); }
         return route.fulfill({ status: 200, json: body }).catch(() => {});
       });
@@ -147,15 +150,18 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         await f.page.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^日常任务已初步完成$/ }).waitFor();
         await f.page.locator('#task-run-details').getByText('日常任务已初步完成，还在扫荡未用完的秘境扫荡券。', { exact: true }).waitFor();
         assert.equal(await f.page.getByLabel('任务执行进度', { exact: true }).locator('[data-stage="script"]').getAttribute('data-state'), 'active');
+        assert.equal(await f.page.getByRole('button', { name: '秘境探险', exact: true }).isDisabled(), true);
+        const polls = f.state.calls.filter(value => value === `/api/task-runs/${taskId}/events`).length;
+        await until(() => f.state.calls.filter(value => value === `/api/task-runs/${taskId}/events`).length > polls);
         f.state.status = 'failed'; f.state.errorCode = 'daily_timeout';
-        const stopped = '日常任务已初步完成；已达到执行时限，剩余秘境扫荡已停止。';
+        const stopped = '日常任务已完成；已达到执行时限，剩余秘境扫荡已停止。';
         await f.page.locator('#task-run-details').getByText(stopped, { exact: true }).waitFor();
-        assert.equal(await f.page.getByLabel('任务整体状态', { exact: true }).innerText(), '日常任务已初步完成');
+        assert.equal(await f.page.getByLabel('任务整体状态', { exact: true }).innerText(), '任务已完成');
         assert.equal(await f.page.getByLabel('任务执行进度', { exact: true }).locator('[data-stage="script"]').getAttribute('data-state'), 'completed');
         assert.equal(await f.page.getByLabel('任务失败原因', { exact: true }).count(), 0);
         await f.page.reload({ waitUntil: 'domcontentloaded' });
         await f.page.locator('#task-run-details').getByText(stopped, { exact: true }).waitFor();
-        assert.equal(await f.page.getByLabel('任务整体状态', { exact: true }).innerText(), '日常任务已初步完成');
+        assert.equal(await f.page.getByLabel('任务整体状态', { exact: true }).innerText(), '任务已完成');
         // 完整完成使用新快照恢复，不能被已保留的初步完成标记降级。
         f.state.status = 'completed'; f.state.errorCode = undefined;
         await f.page.reload({ waitUntil: 'domcontentloaded' });
@@ -173,6 +179,42 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         await f.page.getByLabel('任务失败原因', { exact: true }).waitFor();
         assert.equal(await f.page.getByText('日常任务已初步完成', { exact: true }).count(), 0);
       } finally { await f.close(); }
+    });
+
+    await t.test('confirmed daily completion stays successful after a later failure or interruption and retains error logs', async () => {
+      for (const status of ['failed', 'interrupted']) {
+        const f = await fixture({ runStatus: 'running_daily', dailyStarted: true, secretRealmCompleted: true });
+        try {
+          const details = f.page.locator('#task-run-details');
+          const summary = f.page.getByLabel('任务整体状态', { exact: true });
+          await summary.filter({ hasText: /^日常任务已初步完成$/ }).waitFor();
+          assert.equal(await f.page.getByRole('button', { name: '秘境探险', exact: true }).isDisabled(), true);
+          f.state.logs.push({ id: '1-0', time: new Date().toISOString(), level: 'INFO', message: '秘境探险首次完成。' });
+          await details.getByRole('button', { name: '展开记录', exact: true }).click();
+          const log = details.getByRole('log', { name: '任务执行日志', exact: true });
+          await log.getByText('秘境探险首次完成。', { exact: true }).waitFor();
+          const error = `后续秘境扫荡已${status === 'failed' ? '失败' : '中断'}，原始异常记录保留。`;
+          f.state.logs.push({ id: '2-0', time: new Date().toISOString(), level: 'ERROR', message: error });
+          f.state.status = status;
+          f.state.errorCode = status === 'failed' ? 'daily_failed' : undefined;
+          await summary.filter({ hasText: /^任务已完成$/ }).waitFor();
+          assert.equal(await summary.getAttribute('data-variant'), 'outline');
+          assert.equal(await f.page.getByLabel('任务执行进度', { exact: true }).locator('[data-stage="script"]').getAttribute('data-state'), 'completed');
+          const recordBadge = details.locator('[data-slot="badge"]').filter({ hasText: /^任务已完成$/ });
+          await recordBadge.waitFor();
+          assert.equal(await recordBadge.getAttribute('data-variant'), 'secondary');
+          assert.equal(await details.getByLabel('任务失败原因', { exact: true }).count(), 0);
+          await details.getByText(/^日常任务已完成；后续秘境扫荡已停止/).waitFor();
+          await log.getByText(error, { exact: true }).waitFor();
+          assert.equal(await log.getByText('错误', { exact: true }).count(), 1);
+          assert.equal(await f.page.getByRole('button', { name: '秘境探险', exact: true }).isEnabled(), true);
+          await f.page.reload({ waitUntil: 'domcontentloaded' });
+          await summary.filter({ hasText: /^任务已完成$/ }).waitFor();
+          await details.getByRole('button', { name: '展开记录', exact: true }).click();
+          await details.getByRole('log', { name: '任务执行日志', exact: true }).getByText(error, { exact: true }).waitFor();
+          assert.equal(await details.getByLabel('任务失败原因', { exact: true }).count(), 0);
+        } finally { await f.close(); }
+      }
     });
 
     await t.test('single secret realm tasks settle after one completion and report full completion on desktop and mobile', async () => {
@@ -209,9 +251,11 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         await sheet.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^日常任务已初步完成$/ }).waitFor();
         await sheet.getByText('日常任务已初步完成，还在扫荡未用完的秘境扫荡券。', { exact: true }).last().waitFor();
         f.state.status = 'failed'; f.state.errorCode = 'daily_timeout';
-        await sheet.getByText('日常任务已初步完成；已达到执行时限，剩余秘境扫荡已停止。', { exact: true }).last().waitFor();
+        await sheet.getByText('日常任务已完成；已达到执行时限，剩余秘境扫荡已停止。', { exact: true }).last().waitFor();
+        assert.equal(await sheet.getByLabel('任务整体状态', { exact: true }).innerText(), '任务已完成');
         assert.equal(await overview.getAttribute('data-state'), 'completed');
-        assert.match(await overview.innerText(), /初步完成/);
+        assert.match(await overview.innerText(), /已完成/);
+        assert.doesNotMatch(await overview.innerText(), /初步完成/);
         assert.equal(await sheet.getByLabel('任务失败原因', { exact: true }).count(), 0);
       } finally { await f.close(); }
     });

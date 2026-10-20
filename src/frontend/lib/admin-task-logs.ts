@@ -9,6 +9,7 @@ export interface TaskLogView {
   error: string;
   hasMore: boolean;
   truncated: boolean;
+  logsPending?: boolean;
 }
 export const emptyTaskLogs = (): TaskLogView => ({ status: null, logs: [], loading: false, error: '', hasMore: true, truncated: false });
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -27,9 +28,11 @@ export function parseTaskLogPage(value: unknown, taskId: string, after: string, 
     || !cursor(value.nextCursor) || !cursor(value.snapshotCursor) || !cursor(after)
     || snapshot !== null && value.snapshotCursor !== snapshot
     || typeof value.hasMore !== 'boolean' || typeof value.truncated !== 'boolean'
+    || value.logsPending !== undefined && typeof value.logsPending !== 'boolean'
     || compare(value.nextCursor, after) < 0 || compare(value.nextCursor, value.snapshotCursor) > 0
     || value.hasMore && (compare(value.nextCursor, after) <= 0 || compare(value.nextCursor, value.snapshotCursor) >= 0)
-    || !value.hasMore && value.nextCursor !== value.snapshotCursor) throw invalid();
+    || !value.hasMore && value.logsPending !== true && value.nextCursor !== value.snapshotCursor
+    || value.logsPending === true && (value.hasMore || value.logs.length > 0 || value.nextCursor !== after)) throw invalid();
   let previous = after;
   for (const log of value.logs) {
     if (!object(log) || !cursor(log.id) || compare(log.id, previous) <= 0 || compare(log.id, value.nextCursor) > 0
@@ -59,7 +62,7 @@ export class TaskLogPager {
     if (!this.disposed) this.update(this.view);
   }
   async load() {
-    if (this.disposed || this.controller || !this.view.hasMore) return;
+    if (this.disposed || this.controller || !this.view.hasMore && !this.view.logsPending) return;
     const controller = new AbortController();
     this.controller = controller;
     const active = () => !this.disposed && this.controller === controller && !controller.signal.aborted;
@@ -70,9 +73,10 @@ export class TaskLogPager {
       if (!active()) return;
       const page = parseTaskLogPage(value, this.taskId, this.after, this.snapshot);
       this.after = page.nextCursor;
-      this.snapshot = page.snapshotCursor;
+      // If a source is announced before its first event, retry must still discover its initial watermark.
+      if (!page.logsPending || page.snapshotCursor !== '0-0') this.snapshot = page.snapshotCursor;
       this.emit({ status: page.status, logs: [...this.view.logs, ...page.logs], hasMore: page.hasMore,
-        truncated: this.view.truncated || page.truncated, error: '' });
+        truncated: this.view.truncated || page.truncated, logsPending: page.logsPending ?? false, error: '' });
     } catch (caught) {
       if (!active()) return;
       if (caught instanceof AdminRequestError && [401, 403].includes(caught.status)) {

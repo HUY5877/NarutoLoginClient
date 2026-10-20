@@ -14,13 +14,24 @@ const task: Submission = { id: '123e4567-e89b-42d3-a456-426614174000',
 const stored = { id: task.id, userId: task.userId, status: 'queued', createdAt: task.createdAt, expiresAt: task.expiresAt,
   simulation: true, tokenHash: createHash('sha256').update(task.accessToken).digest('hex') };
 
+test('新提交仅写队列、会话和锁，不再创建或追加 Redis 日志', async () => {
+  const service = new TaskService(config, () => driver({ eval: async (script, options) => {
+    assert.doesNotMatch(script, /XADD|XTRIM|MAXLEN|日志/);
+    assert.equal(options.keys.length, 3);
+    assert(options.keys.every(key => !key.includes(':logs:')));
+    assert.equal(options.arguments.length, 4);
+    return 1;
+  } }), () => now);
+  await service.enqueue(task);
+});
+
 test('四个渠道贯穿入队与会话恢复，刷新命令从原会话读取渠道', async () => {
   for (const loginType of ['android_qq', 'ios_qq', 'android_wechat', 'ios_wechat'] as const) {
     let refreshScript = '';
     const service = new TaskService(config, () => driver({
       get: async () => JSON.stringify({ ...stored, loginType }),
       eval: async (script, options) => {
-        if (options.keys.length === 4) {
+        if (options.keys[0] === config.redisQueueKey) {
           assert.equal(JSON.parse(options.arguments[0]).loginType, loginType);
           assert.equal(JSON.parse(options.arguments[2]).loginType, loginType);
           return 1;
@@ -85,14 +96,13 @@ test('未配置 Redis 时返回明确 503，不创建连接', async () => {
 test('原子提交会话与 LPUSH 任务，队列不含浏览器凭证，TTL 只保留剩余有效期', async () => {
   const service = new TaskService(config, () => driver({ eval: async (_script, options, signal) => {
     assert.deepEqual(options.keys, [config.redisQueueKey, `${config.redisQueueKey}:sessions:${task.id}`,
-      `${config.redisQueueKey}:users:${task.userId}:active`, `${config.redisQueueKey}:logs:${task.id}`]);
+      `${config.redisQueueKey}:users:${task.userId}:active`]);
     assert.deepEqual(JSON.parse(options.arguments[0]), { ...stored, userOptions: task.userOptions, loginType: 'android_qq' });
     assert.equal(options.arguments[1], '119000');
     assert.deepEqual(JSON.parse(options.arguments[2]), { version: 1, id: task.id, createdAt: task.createdAt,
       expiresAt: task.expiresAt, objectKey: `login/${task.id}/qr.png`, userOptions: task.userOptions, loginTimeoutSeconds: 600, loginType: 'android_qq' });
     assert.equal(options.arguments[3], new Date(now + 1000).toISOString());
-    assert.deepEqual(JSON.parse(options.arguments[4]), { time: task.createdAt, level: 'INFO',
-      message: '登录申请已提交，等待执行服务器领取任务。' });
+    assert.equal(options.arguments.length, 4);
     assert.ok(!options.arguments[2].includes(task.userId));
     assert.ok(!options.arguments.join('').includes(task.accessToken));
     assert.equal(signal.aborted, false);
@@ -124,7 +134,7 @@ test('装备体力和三种秘境模式随统一 userOptions JSON 入队，不�
       assert.equal(Object.hasOwn(payload, 'secretRealmMode'), false);
       assert.equal(Object.hasOwn(payload.userOptions, 'secretRealmOnce'), false);
       assert.deepEqual(JSON.parse(options.arguments[0]).userOptions, userOptions);
-      assert.equal(options.keys.length, 4, 'options share the task payload and session, without another Redis key');
+      assert.equal(options.keys.length, 3, 'options share the task payload and session, without another Redis key');
       return 1;
     }, get: async () => JSON.stringify({ ...stored, userOptions }) }), () => now);
     await service.enqueue({ ...task, userOptions });
@@ -172,6 +182,37 @@ test('刷新二维码沿用三种秘境选择，旧会话默认为全部刷取�
   }
 });
 
+test('周胜主任务沿用原队列和 Redis key，提交、会话恢复及刷新保留首次选择', async () => {
+  const userOptions = { ...task.userOptions, mainTask: 'arena_weekly' as const };
+  const service = new TaskService(config, () => driver({
+    eval: async (_script, options) => {
+      if (options.keys[0] === config.redisQueueKey) {
+        assert.deepEqual(options.keys, [config.redisQueueKey, `${config.redisQueueKey}:sessions:${task.id}`,
+          `${config.redisQueueKey}:users:${task.userId}:active`]);
+        const payload = JSON.parse(options.arguments[2]);
+        assert.deepEqual(payload.userOptions, userOptions);
+        assert.equal(Object.hasOwn(payload, 'mainTask'), false);
+        assert.deepEqual(JSON.parse(options.arguments[0]).userOptions, userOptions);
+        return 1;
+      }
+      assert.deepEqual(options.keys, [`${config.redisQueueKey}:sessions:${task.id}`,
+        `${config.redisQueueKey}:refresh:${task.id}`, `${config.redisQueueKey}:runs:${task.id}`]);
+      assert.equal(Object.hasOwn(JSON.parse(options.arguments[3]), 'userOptions'), false);
+      return JSON.stringify({ ...stored, userOptions, status: 'preparing_qr' });
+    },
+    get: async () => JSON.stringify({ ...stored, userOptions }),
+  }), () => now);
+  await service.enqueue({ ...task, userOptions });
+  assert.deepEqual((await service.getForUser(task.id, task.userId)).userOptions, userOptions);
+  assert.deepEqual((await service.requestRefresh(task.id, task.userId)).userOptions, userOptions);
+  for (const mainTask of [null, '', 'arena', true, 1, [], {}]) {
+    const invalid = new TaskService(config, () => driver({
+      get: async () => JSON.stringify({ ...stored, userOptions: { ...task.userOptions, mainTask } }),
+    }), () => now);
+    await assert.rejects(invalid.getForUser(task.id, task.userId), { status: 502 });
+  }
+});
+
 test('Outbox 重发 Lua 契约只核验不可变身份字段，在账户锁检查和任何写入之前幂等返回', async () => {
   let captured = '';
   const service = new TaskService(config, () => driver({ eval: async script => {
@@ -194,7 +235,7 @@ test('Outbox 重发 Lua 契约只核验不可变身份字段，在账户锁检�
   assert.match(duplicateGuard, /return redis\.error_reply\('Login session already exists'\)/);
   assert.doesNotMatch(duplicateGuard, /persisted\.(?:status|workerId|error)/);
   assert.doesNotMatch(duplicateGuard, /redis\.(?:call|pcall)\('(?:SET|DEL|LPUSH|PEXPIRE|EXPIRE|XADD)'/);
-  assert.ok(captured.indexOf("redis.pcall('XADD'") > captured.indexOf("redis.pcall('LPUSH'"));
+  assert.doesNotMatch(captured, /XADD/);
   assert.doesNotMatch(captured, /activeRaw == ARGV\[1\]/);
 });
 

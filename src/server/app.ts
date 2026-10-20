@@ -59,7 +59,9 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     requestLogContext.run({ requestId, method: req.method, path: logPath(req), ...(vercelRequestId ? { vercelRequestId } : {}) }, next);
   });
   app.use(express.json({ limit: '2kb' }));
-  app.get('/api/health', (_req, res) => res.json({ ok: true, storage: config.storageDriver, simulation: true }));
+  app.get('/api/health', (_req, res) => res.json({
+    ok: true, storage: config.storageDriver, simulation: true, environment: config.appEnv ?? 'prod',
+  }));
 
   app.use('/api', (req, _res, next) => {
     if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
@@ -154,7 +156,7 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     const requestId: unknown = req.body?.requestId === undefined ? randomUUID() : req.body.requestId;
     if (typeof requestId !== 'string' || !uuid.test(requestId)) throw new ApiError(400, '无效的申请标识，请重新操作。');
     const userOptions = parseUserOptions(req.body?.userOptions);
-    if (!userOptions) throw new ApiError(400, '任务设置格式不正确，请选择装备栏体力开关和有效的秘境刷取方式。', 'INVALID_USER_OPTIONS');
+    if (!userOptions) throw new ApiError(400, '任务设置格式不正确，请检查主任务、装备栏体力开关和秘境刷取方式。', 'INVALID_USER_OPTIONS');
     const loginType = parseLoginType(req.body?.loginType);
     if (!loginType) throw new ApiError(400, '请选择有效的登录渠道。', 'INVALID_LOGIN_TYPE');
     const task = await events.create(user.id, requestId, userOptions, loginType);

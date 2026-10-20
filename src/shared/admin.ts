@@ -54,6 +54,7 @@ export interface DailyTaskFailureDetails {
     actionTotal?: number;
   }>;
   truncated: boolean;
+  logsPending?: boolean;
 }
 
 /** 管理员按需读取的日志分页，包含所有日志级别及固定的快照结束位置。 */
@@ -65,4 +66,5 @@ export interface DailyTaskLogPage {
   snapshotCursor: string;
   hasMore: boolean;
   truncated: boolean;
+  logsPending?: boolean;
 }

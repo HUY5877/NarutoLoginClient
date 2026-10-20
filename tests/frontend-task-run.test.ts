@@ -183,6 +183,25 @@ test('latest without a task stays idle and repeated same-task observations do no
   tracker.dispose();
 });
 
+test('终态日志仍在上传时保留游标并正常等待，最后一批可见后才停止', async () => {
+  let view = emptyTaskRun();
+  const paths: string[] = [], waits: number[] = [];
+  const terminal = { ...events().run!, status: 'completed' as const, finishedAt: new Date(now).toISOString() };
+  const pages = [{ ...events({ run: terminal }), logsPending: true },
+    { ...events({ run: terminal, logs: [log('1-0')], nextCursor: '1-0' }), logsPending: false }];
+  const tracker = new TaskRunTracker(next => { view = next; }, () => {}, async path => {
+    paths.push(path); return pages.shift();
+  }, async ms => { waits.push(ms); });
+  tracker.follow(task);
+  await settle();
+  assert.equal(paths.length, 2);
+  assert(paths.every(path => path.endsWith('after=0-0')));
+  assert.deepEqual(waits, [1500]);
+  assert.equal(view.logs.at(-1)?.id, '1-0');
+  assert.equal(view.polling, false);
+  tracker.dispose();
+});
+
 test('run parser preserves authorization through finishing and terminal failure without treating it as daily start', () => {
   const authorizedAt = new Date(now).toISOString();
   const finishing = events({ run: { ...events().run!, status: 'finishing_login', authorizedAt, startedAt: null } });
@@ -191,6 +210,36 @@ test('run parser preserves authorization through finishing and terminal failure 
   const failed = events({ run: { ...finishing.run!, status: 'failed', errorCode: 'login_finish_failed' } });
   assert.equal(parseRunEvents(failed, task.id, '0-0').run?.authorizedAt, authorizedAt);
   assert.throws(() => parseRunEvents(events({ run: { ...finishing.run!, authorizedAt: 'invalid' } }), task.id, '0-0'));
+});
+
+test('终态待入库最多等待九十秒且不忙刷，重试仍使用原游标', async () => {
+  let clock = 0, calls = 0, ready = false;
+  let view = emptyTaskRun();
+  const paths: string[] = [], waits: number[] = [];
+  const terminal = { ...events().run!, status: 'completed' as const, logSource: 'sls' as const, logCursor: '1-0' };
+  const tracker = new TaskRunTracker(next => { view = next; }, () => {}, async path => {
+    calls++; paths.push(path);
+    return events({ run: terminal, logs: ready ? [log('1-0')] : [], nextCursor: ready ? '1-0' : '0-0', logsPending: !ready });
+  }, async ms => { waits.push(ms); clock += ms; }, () => clock);
+  tracker.follow(task); await settle();
+  assert.equal(calls, 61); assert.equal(clock, 90_000);
+  assert(waits.every(ms => ms === 1500)); assert(paths.every(path => path.endsWith('after=0-0')));
+  assert.equal(view.polling, false); assert.equal(view.logsPending, true); assert.match(view.error, /稍后重试/);
+  ready = true; tracker.retry(); await settle();
+  assert.equal(view.error, ''); assert.equal(view.logsPending, false); assert.equal(view.logs.length, 1);
+  assert.equal(view.polling, false); assert.equal(paths.at(-1)?.endsWith('after=0-0'), true);
+  tracker.dispose();
+});
+
+test('待入库响应不能推进游标或返回有更多页，执行摘要日志来源和游标须合法', () => {
+  const pending = events({ logs: [], nextCursor: '0-0', logsPending: true });
+  assert.equal(parseRunEvents(pending, task.id, '0-0').logsPending, true);
+  for (const patch of [{ nextCursor: '1-0' }, { hasMore: true }, { logs: [log('1-0')] }, { logsPending: 'true' }]) {
+    assert.throws(() => parseRunEvents({ ...pending, ...patch }, task.id, '0-0'));
+  }
+  for (const patch of [{ logSource: 'redis' }, { logCursor: 'invalid' }]) {
+    assert.throws(() => parseRunEvents({ ...pending, run: { ...events().run!, ...patch } }, task.id, '0-0'));
+  }
 });
 
 test('执行快照兼容旧任务，并验证首次秘境完成时间在运行和终态均可读取', () => {

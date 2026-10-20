@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { DEFAULT_USER_OPTIONS, parseUserOptions } from '../src/shared/user-options.js';
+import { DEFAULT_USER_OPTIONS, getMainTask, mainTasks, parseUserOptions } from '../src/shared/user-options.js';
 import { isRunTask, parseRunEvents } from '../src/frontend/lib/task-run.js';
 
 const at = '2026-10-13T00:00:00.000Z';
@@ -42,6 +42,25 @@ test('前后端共用解析保留体力开关和三种秘境模式，执行记�
   assert.ok(isRunTask(task));
 });
 
+test('主任务显式选择原样保留，旧请求和记录缺省继续刷日常', () => {
+  assert.equal(getMainTask(), 'daily');
+  assert.equal(getMainTask(null), 'daily');
+  assert.equal(getMainTask(parseUserOptions({})), 'daily');
+  assert.equal(Object.hasOwn(parseUserOptions({})!, 'mainTask'), false);
+  for (const mainTask of mainTasks) {
+    const value = { mainTask, equipmentStamina: false, secretRealmOnce: true };
+    const before = JSON.stringify(value);
+    const userOptions = { mainTask, equipmentStamina: false, secretRealmMode: 'once' as const };
+    assert.deepEqual(parseUserOptions(value), userOptions);
+    assert.equal(getMainTask(userOptions), mainTask);
+    assert.equal(JSON.stringify(value), before);
+    const selectedTask = { ...task, userOptions };
+    assert.ok(isRunTask(selectedTask));
+    assert.deepEqual(parseRunEvents({ task: selectedTask, run: null, logs: [], nextCursor: '0-0',
+      hasMore: false, truncated: false }, task.id, '0-0').task.userOptions, userOptions);
+  }
+});
+
 test('非法秘境值和未知字段在共用解析与前端执行记录校验中被拒绝', () => {
   for (const userOptions of [null, [], 'true', true, { secretRealmOnce: 'false' }, { secretRealmOnce: 0 },
     { secretRealmOnce: null }, { secretRealmOnce: [] }, { secretRealmOnce: {} },
@@ -51,7 +70,8 @@ test('非法秘境值和未知字段在共用解析与前端执行记录校验�
     { secretRealmMode: [] }, { secretRealmMode: {} }, { secretRealmMode: undefined },
     { secretRealmMode: 'skip', secretRealmOnce: true }, { secretRealmMode: 'skip', secretRealmOnce: false },
     { secretRealmMode: 'once', secretRealmOnce: false }, { secretRealmMode: 'all', secretRealmOnce: true },
-    { secretRealmMode: 'once', secretRealmOnce: 'true' }]) {
+    { secretRealmMode: 'once', secretRealmOnce: 'true' },
+    ...[undefined, null, '', 'arena', 'DAILY', false, 0, [], {}].map(mainTask => ({ mainTask }))]) {
     assert.equal(parseUserOptions(userOptions), null, JSON.stringify(userOptions));
     assert.equal(isRunTask({ ...task, userOptions }), false, JSON.stringify(userOptions));
     assert.throws(() => parseRunEvents({ task: { ...task, userOptions }, run: null, logs: [],
