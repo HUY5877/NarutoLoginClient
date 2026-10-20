@@ -68,6 +68,25 @@ test('默认选择 prod；并发及后续初始化复用同一次完整配置读
   assert.match(calls[0].pathname, /\/fixture-prod\/keys$/);
 });
 
+test('SLS 只使用所选 namespace 的配置与凭据，测试不会回退进程中的正式设置', async () => {
+  for (const profile of ['prod', 'test'] as const) {
+    const config = await createRuntimeConfigLoader({ env: { ...cloudflareTestEnv, APP_ENV: profile,
+      SLS_PROJECT: 'obsolete-production', SLS_ACCESS_KEY_SECRET: 'obsolete-secret' }, fetch: kv({ ...profiles[profile],
+      SLS_ENABLED: 'true', SLS_ENDPOINT: 'cn-hangzhou.log.aliyuncs.com', SLS_PROJECT: `fixture-${profile}`,
+      SLS_LOGSTORE: `events-${profile}`, SLS_ACCESS_KEY_ID: `${profile}-key`, SLS_ACCESS_KEY_SECRET: `${profile}-secret`,
+      SLS_STS_TOKEN: `${profile}-token` }) })();
+    assert.equal(config.sls?.project, `fixture-${profile}`);
+    assert.equal(config.sls?.logstore, `events-${profile}`);
+    assert.equal(config.sls?.accessKeyId, `${profile}-key`);
+    assert.equal(config.sls?.accessKeySecret, `${profile}-secret`);
+    assert.equal(config.sls?.stsToken, `${profile}-token`);
+  }
+  await assert.rejects(createRuntimeConfigLoader({ env: { ...cloudflareTestEnv, APP_ENV: 'test',
+    SLS_ACCESS_KEY_SECRET: 'obsolete-secret' }, fetch: kv({ ...profiles.test, SLS_ENABLED: 'true',
+      SLS_ENDPOINT: 'cn-hangzhou.log.aliyuncs.com', SLS_PROJECT: 'fixture-test', SLS_LOGSTORE: 'events-test',
+      SLS_ACCESS_KEY_ID: 'test-key' }) })(), /缺少 SLS_ACCESS_KEY_SECRET/);
+});
+
 test('正式 namespace 可兼容旧引导变量，测试必须显式设置独立 namespace', async () => {
   const { CLOUDFLARE_KV_NAMESPACE_ID_PROD: _, CLOUDFLARE_KV_NAMESPACE_ID_TEST: __, ...legacy } = cloudflareTestEnv;
   const calls: URL[] = [];

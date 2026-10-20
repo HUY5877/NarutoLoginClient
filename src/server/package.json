@@ -14,6 +14,9 @@
     "test": "tsx --test ../../tests/*.test.ts"
   },
   "dependencies": {
+    "@alicloud/openapi-core": "1.0.8",
+    "@alicloud/sls20201230": "5.12.0",
+    "@darabonba/typescript": "1.0.5",
     "ali-oss": "^6.23.0",
     "dotenv": "^18.0.3",
     "express": "^5.2.1",

@@ -8,6 +8,7 @@ import type { UserOptions } from '../shared/user-options.js';
 import { DEFAULT_LOGIN_TYPE, type LoginType } from '../shared/login-types.js';
 import type { DailyTaskFailureDetails, DailyTaskLogPage } from '../shared/admin.js';
 import { taskFailureMessage } from '../shared/task-errors.js';
+import { SlsTaskLogArchive, type RedisLogBounds, type TaskLogArchive } from './sls-logs.js';
 
 export type RunStatus = 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'waiting_scan' | 'finishing_login'
   | 'running_daily' | 'completed' | 'failed' | 'interrupted' | 'expired';
@@ -41,7 +42,7 @@ export interface TaskRunEvents {
   truncated: boolean;
 }
 
-type RunConfig = Pick<Config, 'redisUrl' | 'redisQueueKey' | 'timeoutMs'>;
+type RunConfig = Pick<Config, 'redisUrl' | 'redisQueueKey' | 'timeoutMs' | 'appEnv' | 'sls'>;
 type EventReader = Pick<LoginEventStore, 'initialize' | 'getEvent' | 'getLatestForUser'>;
 export interface RunRedisDriver {
   readonly isReady: boolean;
@@ -49,7 +50,7 @@ export interface RunRedisDriver {
   eval(script: string, options: { keys: string[]; arguments: string[] }, signal: AbortSignal): Promise<unknown>;
   destroy(): void;
 }
-interface Options { store?: EventReader; createDriver?: () => RunRedisDriver; now?: () => number }
+interface Options { store?: EventReader; createDriver?: () => RunRedisDriver; now?: () => number; archive?: TaskLogArchive }
 const runStatuses = new Set<RunStatus>(['starting_emulator', 'opening_game', 'preparing_qr', 'waiting_scan', 'finishing_login',
   'running_daily', 'completed', 'failed', 'interrupted', 'expired']);
 const taskIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -164,6 +165,20 @@ if upper == '' then upper = '0-0' end
 local entries = redis.call('XRANGE', KEYS[2], '(' .. ARGV[1], upper, 'COUNT', ARGV[3])
 return {run, entries, upper, firstId, added, length, exists}
 `;
+// Only stream bounds and run state are read here; historical log bodies come from SLS.
+const archiveBoundsScript = `
+local run = redis.call('GET', KEYS[1])
+local exists = redis.call('EXISTS', KEYS[2])
+local firstId, lastId = '', '0-0'
+if exists == 1 then
+  local info = redis.call('XINFO', 'STREAM', KEYS[2])
+  for i = 1, #info, 2 do
+    if info[i] == 'first-entry' and type(info[i + 1]) == 'table' then firstId = info[i + 1][1] end
+    if info[i] == 'last-entry' and type(info[i + 1]) == 'table' then lastId = info[i + 1][1] end
+  end
+end
+return {run, firstId, lastId, exists}
+`;
 function isGenericFailure(message: string, errorCode?: string): boolean {
   return message === taskFailureMessage(errorCode)
     || message === '日常任务执行失败，本次任务已停止。'
@@ -184,7 +199,11 @@ function createRedisDriver(config: RunConfig): RunRedisDriver {
 export class TaskRunService {
   private connection?: { driver: RunRedisDriver; opening?: Promise<void> };
   private readonly now: () => number;
-  constructor(private readonly config: RunConfig, private readonly options: Options = {}) { this.now = options.now ?? Date.now; }
+  private readonly archive?: TaskLogArchive;
+  constructor(private readonly config: RunConfig, private readonly options: Options = {}) {
+    this.now = options.now ?? Date.now;
+    this.archive = options.archive ?? (config.sls ? new SlsTaskLogArchive(config.sls, config.appEnv ?? 'prod', Math.min(config.timeoutMs, 3000), { now: this.now }) : undefined);
+  }
 
   private async database<T>(read: (store: EventReader) => Promise<T>): Promise<T> {
     if (!this.options.store) throw new ApiError(503, '账号数据库未配置，请先配置 DATABASE_URL。', 'DATABASE_NOT_CONFIGURED');
@@ -245,6 +264,9 @@ export class TaskRunService {
   }
   async getFailureDetails(taskId: string): Promise<DailyTaskFailureDetails> {
     if (taskId !== taskId.trim() || !taskIdPattern.test(taskId)) throw new ApiError(400, '无效的任务编号。');
+    const archived = await this.readArchive(taskId, '0-0', undefined, true);
+    if (archived) return this.failureDetails(taskId, archived.run, archived.page.logs.slice(0, failureLogLimit),
+      archived.page.truncated || archived.page.hasMore);
     const raw = await this.readRedis(failureSnapshotScript,
       [`${this.config.redisQueueKey}:runs:${taskId}`, `${this.config.redisQueueKey}:logs:${taskId}`], [String(failureLogLimit + 1)]);
     if (!Array.isArray(raw) || raw.length !== 2 || !Array.isArray(raw[1]) || raw[1].length > failureLogLimit + 1) throw invalidData();
@@ -260,6 +282,9 @@ export class TaskRunService {
       if (log) newestLogs.push(log); else truncated = true;
     }
     const logs = newestLogs.slice(0, failureLogLimit);
+    return this.failureDetails(taskId, run, logs, truncated);
+  }
+  private failureDetails(taskId: string, run: TaskRun | null, logs: TaskLog[], truncated: boolean): DailyTaskFailureDetails {
     const failure = logs.find(log => log.level === 'ERROR' && /^具体错误：\s*\S/.test(log.message))
       ?? logs.find(log => log.level === 'ERROR' && !isGenericFailure(log.message, run?.errorCode));
     const action = logs.find(log => log.level === 'INFO' && (log.actionIndex ?? 0) > 0 && /^动作\s*\d+\s*\/\s*\d+\s*[：:]/.test(log.message));
@@ -275,6 +300,8 @@ export class TaskRunService {
     if (!isStreamCursor(after) || snapshot !== undefined && (!isStreamCursor(snapshot) || compareIds(after, snapshot) > 0)) {
       throw new ApiError(400, '无效的日志读取位置。');
     }
+    const archived = await this.readArchive(taskId, after, snapshot);
+    if (archived) return { taskId, status: archived.run?.status ?? null, ...archived.page };
     const raw = await this.readRedis(adminLogSnapshotScript,
       [`${this.config.redisQueueKey}:runs:${taskId}`, `${this.config.redisQueueKey}:logs:${taskId}`],
       [after, snapshot ?? '', String(pageSize + 1)]);
@@ -309,6 +336,28 @@ export class TaskRunService {
       nextCursor = snapshotCursor;
     }
     return { taskId, status: run?.status ?? null, logs, nextCursor, snapshotCursor, hasMore, truncated };
+  }
+  private async readArchive(taskId: string, after: string, snapshot?: string, tail = false) {
+    if (!this.archive) return null;
+    let run: TaskRun | null = null, bounds: RedisLogBounds | undefined;
+    let redisFailure: unknown;
+    try {
+      const raw = await this.readRedis(archiveBoundsScript,
+        [`${this.config.redisQueueKey}:runs:${taskId}`, `${this.config.redisQueueKey}:logs:${taskId}`], []);
+      if (!Array.isArray(raw) || raw.length !== 4 || typeof raw[1] !== 'string'
+        || raw[1] !== '' && !isStreamCursor(raw[1]) || !isStreamCursor(raw[2]) || ![0, 1].includes(raw[3])) throw invalidData();
+      run = parseRun(raw[0], taskId);
+      bounds = { firstId: raw[1], lastId: raw[2], exists: raw[3] === 1 };
+    } catch (error) { redisFailure = error; }
+    try {
+      const page = await this.archive.read(taskId, after, snapshot, bounds, tail);
+      if (page) return { run, page };
+    } catch (error) {
+      logBackend('warn', 'sls.read_failed', { component: 'task-runs', phase: 'sls.query', error });
+    }
+    // Do not repeat an already failed Redis call after spending the archive query budget.
+    if (redisFailure) throw redisFailure;
+    return null;
   }
   async getEvents(taskId: string, userId: string, after = '0-0'): Promise<TaskRunEvents> {
     if (taskId !== taskId.trim() || !taskIdPattern.test(taskId)) throw new ApiError(400, '无效的任务编号。');

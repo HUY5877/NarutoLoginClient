@@ -12,6 +12,7 @@ const businessKeys = new Set([
   'SESSION_TTL_MS', 'REQUEST_TIMEOUT_MS', 'STORAGE_DRIVER', 'OSS_KEY_PREFIX',
   'OSS_REGION', 'OSS_BUCKET', 'OSS_ACCESS_KEY_ID', 'OSS_ACCESS_KEY_SECRET',
   'OSS_STS_TOKEN', 'ALLOWED_ORIGINS', 'SESSION_COOKIE_NAME',
+  'SLS_ENABLED', 'SLS_ENDPOINT', 'SLS_PROJECT', 'SLS_LOGSTORE', 'SLS_ACCESS_KEY_ID', 'SLS_ACCESS_KEY_SECRET', 'SLS_STS_TOKEN',
 ]);
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);

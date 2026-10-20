@@ -25,6 +25,31 @@ export interface Config {
   ossStsToken?: string;
   allowedOrigins: string[];
   sessionCookieName?: string;
+  sls?: SlsConfig;
+}
+
+export interface SlsConfig {
+  endpoint: string;
+  project: string;
+  logstore: string;
+  accessKeyId: string;
+  accessKeySecret: string;
+  stsToken?: string;
+}
+
+function slsConfig(env: NodeJS.ProcessEnv): SlsConfig | undefined {
+  if (env.SLS_ENABLED === undefined || env.SLS_ENABLED === 'false') return undefined;
+  if (env.SLS_ENABLED !== 'true') throw new Error('SLS_ENABLED 必须为 true 或 false');
+  for (const key of ['SLS_ENDPOINT', 'SLS_PROJECT', 'SLS_LOGSTORE', 'SLS_ACCESS_KEY_ID', 'SLS_ACCESS_KEY_SECRET']) {
+    if (!env[key]?.trim()) throw new Error(`SLS 已启用但缺少 ${key}`);
+  }
+  const endpoint = env.SLS_ENDPOINT!.trim().replace(/^https:\/\//, '');
+  if (!/^[a-z0-9-]+\.log\.aliyuncs\.com$/.test(endpoint)) throw new Error('SLS_ENDPOINT 必须为阿里云 SLS 区域域名，使用 HTTPS');
+  const project = env.SLS_PROJECT!.trim(), logstore = env.SLS_LOGSTORE!.trim();
+  if (!/^[a-z][a-z0-9-]{1,61}[a-z0-9]$/.test(project)) throw new Error('SLS_PROJECT 格式不正确');
+  if (!/^[a-z][a-z0-9_-]{1,61}[a-z0-9]$/.test(logstore)) throw new Error('SLS_LOGSTORE 格式不正确');
+  return { endpoint, project, logstore, accessKeyId: env.SLS_ACCESS_KEY_ID!.trim(),
+    accessKeySecret: env.SLS_ACCESS_KEY_SECRET!.trim(), ...(env.SLS_STS_TOKEN?.trim() ? { stsToken: env.SLS_STS_TOKEN.trim() } : {}) };
 }
 
 function integer(env: NodeJS.ProcessEnv, key: string, fallback: number, min: number, max: number): number {
@@ -60,6 +85,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!/^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(ossPrefix)) throw new Error('OSS_KEY_PREFIX 格式不正确');
   const sessionCookieName = env.SESSION_COOKIE_NAME ?? 'naruto_session';
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(sessionCookieName)) throw new Error('SESSION_COOKIE_NAME 格式不正确');
+  const sls = slsConfig(env);
   const config: Config = {
     appEnv,
     host: env.HOST ?? '127.0.0.1', port: integer(env, 'PORT', 4300, 1, 65535),
@@ -72,6 +98,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ossStsToken: env.OSS_STS_TOKEN || undefined,
     allowedOrigins: (env.ALLOWED_ORIGINS ?? '').split(',').map(s => s.trim()).filter(Boolean),
     sessionCookieName,
+    ...(sls ? { sls } : {}),
   };
   if (storageDriver === 'oss' && [config.ossRegion, config.ossBucket, config.ossAccessKeyId, config.ossAccessKeySecret].some(v => !v)) {
     throw new Error('OSS 模式缺少 OSS_REGION、OSS_BUCKET、OSS_ACCESS_KEY_ID 或 OSS_ACCESS_KEY_SECRET');

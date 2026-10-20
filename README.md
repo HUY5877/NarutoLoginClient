@@ -66,6 +66,28 @@ npm run dev
 
 管理员列表的「日志详情」列对所有任务状态开放。打开列表只读取任务摘要；点击「查看日志」才读取首批 100 条，后续点击「加载更多」继续读取，直到显示全部保留的日志，不限制为最近 10 条。详情按打开时的日志快照分页，重新打开详情可读取新增日志；已过期或被裁剪的记录会提示缺失。
 
+### SLS 日志归档
+
+管理员日志详情及失败详情支持优先读取阿里云 SLS，普通用户的实时进度和日志仍从 Redis 读取。执行状态、队列、会话与账号锁仍由 Redis 管理；本次接入不缩短现有 Redis 七天保留时间。必须配套启动 NarutoDailyADB 的 SLS 日志同步器，它通过 Python SDK 批量同步 Redis Stream，并上报覆盖范围 checkpoint。
+
+以下键放入对应环境的 Cloudflare KV namespace；正式和测试分别使用各自 Project/Logstore 和最小权限凭据，不能把正式凭据填入测试 namespace。目前同一环境的客户端和执行端共用这组配置，因此凭据须具备指定 Logstore 的 `log:GetLogStoreLogs` 读取和 `log:PostLogStoreLogs` 写入权限。若以后需要分别分配读写凭据，须先拆分配置键。不要复用浏览器变量或向前端传递密钥。
+
+| 配置键 | 说明 |
+| --- | --- |
+| `SLS_ENABLED` | `true` 启用；未配置或 `false` 保持原 Redis 行为 |
+| `SLS_ENDPOINT` | 区域域名，例如 `cn-hangzhou.log.aliyuncs.com`，可带 `https://`；只使用 HTTPS |
+| `SLS_PROJECT`、`SLS_LOGSTORE` | 当前环境的日志目标 |
+| `SLS_ACCESS_KEY_ID`、`SLS_ACCESS_KEY_SECRET` | 当前环境的服务端 RAM 凭据 |
+| `SLS_STS_TOKEN` | 可选 STS Token；采用临时凭据时到期前需更新配置并重新部署 |
+
+启用后缺配置或配置无效会拒绝启动；不回退其他环境或本地旧业务变量。Cloudflare 配置仍只在进程初始化时读取，更新后须重新部署。使用官方 Node SDK `@alicloud/sls20201230` 的 GetLogsV2，保持现有 Redis Stream ID 游标及固定快照协议。
+
+日志契约为 `kind=event`、`taskId`、`environment`（`test` / `prod`）、`id`（原 Stream ID）、`streamMs`、`streamSeq`、`time`、`level`、`message`，可选 `actionIndex`、`actionTotal`。`kind=checkpoint` 记录 `firstId`、`throughId`、`entryCount`、`truncated`，其中 `streamMs` / `streamSeq` 对应 `throughId`。重复上传按任务、环境及 `id` 去重后分页。
+
+Logstore 使用支持 SQL 的 Standard 类型；关闭全文索引，给上述投影及过滤字段建立字段索引并启用统计。`streamMs`、`streamSeq`、`entryCount`、`actionIndex`、`actionTotal` 使用 `long`，其余使用 `text`；文本统计长度至少设为 8192 字节，避免最多 1000 个 Unicode 字符的正文被默认长度截断。标识字段无需分词。保留天数由 Logstore 配置控制；客户端查询最近八天的索引窗口，覆盖管理页面的七天范围。
+
+每次详情先只读取 Redis 执行状态和 Stream 首尾 ID，再验证 SLS checkpoint 覆盖范围与 `count(distinct id)`。SLS 三次查询共用最多三秒预算，且不超过 `REQUEST_TIMEOUT_MS`。SLS 不可用、无归档、返回 `Incomplete`、正文缺失、计数不匹配或末尾尚未同步时，整页回退 Redis，不拼接不完整归档。Redis 日志过期后，只有能验证完整的 checkpoint 才使用 SLS；同步器发现原记录已裁剪时，详情仍显示缺失提示。普通用户每 1.5 秒轮询的实时接口不经过 SLS，避免索引延迟丢失终态尾日志。
+
 ## 构建与部署
 
 ```powershell
