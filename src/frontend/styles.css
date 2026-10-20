@@ -380,37 +380,50 @@
 }
 
 .registration-notice {
-  padding: .875rem 1rem;
-  border-color: #d9b98b66;
+  display: grid;
+  width: fit-content;
+  max-width: 100%;
+  grid-template-columns: 1.875rem minmax(0, 1fr);
+  align-items: start;
+  gap: .625rem;
+  padding: .75rem .875rem;
+  border-color: #d5c4da33;
   border-radius: .875rem;
-  background: #322d2bf2;
+  background: #2a252eeb;
   color: #e9c795;
+  backdrop-filter: blur(12px);
 }
-.registration-notice [data-slot='alert-title'] {
+.registration-notice-icon { display: grid; width: 1.875rem; height: 1.875rem; place-items: center; border-radius: .625rem; background: #d9b98b14; }
+.registration-notice-icon svg { width: 1rem; height: 1rem; }
+.registration-notice-copy { min-width: 0; }
+.registration-notice-heading {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: .25rem .625rem;
-  color: #fff0db;
-  font-size: .875rem;
-  line-height: 1.6;
+  gap: .375rem .625rem;
 }
+.registration-notice [data-slot='alert-title'] { color: #f6f1ed; font-size: .8125rem; line-height: 1.5; white-space: nowrap; }
+.registration-group-badge { flex-shrink: 0; gap: .375rem; padding: .25rem .5rem; border-color: #d9b98b33; border-radius: .5rem; background: #d9b98b0d; color: #e9c795; }
+.registration-group-label { font-size: .625rem; line-height: 1; }
 .registration-group-number {
-  color: #ffe0a8;
-  font-size: 1rem;
-  font-weight: 650;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: .875rem;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
-  letter-spacing: .06em;
+  line-height: 1;
+  white-space: nowrap;
   user-select: all;
 }
-.registration-notice [data-slot='alert-description'] { color: #e3d1b9; font-size: .75rem; line-height: 1.8; }
-.registration-notice[data-surface='dialog'] { border-color: #e8c68c; background: #fff7e8; color: #895217; }
-.registration-notice[data-surface='dialog'] [data-slot='alert-title'] { color: #634017; }
-.registration-notice[data-surface='dialog'] .registration-group-number { color: #895217; }
-.registration-notice[data-surface='dialog'] [data-slot='alert-description'] { color: #80613e; }
+.registration-notice [data-slot='alert-description'] { margin-top: .375rem; color: #c7bcc8; font-size: .75rem; line-height: 1.7; text-wrap: pretty; }
+.registration-notice[data-surface='dialog'] { width: 100%; grid-template-columns: minmax(0, 1fr); border-color: #97869e33; background: #f8f3fa; }
+.registration-notice[data-surface='dialog'] .registration-notice-icon { display: none; }
+.registration-notice[data-surface='dialog'] [data-slot='alert-title'] { color: #55475d; }
+.registration-notice[data-surface='dialog'] .registration-group-badge { border-color: #e8c68c; background: #fff2d7; color: #895217; }
+.registration-notice[data-surface='dialog'] [data-slot='alert-description'] { color: #726279; }
 .registration-home-notice { margin-bottom: 1.25rem; }
 @media (max-width: 639px) {
-  .registration-home-notice { width: auto; margin: .875rem .875rem .25rem; }
+  .registration-notice { padding: .75rem; }
+  .registration-home-notice { width: auto; max-width: calc(100% - 1.75rem); margin: .875rem .875rem .25rem; }
 }
 
 .headband-mark {
