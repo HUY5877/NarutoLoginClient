@@ -29,6 +29,7 @@ import { KonanPortrait } from '@/components/konan-portrait';
 import { MobileTaskSheet } from '@/components/mobile-task-sheet';
 import { TaskProgressCards } from '@/components/task-progress-cards';
 import { SiteEnvironmentBadge } from '@/components/site-environment-badge';
+import { RegistrationNotice } from '@/components/registration-notice';
 import { ArenaWeeklyBrief, MainTaskSwitch } from '@/components/main-task-switch';
 import {
   Accordion,
@@ -272,6 +273,7 @@ export default function App() {
 
       <main className="village-main mx-auto max-w-5xl px-5 py-6 sm:px-8 sm:py-8" data-mobile-qr-ready={ready}>
         <h1 className="sr-only">任务中心</h1>
+        <RegistrationNotice className="registration-home-notice" />
         {auth.error && !authOpen && (
           <Alert variant="destructive" className="village-glass auth-notice mb-5" role="alert">
             <CircleAlert aria-hidden="true" />

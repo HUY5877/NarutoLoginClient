@@ -379,6 +379,40 @@
   box-shadow: 0 20px 80px #20182159;
 }
 
+.registration-notice {
+  padding: .875rem 1rem;
+  border-color: #d9b98b66;
+  border-radius: .875rem;
+  background: #322d2bf2;
+  color: #e9c795;
+}
+.registration-notice [data-slot='alert-title'] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .25rem .625rem;
+  color: #fff0db;
+  font-size: .875rem;
+  line-height: 1.6;
+}
+.registration-group-number {
+  color: #ffe0a8;
+  font-size: 1rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .06em;
+  user-select: all;
+}
+.registration-notice [data-slot='alert-description'] { color: #e3d1b9; font-size: .75rem; line-height: 1.8; }
+.registration-notice[data-surface='dialog'] { border-color: #e8c68c; background: #fff7e8; color: #895217; }
+.registration-notice[data-surface='dialog'] [data-slot='alert-title'] { color: #634017; }
+.registration-notice[data-surface='dialog'] .registration-group-number { color: #895217; }
+.registration-notice[data-surface='dialog'] [data-slot='alert-description'] { color: #80613e; }
+.registration-home-notice { margin-bottom: 1.25rem; }
+@media (max-width: 639px) {
+  .registration-home-notice { width: auto; margin: .875rem .875rem .25rem; }
+}
+
 .headband-mark {
   display: grid;
   width: 3.25rem;
