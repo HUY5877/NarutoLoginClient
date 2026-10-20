@@ -440,7 +440,7 @@
 
 .village-portrait-stage {
   display: flex;
-  height: 16rem;
+  height: calc(clamp(20rem, 27vw, 23rem) - 1rem);
   justify-content: center;
 }
 .village-portrait {

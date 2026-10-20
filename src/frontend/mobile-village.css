@@ -79,7 +79,8 @@
     position: relative;
     display: block;
     isolation: isolate;
-    height: 12rem;
+    height: clamp(18.5rem, 37svh, 20.5rem);
+    min-height: clamp(15.375rem, 76.5vw, 19.875rem);
     margin-bottom: -.75rem;
     overflow: hidden;
     animation: ninja-scene-enter 650ms ease-out both;
@@ -88,7 +89,7 @@
   .mobile-character-scene { position: absolute; z-index: 1; inset: 0; display: flex; align-items: flex-end; justify-content: center; pointer-events: none; }
   .mobile-character {
     position: relative;
-    width: 8rem;
+    width: clamp(10.25rem, 51vw, 13.25rem);
     height: auto;
     filter: drop-shadow(0 9px 12px #20182180);
     transform: translateY(var(--portrait-shift, 0px));
@@ -104,8 +105,8 @@
   .chakra-seal[data-complete='true'] { color: #99cda9; }
   .chakra-seal[data-complete='true'] .chakra-leaf { display: none; }
   .chakra-seal[data-complete='true'] .chakra-check { display: block; stroke-dasharray: 52; animation: chakra-confirm 600ms ease-out; }
-  .village-main[data-mobile-qr-ready='true'] .mobile-village-hero { height: 8.5rem; }
-  .village-main[data-mobile-qr-ready='true'] .mobile-character { width: 5.5rem; }
+  .village-main[data-mobile-qr-ready='true'] .mobile-village-hero { height: 14.5rem; min-height: 0; }
+  .village-main[data-mobile-qr-ready='true'] .mobile-character { width: 9.25rem; }
   .village-workspace { position: relative; z-index: 3; display: block; padding-inline: 0.875rem; }
   .login-card {
     position: relative;
