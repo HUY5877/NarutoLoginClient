@@ -68,25 +68,29 @@ npm run dev
 
 ### SLS 日志归档
 
-管理员日志详情及失败详情支持优先读取阿里云 SLS，普通用户的实时进度和日志仍从 Redis 读取。执行状态、队列、会话与账号锁仍由 Redis 管理；本次接入不缩短现有 Redis 七天保留时间。必须配套启动 NarutoDailyADB 的 SLS 日志同步器，它通过 Python SDK 批量同步 Redis Stream，并上报覆盖范围 checkpoint。
+管理员日志详情、失败详情和普通用户实时日志优先读取阿里云 SLS。NarutoDailyADB 的 logger 在 emit 时生成日志 ID，由进程内发布器通过 Python SDK 异步批量直传 SLS，并附带覆盖范围 checkpoint。新日志不再写 Redis；关闭 SLS 时也不会恢复 Redis 日志写入。执行状态、队列、会话与账号锁仍由 Redis 管理，已有 Redis 历史日志保留兼容读取并按原有 TTL 自然过期。
+
+客户端提交申请只写入队列和已有 queued 会话状态，不上传日志。提交后的即时进度由排队状态展示；执行端领取或安全拒绝任务时补发提交/等待领取事件，再记录正式执行或拒绝原因。日志发布缓冲仅在执行端进程内存中保存，不使用 Redis Stream 或本地 SQLite；进程退出、缓冲溢出或长期无法上传可能导致日志缺失，不影响轻量执行状态读取。
 
 以下键放入对应环境的 Cloudflare KV namespace；正式和测试分别使用各自 Project/Logstore 和最小权限凭据，不能把正式凭据填入测试 namespace。目前同一环境的客户端和执行端共用这组配置，因此凭据须具备指定 Logstore 的 `log:GetLogStoreLogs` 读取和 `log:PostLogStoreLogs` 写入权限。若以后需要分别分配读写凭据，须先拆分配置键。不要复用浏览器变量或向前端传递密钥。
 
 | 配置键 | 说明 |
 | --- | --- |
-| `SLS_ENABLED` | `true` 启用；未配置或 `false` 保持原 Redis 行为 |
+| `SLS_ENABLED` | `true` 启用 SLS；未配置或 `false` 时新任务不记录执行日志，历史 Redis 日志仍可读取 |
 | `SLS_ENDPOINT` | 区域域名，例如 `cn-hangzhou.log.aliyuncs.com`，可带 `https://`；只使用 HTTPS |
 | `SLS_PROJECT`、`SLS_LOGSTORE` | 当前环境的日志目标 |
 | `SLS_ACCESS_KEY_ID`、`SLS_ACCESS_KEY_SECRET` | 当前环境的服务端 RAM 凭据 |
 | `SLS_STS_TOKEN` | 可选 STS Token；采用临时凭据时到期前需更新配置并重新部署 |
 
-启用后缺配置或配置无效会拒绝启动；不回退其他环境或本地旧业务变量。Cloudflare 配置仍只在进程初始化时读取，更新后须重新部署。使用官方 Node SDK `@alicloud/sls20201230` 的 GetLogsV2，保持现有 Redis Stream ID 游标及固定快照协议。
+启用后缺配置或配置无效会拒绝启动；不回退其他环境或本地旧业务变量。Cloudflare 配置仍只在进程初始化时读取，更新后须重新部署。使用官方 Node SDK `@alicloud/sls20201230` 的 GetLogsV2，保持现有 `毫秒-序号` 游标及固定快照协议。
 
-日志契约为 `kind=event`、`taskId`、`environment`（`test` / `prod`）、`id`（原 Stream ID）、`streamMs`、`streamSeq`、`time`、`level`、`message`，可选 `actionIndex`、`actionTotal`。`kind=checkpoint` 记录 `firstId`、`throughId`、`entryCount`、`truncated`，其中 `streamMs` / `streamSeq` 对应 `throughId`。重复上传按任务、环境及 `id` 去重后分页。
+日志契约为 `kind=event`、`taskId`、`environment`（`test` / `prod`）、`id`（logger 生成的 `ms-seq`）、`firstId`、`streamMs`、`streamSeq`、`time`、`level`、`message`，可选 `actionIndex`、`actionTotal`。ID 按毫秒和序号数值排序，不能按字符串排序。`kind=checkpoint` 记录当前 producer 的 `firstId`、`throughId`、`entryCount`、`truncated`，其中 `streamMs` / `streamSeq` 对应 `throughId`。事件的 `firstId` 用于隔离当前 producer 的计数，兼容缺少该字段的旧事件；日志页仍包含所有 producer 的历史。重复上传按任务、环境及 `id` 去重后分页。执行状态另保存 `logSource=sls|disabled` 与最新 emit 的 `logCursor`；不含这些字段的旧任务继续兼容 Redis。
 
 Logstore 使用支持 SQL 的 Standard 类型；关闭全文索引，给上述投影及过滤字段建立字段索引并启用统计。`streamMs`、`streamSeq`、`entryCount`、`actionIndex`、`actionTotal` 使用 `long`，其余使用 `text`；文本统计长度至少设为 8192 字节，避免最多 1000 个 Unicode 字符的正文被默认长度截断。标识字段无需分词。保留天数由 Logstore 配置控制；客户端查询最近八天的索引窗口，覆盖管理页面的七天范围。
 
-每次详情先只读取 Redis 执行状态和 Stream 首尾 ID，再验证 SLS checkpoint 覆盖范围与 `count(distinct id)`。SLS 三次查询共用最多三秒预算，且不超过 `REQUEST_TIMEOUT_MS`。SLS 不可用、无归档、返回 `Incomplete`、正文缺失、计数不匹配或末尾尚未同步时，整页回退 Redis，不拼接不完整归档。Redis 日志过期后，只有能验证完整的 checkpoint 才使用 SLS；同步器发现原记录已裁剪时，详情仍显示缺失提示。普通用户每 1.5 秒轮询的实时接口不经过 SLS，避免索引延迟丢失终态尾日志。
+每次 SLS 读取先 GET Redis 的轻量执行状态，不读取 Stream 内容或边界；检查 checkpoint 的区间去重计数与执行状态的 `logCursor` 水位。重启后的 checkpoint 只证明自身区间，日志分页仍查询整个 `after..snapshot`，保留此前 producer 的历史日志。执行端继承旧游标但失去原内存发布状态时，后续 checkpoint 持续标记 `truncated=true`；客户端也保留已查询到的旧 checkpoint 缺失提示，不把新 producer 的完整区间当作整个任务无缺失。SLS 三次查询共用最多三秒预算，且不超过 `REQUEST_TIMEOUT_MS`；`Incomplete`、计数不匹配或正文缺失均不作为完整结果使用。
+
+旧任务在 SLS 不可用或无归档时回退 Redis。标记为 `logSource=sls` 的新任务没有 Redis 日志可回退：无 checkpoint、索引未追上水位或查询失败时返回 `logsPending`，保留原游标，管理员可手动重试。运行中的实时界面每 1.5 秒读取已完整入索引的日志前缀，不要求先追上不断增长的水位；终态严格等待最终水位，最多再等待 90 秒，仍未就绪则提示稍后重试，避免提前停止而丢掉最后一批日志或零间隔忙刷。`logSource=sls` 暂无 `logCursor` 的拒绝事件发布间隙也按待入库处理。`truncated` 表示发布器明确报告的缺失；纯内存发布无法证明进程崩溃前尚未上传的日志完整性。
 
 ## 构建与部署
 

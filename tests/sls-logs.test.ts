@@ -13,7 +13,7 @@ const config = { endpoint: 'cn-hangzhou.log.aliyuncs.com', project: 'fixture-pro
 function fixture(total = 205) {
   let data = Array.from({ length: total }, (_, i) => ({ taskId, environment: 'test', id: id(i + 1), time,
     level: ['INFO', 'WARNING', 'ERROR'][i % 3], message: `日志 ${i + 1}`, streamMs: ms, streamSeq: String(i + 1),
-    actionIndex: '2', actionTotal: '38' }));
+    actionIndex: '2', actionTotal: '38', firstId: undefined as string | undefined }));
   let marker: Record<string, unknown> = { taskId, environment: 'test', firstId: id(1), throughId: id(total),
     entryCount: String(total), truncated: 'false', streamMs: ms, streamSeq: String(total) };
   const queries: string[] = [];
@@ -28,7 +28,10 @@ function fixture(total = 205) {
     const upper = Math.min(...[...sql.matchAll(/"streamSeq" <= (\d+)\)/g)].map(match => Number(match[1])));
     let rows: unknown[];
     if (sql.includes('SELECT DISTINCT')) rows = [marker];
-    else if (sql.includes('count(DISTINCT')) rows = [{ entryCount: String(unique.length),
+    else if (sql.includes('count(DISTINCT')) rows = [{ entryCount: String(unique.filter(row =>
+      Number(row.streamSeq) >= Number(String(marker.firstId).split('-')[1])
+      && Number(row.streamSeq) <= Number(String(marker.throughId).split('-')[1])
+      && (!sql.includes('"firstId" IS NULL') || row.firstId === undefined || row.firstId === marker.firstId)).length),
       remainingCount: String(unique.filter(row => Number(row.streamSeq) > after && Number(row.streamSeq) <= upper).length) }];
     else {
       assert(sql.indexOf('GROUP BY "id"') < sql.indexOf('LIMIT'));
@@ -52,7 +55,7 @@ test('SLS 历史日志在去重后按数值游标分页，固定快照覆盖超�
   let after = '0-0';
   for (let offset = 0; offset < 2050; offset += 100) {
     const page = await f.archive.read(taskId, after, offset ? id(2050) : undefined,
-      { exists: true, firstId: id(1), lastId: id(2050) });
+      id(2050));
     assert(page);
     assert.equal(page.logs.length, Math.min(100, 2050 - offset));
     assert.equal(page.snapshotCursor, id(2050));
@@ -68,10 +71,10 @@ test('SLS 历史日志在去重后按数值游标分页，固定快照覆盖超�
 
 test('SLS 分页固定上界，后续新日志不会改变已打开的快照', async () => {
   const f = fixture(205);
-  const first = await f.archive.read(taskId, '0-0', undefined, { exists: true, firstId: id(1), lastId: id(200) });
+  const first = await f.archive.read(taskId, '0-0', undefined, id(200));
   assert(first); assert.equal(first.snapshotCursor, id(200));
   const second = await f.archive.read(taskId, first.nextCursor, first.snapshotCursor,
-    { exists: true, firstId: id(1), lastId: id(205) });
+    id(205));
   assert(second); assert.equal(second.logs.at(-1)?.id, id(200));
   assert.equal(second.hasMore, false); assert.equal(second.nextCursor, id(200));
 });
@@ -91,7 +94,7 @@ test('SLS 任务及环境隔离，错误 marker 或返回行拒绝使用', async
 
 test('SLS checkpoint 不能掩盖中间缺口、尚未索引的尾部、正文缺失或不完整查询', async () => {
   const f = fixture();
-  assert.equal(await f.archive.read(taskId, '0-0', undefined, { exists: true, firstId: id(1), lastId: id(206) }), null);
+  assert.equal(await f.archive.read(taskId, '0-0', undefined, id(206)), null);
   const original = f.data;
   f.data = f.data.filter(row => row.id !== id(40));
   assert.equal(await f.archive.read(taskId, '0-0', undefined, undefined), null);
@@ -106,14 +109,60 @@ test('SLS checkpoint 不能掩盖中间缺口、尚未索引的尾部、正文�
   assert.equal(await f.archive.read(taskId, '0-0', undefined, undefined), null);
 });
 
-test('Redis 过期后凭完整 checkpoint 读取归档；原始裁剪必须显示缺失提示', async () => {
+test('执行状态过期后凭完整 checkpoint 读取归档，生产端裁剪仍显示缺失提示', async () => {
   const f = fixture();
-  const archived = await f.archive.read(taskId, '0-0', undefined, { exists: false, firstId: '', lastId: '0-0' });
+  const archived = await f.archive.read(taskId, '0-0', undefined, undefined);
   assert(archived); assert.equal(archived.snapshotCursor, id(205));
   f.marker = { truncated: 'true' };
   assert.equal((await f.archive.read(taskId, '0-0', undefined, undefined))?.truncated, true);
-  f.marker = { firstId: id(2) };
-  assert.equal(await f.archive.read(taskId, '0-0', undefined, { exists: true, firstId: id(1), lastId: id(205) }), null);
+});
+
+test('worker 重启后新 checkpoint 仅验证当前区间，分页仍保留此前所有日志及旧快照', async () => {
+  const f = fixture();
+  f.marker = { firstId: id(101), entryCount: '105' };
+  const first = await f.archive.read(taskId, '0-0', undefined, id(205));
+  assert(first); assert.equal(first.logs[0].id, id(1)); assert.equal(first.logs.at(-1)?.id, id(100));
+  assert.equal(first.truncated, false); assert.equal(first.hasMore, true);
+  const oldSnapshot = await f.archive.read(taskId, id(50), id(80), id(205));
+  assert(oldSnapshot); assert.equal(oldSnapshot.logs[0].id, id(51));
+  assert.equal(oldSnapshot.logs.at(-1)?.id, id(80)); assert.equal(oldSnapshot.hasMore, false);
+  assert(f.queries.filter(sql => sql.includes('GROUP BY')).every(sql => !sql.includes('"streamSeq" >= 101')));
+});
+
+test('相同水位的 checkpoint 补充溢出标记后优先显示截断，返回顺序不影响结果', async () => {
+  for (const reverse of [false, true]) {
+    const f = fixture();
+    f.intercept = (result, sql) => {
+      if (!sql.includes('SELECT DISTINCT')) return result;
+      const marker = (result.data as object[])[0];
+      const data = [{ ...marker, truncated: 'false' }, { ...marker, truncated: 'true' }];
+      return { ...result, data: reverse ? data.reverse() : data };
+    };
+    assert.equal((await f.archive.read(taskId, '0-0', undefined, undefined))?.truncated, true);
+  }
+});
+
+test('新 producer 的完整区间不会抹掉已读取到的旧 producer 缺失标记', async () => {
+  const f = fixture();
+  f.marker = { firstId: id(101), entryCount: '105' };
+  f.intercept = (result, sql) => sql.includes('SELECT DISTINCT') ? { ...result, data: [...result.data as object[],
+    { taskId, environment: 'test', firstId: id(1), throughId: id(100), entryCount: '99', truncated: 'true', streamMs: ms, streamSeq: '100' }] } : result;
+  const page = await f.archive.read(taskId, '0-0', undefined, id(205));
+  assert(page); assert.equal(page.truncated, true); assert.equal(page.logs[0].id, id(1));
+});
+
+test('checkpoint 只统计所属 producer，其他 producer 迟到日志仍参与整页读取并兼容旧无 firstId 事件', async () => {
+  const f = fixture(5);
+  f.data = f.data.map(row => ({ ...row, firstId: row.id === id(2) ? id(2) : row.id === id(3) ? undefined : id(1) }));
+  f.marker = { entryCount: '4' };
+  const page = await f.archive.read(taskId, '0-0', undefined, id(5));
+  assert(page); assert.deepEqual(page.logs.map(row => row.id), [1, 2, 3, 4, 5].map(id));
+  assert.equal(page.hasMore, false); assert.equal(page.nextCursor, id(5));
+  const count = f.queries.find(sql => sql.includes('count(DISTINCT'))!;
+  assert(count.includes(`("firstId" = '${id(1)}' OR "firstId" IS NULL)`));
+  assert(count.indexOf('"firstId" IS NULL') < count.indexOf('AS "entryCount"'));
+  assert(!count.slice(count.indexOf('AS "entryCount"')).includes('"firstId"'));
+  assert(f.queries.filter(sql => sql.includes('GROUP BY')).every(sql => !sql.includes('"firstId"')));
 });
 
 function serviceFixture(archive: SlsTaskLogArchive) {
@@ -122,7 +171,7 @@ function serviceFixture(archive: SlsTaskLogArchive) {
   const redisLog = [id(1), ['json', JSON.stringify({ time, level: 'ERROR', message: 'Redis 保底日志' })]];
   const driver: RunRedisDriver = { isReady: true, async connect() {}, destroy() {}, async eval(sql) {
     operations.push(sql);
-    if (sql.includes('return {run, firstId, lastId, exists}')) return [JSON.stringify(run), id(1), id(205), 1];
+    if (sql.includes("return redis.call('GET', KEYS[1])")) return JSON.stringify(run);
     if (sql.includes('local upper')) return [JSON.stringify(run), [redisLog], id(205), id(1), 1, 1, 1];
     return [JSON.stringify(run), [redisLog]];
   } };
@@ -131,7 +180,7 @@ function serviceFixture(archive: SlsTaskLogArchive) {
   return { service, operations, driver };
 }
 
-test('客户端详情优先 SLS，Redis 仅取状态和边界；失败详情从 SLS 最新十条提取错误', async () => {
+test('客户端详情优先 SLS，Redis 仅取执行状态；失败详情从 SLS 最新十条提取错误', async () => {
   const f = fixture();
   f.data = f.data.map(row => row.id === id(204) ? { ...row, level: 'ERROR', message: '具体错误：未找到挑战按钮' } : row);
   const { service, operations } = serviceFixture(f.archive);
@@ -160,7 +209,7 @@ test('空归档、服务异常、Incomplete 和计数缺口自动使用既有 Re
   }
 });
 
-test('SLS 不参与普通用户实时读取且仍先做 PostgreSQL 归属鉴权', async () => {
+test('SLS 实时读取前仍先做 PostgreSQL 归属鉴权', async () => {
   const f = fixture();
   const { driver } = serviceFixture(f.archive);
   const service = new TaskRunService({ redisUrl: 'redis://fixture', redisQueueKey: 'fixture', timeoutMs: 100 },

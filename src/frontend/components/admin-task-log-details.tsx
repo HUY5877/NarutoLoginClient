@@ -10,7 +10,7 @@ import { Spinner } from '@/components/ui/spinner';
 
 export function AdminTaskLogDetails({ task, onAccessLost }: { task: DailyTask; onAccessLost: () => void }) {
   const [open, setOpen] = useState(false);
-  const { status, logs, loading, error, loadMore, hasMore, truncated } = useAdminTaskLogs(task.id, open, onAccessLost);
+  const { status, logs, loading, error, loadMore, hasMore, truncated, logsPending } = useAdminTaskLogs(task.id, open, onAccessLost);
   const currentStatus = task.status === 'completed' && task.completedAt ? 'completed' : status ?? task.status;
   const failed = ['failed', 'interrupted', 'expired'].includes(currentStatus);
   const failureMessage = failed ? task.errorMessage : undefined;
@@ -51,10 +51,11 @@ export function AdminTaskLogDetails({ task, onAccessLost }: { task: DailyTask; o
             </li>)}
           </ol>
         </div>}
-        {!loading && !error && !logs.length && <p className="text-muted-foreground">暂无已保留的执行日志，记录可能尚未上报或已过期。</p>}
+        {logsPending && <p role="status" className="text-muted-foreground">执行日志正在上传或暂时不可用，请稍后重试读取。</p>}
+        {!loading && !error && !logsPending && !logs.length && <p className="text-muted-foreground">暂无已保留的执行日志，记录可能尚未上报或已过期。</p>}
         {truncated && <p className="mt-3 text-xs text-muted-foreground">部分记录可能已过期、被裁剪或无法读取。</p>}
-        {hasMore && !error && <Button type="button" variant="outline" className="mt-4 min-h-11 w-full" disabled={loading} onClick={loadMore}>
-          {loading && <Spinner aria-hidden="true" />}{logs.length ? '加载更多' : '读取日志'}
+        {(hasMore || logsPending) && !error && <Button type="button" variant="outline" className="mt-4 min-h-11 w-full" disabled={loading} onClick={loadMore}>
+          {loading && <Spinner aria-hidden="true" />}{logsPending ? '重试读取' : logs.length ? '加载更多' : '读取日志'}
         </Button>}
       </div>
     </DialogContent>

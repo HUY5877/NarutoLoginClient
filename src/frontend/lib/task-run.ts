@@ -10,6 +10,7 @@ export interface TaskRun {
   authorizedAt?: string;
   secretRealmCompletedAt?: string;
   actionIndex?: number; actionTotal?: number; errorCode?: string;
+  logSource?: 'sls' | 'disabled'; logCursor?: string;
 }
 export interface RunLog {
   id: string; time: string; level: 'INFO' | 'WARNING' | 'ERROR'; message: string;
@@ -18,10 +19,12 @@ export interface RunLog {
 export interface RunEvents {
   task: RunTask; run: TaskRun | null; logs: RunLog[];
   nextCursor: string; hasMore: boolean; truncated: boolean;
+  logsPending?: boolean;
 }
 export interface TaskRunView {
   task: RunTask | null; run: TaskRun | null; logs: RunLog[];
   loading: boolean; polling: boolean; unavailable: boolean; truncated: boolean; error: string;
+  logsPending?: boolean;
 }
 export const emptyTaskRun = (): TaskRunView => ({
   task: null, run: null, logs: [], loading: false, polling: false,
@@ -47,7 +50,8 @@ function compareCursor(left: string, right: string): number {
 export function parseRunEvents(value: unknown, taskId: string, after: string): RunEvents {
   if (!object(value) || !isRunTask(value.task) || value.task.id !== taskId || !Array.isArray(value.logs)
     || typeof value.nextCursor !== 'string' || !cursorPattern.test(value.nextCursor)
-    || typeof value.hasMore !== 'boolean' || typeof value.truncated !== 'boolean') throw new Error('invalid run events');
+    || typeof value.hasMore !== 'boolean' || typeof value.truncated !== 'boolean'
+    || value.logsPending !== undefined && typeof value.logsPending !== 'boolean') throw new Error('invalid run events');
   if (value.run !== null && (!object(value.run) || value.run.taskId !== taskId
     || !statuses.includes(value.run.status as RunStatus) || !date(value.run.updatedAt)
     || (value.run.startedAt !== null && !date(value.run.startedAt))
@@ -55,6 +59,8 @@ export function parseRunEvents(value: unknown, taskId: string, after: string): R
     || (value.run.authorizedAt !== undefined && !date(value.run.authorizedAt))
     || (value.run.secretRealmCompletedAt !== undefined && !date(value.run.secretRealmCompletedAt))
     || !action(value.run.actionIndex) || !action(value.run.actionTotal)
+    || value.run.logSource !== undefined && !['sls', 'disabled'].includes(String(value.run.logSource))
+    || value.run.logCursor !== undefined && (typeof value.run.logCursor !== 'string' || !cursorPattern.test(value.run.logCursor))
     || (value.run.errorCode !== undefined && typeof value.run.errorCode !== 'string'))) throw new Error('invalid task run');
   let previous = after;
   for (const log of value.logs) {
@@ -66,7 +72,8 @@ export function parseRunEvents(value: unknown, taskId: string, after: string): R
     previous = log.id;
   }
   if (compareCursor(value.nextCursor, previous) < 0
-    || (value.hasMore && compareCursor(value.nextCursor, after) <= 0)) throw new Error('invalid run cursor');
+    || (value.hasMore && compareCursor(value.nextCursor, after) <= 0)
+    || value.logsPending === true && (value.hasMore || value.logs.length > 0 || value.nextCursor !== after)) throw new Error('invalid run cursor');
   return value as unknown as RunEvents;
 }
 export function appendRunLogs(previous: RunLog[], incoming: RunLog[]): { logs: RunLog[]; trimmed: boolean } {
@@ -101,7 +108,7 @@ export class TaskRunTracker {
 
   constructor(private readonly update: (view: TaskRunView) => void,
     private readonly unauthorized: () => void,
-    private readonly request: Read = read, private readonly pause: Wait = wait) {}
+    private readonly request: Read = read, private readonly pause: Wait = wait, private readonly now = Date.now) {}
 
   private emit(patch: Partial<TaskRunView>) {
     this.view = { ...this.view, ...patch };
@@ -159,6 +166,7 @@ export class TaskRunTracker {
     this.view = emptyTaskRun();
   }
   private async poll(taskId: string, controller: AbortController) {
+    let pendingSince: number | undefined;
     try {
       while (this.active(controller)) {
         const body = await this.request(`/api/task-runs/${encodeURIComponent(taskId)}/events?after=${this.cursor}`, controller.signal);
@@ -168,10 +176,16 @@ export class TaskRunTracker {
         this.cursor = events.nextCursor;
         const unavailable = events.run === null && (Date.parse(events.task.expiresAt) <= Date.now()
           || ['failed', 'expired'].includes(events.task.status));
-        const done = !events.hasMore && (unavailable || Boolean(events.run && isRunTerminal(events.run.status)));
+        const terminal = unavailable || Boolean(events.run && isRunTerminal(events.run.status));
+        if (terminal && events.logsPending) pendingSince ??= this.now();
+        else pendingSince = undefined;
+        const timedOut = pendingSince !== undefined && this.now() - pendingSince >= 90_000;
+        const done = !events.hasMore && !events.logsPending && terminal;
         this.emit({ task: events.task, run: events.run, logs: merged.logs, loading: false,
-          polling: !done, unavailable, truncated: this.view.truncated || events.truncated || merged.trimmed, error: '' });
-        if (done) return;
+          polling: !done && !timedOut, unavailable, logsPending: events.logsPending ?? false,
+          truncated: this.view.truncated || events.truncated || merged.trimmed,
+          error: timedOut ? '任务已结束，执行日志仍在上传或暂时不可用。请稍后重试更新。' : '' });
+        if (done || timedOut) return;
         await this.pause(events.hasMore ? 0 : 1_500, controller.signal);
       }
     } catch (error) { this.fail(error, controller); }

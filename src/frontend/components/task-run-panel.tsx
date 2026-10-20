@@ -82,6 +82,7 @@ export function TaskRunPanel({ view, retry }: { view: TaskRunView; retry: () => 
             </div>}
             {view.unavailable && <p className="text-sm leading-6 text-muted-foreground">{view.logs.length ? '本次登录申请已结束，暂未收到执行状态。已有日志保留在下方。' : '本次登录申请已结束，暂无可查看的执行记录。'}</p>}
             {view.truncated && <p className="text-xs leading-5 text-muted-foreground">较早日志已省略，页面最多保留最近 2000 条记录。</p>}
+            {view.logsPending && <p role="status" className="text-sm leading-6 text-muted-foreground">执行日志正在上传或暂时不可用，已显示的日志会保留。</p>}
             {view.logs.length > 0 ? <div ref={scrollArea} role="log" aria-label="任务执行日志" aria-live="off" tabIndex={0}
               onScroll={() => { const area = scrollArea.current; if (area) following.current = area.scrollHeight - area.scrollTop - area.clientHeight < 48; }}
               className="max-h-80 overflow-y-auto rounded-lg border border-border/70 bg-background/55 p-3 text-xs leading-6 sm:p-4">
@@ -90,8 +91,8 @@ export function TaskRunPanel({ view, retry }: { view: TaskRunView; retry: () => 
                 <span className={`shrink-0 ${log.level === 'ERROR' ? 'text-destructive' : log.level === 'WARNING' ? 'text-amber-700' : 'text-muted-foreground'}`}>{levelLabels[log.level]}</span>
                 <span className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{log.message}</span>
               </div>)}
-            </div> : !view.unavailable && <p className="rounded-lg border border-dashed p-5 text-center text-sm leading-6 text-muted-foreground">
-              {view.loading ? '正在读取执行记录…' : bad ? '本次任务未留下详细执行日志。' : view.task ? '任务开始后，执行进度和日志会显示在这里。' : '生成登录二维码后，在这里查看本次任务的执行进度。'}
+            </div> : !view.unavailable && !view.logsPending && <p className="rounded-lg border border-dashed p-5 text-center text-sm leading-6 text-muted-foreground">
+              {view.loading ? '正在读取执行记录…' : view.run?.logSource === 'disabled' ? '本次任务未启用执行日志记录。' : bad ? '本次任务未留下详细执行日志。' : view.task ? '任务开始后，执行进度和日志会显示在这里。' : '生成登录二维码后，在这里查看本次任务的执行进度。'}
             </p>}
             {view.run?.status === 'running_daily' && <p className="text-xs leading-5 text-muted-foreground">二维码到期不会停止已开始的{arena ? '周胜任务' : '日常任务'}，执行记录会继续更新。</p>}
           </>}

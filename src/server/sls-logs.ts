@@ -7,7 +7,6 @@ import type { TaskLog } from './task-runs.js';
 // The generated SDK exports a CommonJS `default`; unwrap it explicitly for native ESM and Vercel.
 const { default: SlsClient, GetLogsV2Headers, GetLogsV2Request } = createRequire(import.meta.url)('@alicloud/sls20201230') as typeof import('@alicloud/sls20201230');
 
-export interface RedisLogBounds { firstId: string; lastId: string; exists: boolean }
 export interface SlsLogPage {
   logs: TaskLog[];
   snapshotCursor: string;
@@ -16,7 +15,7 @@ export interface SlsLogPage {
   truncated: boolean;
 }
 export interface TaskLogArchive {
-  read(taskId: string, after: string, snapshot: string | undefined, bounds: RedisLogBounds | undefined, tail?: boolean): Promise<SlsLogPage | null>;
+  read(taskId: string, after: string, snapshot: string | undefined, watermark: string | undefined, tail?: boolean): Promise<SlsLogPage | null>;
 }
 export interface SlsQueryResult { progress: string | undefined; data: unknown }
 export type SlsQuery = (query: string, from: number, to: number, timeoutMs: number) => Promise<SlsQueryResult>;
@@ -52,7 +51,7 @@ function parseLog(row: Record<string, unknown>): TaskLog | null {
     ...(hasProgress ? { actionIndex: actionIndex!, actionTotal: actionTotal! } : {}) };
 }
 
-/** SLS Complete describes one query, so a producer checkpoint plus a distinct count also proves ingestion coverage. */
+/** Complete alone cannot prove ingestion: validate the producer's checkpoint range and the run watermark too. */
 export class SlsTaskLogArchive implements TaskLogArchive {
   private readonly query: SlsQuery;
   constructor(config: SlsConfig, private readonly environment: 'prod' | 'test', private readonly timeoutMs: number,
@@ -73,7 +72,7 @@ export class SlsTaskLogArchive implements TaskLogArchive {
   }
   private readonly now: () => number;
 
-  async read(taskId: string, after: string, snapshot: string | undefined, bounds: RedisLogBounds | undefined, tail = false): Promise<SlsLogPage | null> {
+  async read(taskId: string, after: string, snapshot: string | undefined, watermark: string | undefined, tail = false): Promise<SlsLogPage | null> {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(taskId)
       || !cursor(after) || snapshot !== undefined && !cursor(snapshot)) return null;
     const now = this.now(), deadline = Date.now() + this.timeoutMs;
@@ -98,21 +97,24 @@ export class SlsTaskLogArchive implements TaskLogArchive {
       && cursor(row.firstId) && cursor(row.throughId) && compare(row.firstId, row.throughId) <= 0
       && `${row.streamMs}-${row.streamSeq}` === row.throughId && integer(row.entryCount) !== null && Number(row.entryCount) > 0
       && ['true', 'false'].includes(String(row.truncated)));
-    valid.sort((a, b) => compare(b.throughId as string, a.throughId as string) || compare(a.firstId as string, b.firstId as string));
+    valid.sort((a, b) => compare(b.throughId as string, a.throughId as string)
+      || compare(a.firstId as string, b.firstId as string)
+      || Number(String(b.truncated) === 'true') - Number(String(a.truncated) === 'true'));
     const marker = valid[0];
     if (!marker) return null;
     const first = marker.firstId as string, through = marker.throughId as string;
-    const upper = snapshot ?? (bounds?.exists && bounds.lastId !== '0-0' ? bounds.lastId : through);
-    if (!cursor(upper) || compare(upper, through) > 0 || compare(after, upper) > 0 || compare(upper, first) < 0
-      || bounds?.exists && bounds.firstId && compare(first, bounds.firstId) > 0) return null;
+    const upper = snapshot ?? watermark ?? through;
+    if (!cursor(upper) || compare(upper, through) > 0 || compare(after, upper) > 0) return null;
     const window = `${position(first, '>=')} AND ${position(through, '<=')}`;
+    const producer = `("firstId" = '${first}' OR "firstId" IS NULL)`;
     const pageWindow = `${position(after, '>')} AND ${position(upper, '<=')}`;
-    const counts = await execute(`${search} AND kind: event | SELECT count(DISTINCT "id") AS "entryCount", count(DISTINCT CASE WHEN ${pageWindow} THEN "id" END) AS "remainingCount" FROM log WHERE ${scoped} AND "kind" = 'event' AND ${window}`);
+    // A restarted producer starts a new checkpoint range. Validate that range without excluding older producers' logs.
+    const counts = await execute(`${search} AND kind: event | SELECT count(DISTINCT CASE WHEN ${window} AND ${producer} THEN "id" END) AS "entryCount", count(DISTINCT CASE WHEN ${pageWindow} THEN "id" END) AS "remainingCount" FROM log WHERE ${scoped} AND "kind" = 'event'`);
     if (counts?.length !== 1 || integer(counts[0].entryCount) !== Number(marker.entryCount)) return null;
     const remaining = integer(counts[0].remainingCount);
     if (remaining === null) return null;
     const limit = tail ? 11 : 101, direction = tail ? 'DESC' : 'ASC';
-    const rows = await execute(`${search} AND kind: event | SELECT "id", max("taskId") AS "taskId", max("environment") AS "environment", max("time") AS "time", max("level") AS "level", max("message") AS "message", max("actionIndex") AS "actionIndex", max("actionTotal") AS "actionTotal", max("streamMs") AS "streamMs", max("streamSeq") AS "streamSeq" FROM log WHERE ${scoped} AND "kind" = 'event' AND ${window} AND ${pageWindow} GROUP BY "id" ORDER BY "streamMs" ${direction}, "streamSeq" ${direction} LIMIT ${limit}`);
+    const rows = await execute(`${search} AND kind: event | SELECT "id", max("taskId") AS "taskId", max("environment") AS "environment", max("time") AS "time", max("level") AS "level", max("message") AS "message", max("actionIndex") AS "actionIndex", max("actionTotal") AS "actionTotal", max("streamMs") AS "streamMs", max("streamSeq") AS "streamSeq" FROM log WHERE ${scoped} AND "kind" = 'event' AND ${pageWindow} GROUP BY "id" ORDER BY "streamMs" ${direction}, "streamSeq" ${direction} LIMIT ${limit}`);
     if (!rows || rows.length !== Math.min(limit, remaining)) return null;
     const logs: TaskLog[] = [];
     for (const row of rows) {
@@ -125,6 +127,6 @@ export class SlsTaskLogArchive implements TaskLogArchive {
     const hasMore = remaining > (tail ? 10 : 100);
     return { logs: tail ? logs : logs.slice(0, 100), snapshotCursor: upper,
       nextCursor: hasMore && !tail ? logs[99].id : upper, hasMore,
-      truncated: String(marker.truncated) === 'true' || after !== '0-0' && compare(after, first) < 0 };
+      truncated: valid.some(value => String(value.truncated) === 'true') };
   }
 }
