@@ -11,9 +11,9 @@ export function RegistrationNotice({ className, surface = 'page' }: {
     <span className="registration-notice-icon"><UsersRound aria-hidden="true" /></span>
     <div className="registration-notice-copy">
       <div className="registration-notice-heading">
-        <AlertTitle>注册后请加群</AlertTitle>
+        <AlertTitle>注册后请加</AlertTitle>
         <Badge variant="outline" className="registration-group-badge" aria-label="QQ 群 993904975">
-          <span className="registration-group-label">QQ</span>
+          <span className="registration-group-label">QQ 群</span>
           <strong className="registration-group-number">993904975</strong>
         </Badge>
       </div>
