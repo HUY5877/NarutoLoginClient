@@ -17,7 +17,10 @@ export function RegistrationNotice({ className, surface = 'page' }: {
           <strong className="registration-group-number">993904975</strong>
         </Badge>
       </div>
-      <AlertDescription>进群找群主审核，陌生账号不予通过。</AlertDescription>
+      <AlertDescription>
+        <span className="registration-notice-description-full">进群找群主审核，陌生账号不予通过。</span>
+        <span className="registration-notice-description-compact">陌生申请不批</span>
+      </AlertDescription>
     </div>
   </Alert>;
 }

@@ -8,26 +8,30 @@ const choices = [
   { value: 'arena_weekly', title: '决斗场周胜', Icon: Swords },
 ] as const;
 
-export function MainTaskSwitch({ value, disabled, locked = false, onChange, children }: {
+export function MainTaskSwitch({ value, disabled, locked = false, onChange, notice, children }: {
   value: MainTask;
   disabled: boolean;
   locked?: boolean;
   onChange: (value: MainTask) => void;
+  notice?: ReactNode;
   children?: ReactNode;
 }) {
   const panelId = useId();
 
   return <Tabs value={value} onValueChange={task => onChange(task as MainTask)}
     activationMode="manual" className="main-task-tabs">
-    <div className="main-task-navigation">
-      <TabsList variant="line" aria-label="主任务" className="main-task-list">
-        {choices.map(({ value: task, title, Icon }) => <TabsTrigger key={task} value={task}
-          disabled={disabled || locked} aria-controls={panelId} className="main-task-trigger">
-          <Icon aria-hidden="true" className="size-4" />
-          {title}
-        </TabsTrigger>)}
-      </TabsList>
-      {locked && <span className="main-task-locked"><LockKeyhole aria-hidden="true" />任务进行中</span>}
+    <div className="main-task-toolbar">
+      <div className="main-task-navigation">
+        <TabsList variant="line" aria-label="主任务" className="main-task-list">
+          {choices.map(({ value: task, title, Icon }) => <TabsTrigger key={task} value={task}
+            disabled={disabled || locked} aria-controls={panelId} className="main-task-trigger">
+            <Icon aria-hidden="true" className="size-4" />
+            {title}
+          </TabsTrigger>)}
+        </TabsList>
+        {locked && <span className="main-task-locked"><LockKeyhole aria-hidden="true" />任务进行中</span>}
+      </div>
+      {notice}
     </div>
     <TabsContent id={panelId} value={value} className="main-task-content">{children}</TabsContent>
   </Tabs>;

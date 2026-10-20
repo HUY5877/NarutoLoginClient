@@ -1,4 +1,6 @@
-.main-task-tabs { min-width: 0; gap: 1.25rem; }
+.main-task-tabs { min-width: 0; gap: 1rem; }
+.main-task-toolbar { display: flex; min-width: 0; flex-direction: column-reverse; }
+.registration-notice-description-compact { display: none; }
 .main-task-navigation {
   display: flex;
   width: fit-content;
@@ -43,6 +45,43 @@
 .arena-weekly-brief > svg { flex-shrink: 0; }
 .arena-preview-label { flex-shrink: 0; border: 1px solid #d9b98b45; border-radius: .375rem; padding: .0625rem .375rem; font-size: .625rem; line-height: 1.5; }
 .arena-weekly-notice { min-width: 0; color: #ddd0c0; font-size: .75rem; line-height: 1.7; }
+@media (min-width: 640px) {
+  .main-task-toolbar {
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: .25rem .75rem;
+    border: 1px solid #ddd1dd26;
+    border-radius: 1rem;
+    background: #302b34e8;
+    backdrop-filter: blur(14px);
+  }
+  .main-task-navigation { flex-shrink: 0; padding: 0; border-radius: 0; background: transparent; backdrop-filter: none; }
+  .main-task-toolbar .registration-home-notice {
+    display: block;
+    width: auto;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    backdrop-filter: none;
+  }
+  .main-task-toolbar .registration-notice-icon { display: none; }
+  .main-task-toolbar .registration-notice-copy { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .25rem .625rem; }
+  .main-task-toolbar .registration-notice-heading { flex-wrap: nowrap; gap: .375rem; }
+  .main-task-toolbar .registration-home-notice [data-slot='alert-title'] { color: #c7bcc8; font-size: .75rem; }
+  .main-task-toolbar .registration-group-badge { padding: 0; border: 0; border-radius: 0; background: transparent; }
+  .main-task-toolbar .registration-group-number { font-size: .8125rem; }
+  .main-task-toolbar .registration-home-notice [data-slot='alert-description'] { margin: 0; font-size: .6875rem; line-height: 1.5; white-space: nowrap; }
+  .main-task-toolbar .registration-notice-description-full { display: none; }
+  .main-task-toolbar .registration-notice-description-compact { display: inline; }
+}
+@media (min-width: 1024px) {
+  .main-task-toolbar { width: calc(100% - 20rem - 1.5rem); }
+}
 @media (max-width: 639px) {
   .main-task-tabs { gap: .5rem; }
   .main-task-navigation { position: relative; z-index: 4; margin: .625rem .875rem 0; }
