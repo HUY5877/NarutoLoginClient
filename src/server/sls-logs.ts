@@ -44,7 +44,8 @@ function parseLog(row: Record<string, unknown>): TaskLog | null {
     || !Number.isFinite(Date.parse(row.time)) || !['INFO', 'WARNING', 'ERROR'].includes(String(row.level))
     || typeof row.message !== 'string' || !row.message || [...row.message].length > 1000
     || `${row.streamMs}-${row.streamSeq}` !== row.id) return null;
-  const missing = (v: unknown) => v === undefined || v === null || v === '';
+  // SLS SQL serializes a missing aggregate value as the string "null".
+  const missing = (v: unknown) => v === undefined || v === null || v === '' || v === 'null';
   const hasProgress = !missing(row.actionIndex) || !missing(row.actionTotal);
   const actionIndex = integer(row.actionIndex), actionTotal = integer(row.actionTotal);
   if (hasProgress && (actionIndex === null || actionTotal === null || actionIndex > actionTotal || actionTotal > 100000)) return null;

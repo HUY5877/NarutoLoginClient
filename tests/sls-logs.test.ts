@@ -79,6 +79,36 @@ test('SLS 分页固定上界，后续新日志不会改变已打开的快照', a
   assert.equal(second.hasMore, false); assert.equal(second.nextCursor, id(200));
 });
 
+test('SLS 聚合将缺失进度返回为字符串 null 时仍能读取完整日志', async () => {
+  const f = fixture(2);
+  f.intercept = (result, sql) => sql.includes('GROUP BY') ? { ...result,
+    data: (result.data as object[]).map((row, i) => i === 0
+      ? { ...row, actionIndex: 'null', actionTotal: 'null' } : row) } : result;
+  const page = await f.archive.read(taskId, '0-0', undefined, id(2));
+  assert(page);
+  assert.deepEqual(page.logs, [
+    { id: id(1), time, level: 'INFO', message: '日志 1' },
+    { id: id(2), time, level: 'WARNING', message: '日志 2', actionIndex: 2, actionTotal: 38 },
+  ]);
+  assert.equal(page.hasMore, false);
+  assert.equal(page.nextCursor, id(2));
+});
+
+test('SLS 进度字段仅一项缺失或非整数时仍拒绝不完整日志', async () => {
+  for (const progress of [
+    { actionIndex: 'null', actionTotal: '38' },
+    { actionIndex: '2', actionTotal: 'null' },
+    { actionIndex: 'invalid', actionTotal: 'invalid' },
+    { actionIndex: '-1', actionTotal: '38' },
+    { actionIndex: '39', actionTotal: '38' },
+  ]) {
+    const f = fixture(1);
+    f.intercept = (result, sql) => sql.includes('GROUP BY') ? { ...result,
+      data: (result.data as object[]).map(row => ({ ...row, ...progress })) } : result;
+    assert.equal(await f.archive.read(taskId, '0-0', undefined, id(1)), null, JSON.stringify(progress));
+  }
+});
+
 test('SLS 任务及环境隔离，错误 marker 或返回行拒绝使用', async () => {
   const f = fixture();
   for (const row of [{ environment: 'prod' }, { taskId: 'another-task' }]) {
