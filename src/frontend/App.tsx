@@ -125,9 +125,7 @@ function LoginHelp({ mainTask = 'daily' }: { mainTask?: MainTask }) {
           {[
             ['启动模拟器', '登录账户，选择登录渠道并点击「启动模拟器获取二维码」。同账户的多个页面共用一个实例。'],
             ['等待准备完成', '保持页面打开，页面会自动更新准备进度和二维码。'],
-            ['扫码授权并执行', mainTask === 'arena_weekly'
-              ? 'QQ 区使用手机 QQ，微信区使用微信扫描二维码并确认授权。周胜自动执行仍在接入，当前用于客户端流程测试。'
-              : 'QQ 区使用手机 QQ，微信区使用微信扫描二维码并确认授权；进入游戏后自动继续执行日常脚本。'],
+            ['扫码授权并执行', `QQ 区使用手机 QQ，微信区使用微信扫描二维码并确认授权；进入游戏后自动继续执行${mainTask === 'arena_weekly' ? '决斗场周胜任务' : '日常脚本'}。`],
           ].map(([title, description], index) => (
             <Item key={title} role="listitem" size="sm" className="items-start px-0">
               <ItemMedia variant="icon" className="size-8 rounded-lg bg-primary/10 text-primary">
@@ -143,7 +141,7 @@ function LoginHelp({ mainTask = 'daily' }: { mainTask?: MainTask }) {
         <Alert>
           <Clock3 aria-hidden="true" />
           <AlertTitle>二维码失效后，点击「刷新二维码」</AlertTitle>
-          <AlertDescription>实例分配后保留 10 分钟供扫码，刷新不会延长占用时间。超时未扫码成功会自动关闭实例。{mainTask === 'arena_weekly' ? '本次申请使用决斗场周胜任务，自动执行仍在接入。' : '扫码成功后继续执行日常。'}</AlertDescription>
+          <AlertDescription>实例分配后保留 10 分钟供扫码，刷新不会延长占用时间。超时未扫码成功会自动关闭实例。扫码成功后继续执行{mainTask === 'arena_weekly' ? '周胜任务' : '日常'}。</AlertDescription>
         </Alert>
       </DialogContent>
     </Dialog>
@@ -535,7 +533,7 @@ export default function App() {
                 <CircleAlert aria-hidden="true" />
                 <AlertTitle className="text-sm font-medium text-foreground">{isArenaWeekly ? '本次选择：决斗场周胜' : '确认登录后，日常会接着跑'}</AlertTitle>
                 <AlertDescription className="text-sm leading-6">
-                  {isArenaWeekly ? `使用手机${scanApp}扫码授权。本次申请按周胜任务提交，执行功能仍在开发。` : `在手机${scanApp}上确认登录就好。进入游戏后会自动清日常，下方可以查看进度。`}
+                  {`在手机${scanApp}上确认登录就好。进入游戏后会自动${isArenaWeekly ? '刷周胜' : '清日常'}，下方可以查看进度。`}
                 </AlertDescription>
               </Alert>
               {session && (

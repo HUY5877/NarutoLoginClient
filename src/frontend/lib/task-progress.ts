@@ -58,7 +58,7 @@ export function deriveTaskProgress(input: ProgressInput) {
   let hint = '点击「启动模拟器获取二维码」后才加载二维码；执行记录可独立恢复。';
   if (!task) {
     if (phase === 'expired') {
-      steps[0].state = 'failed'; steps[0].description = '本次申请确认已超时，请点击重新生成二维码';
+      steps[0].state = 'failed'; steps[0].description = '本次申请确认已超时，请点击「启动模拟器获取二维码」重试';
       summary = '申请确认超时'; tone = 'danger'; hint = '重新操作时会先检查服务器上的有效申请。';
     }
     return { steps, summary, tone, hint, taskId: null, mainTask };
