@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { FileText, X } from 'lucide-react';
-import { dailyStatusLabels, type DailyTask } from '../../shared/admin';
+import type { DailyTask } from '../../shared/admin';
 import { useAdminTaskLogs } from '@/hooks/use-admin-task-logs';
-import { formatAdminDate } from '@/lib/admin';
+import { adminTaskStatusLabel, formatAdminDate } from '@/lib/admin';
+import { mainTaskFailureMessage } from '@/lib/main-task';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -13,7 +14,8 @@ export function AdminTaskLogDetails({ task, onAccessLost }: { task: DailyTask; o
   const { status, logs, loading, error, loadMore, hasMore, truncated, logsPending } = useAdminTaskLogs(task.id, open, onAccessLost);
   const currentStatus = task.status === 'completed' && task.completedAt ? 'completed' : status ?? task.status;
   const failed = ['failed', 'interrupted', 'expired'].includes(currentStatus);
-  const failureMessage = failed ? task.errorMessage : undefined;
+  const failureMessage = !failed ? undefined : task.mainTask === 'arena_weekly' && task.errorMessage
+    ? mainTaskFailureMessage(task.mainTask, task.errorCode, task.errorMessage) : task.errorMessage;
   const errorCode = failed ? task.errorCode : undefined;
 
   return <Dialog open={open} onOpenChange={setOpen}>
@@ -28,7 +30,7 @@ export function AdminTaskLogDetails({ task, onAccessLost }: { task: DailyTask; o
       <DialogHeader className="shrink-0 border-b px-4 py-4 pr-16">
         <DialogTitle className="text-base font-semibold">日志详情</DialogTitle>
         <DialogDescription className="text-xs [overflow-wrap:anywhere]">{task.username} · {formatAdminDate(task.requestedAt)} 申请</DialogDescription>
-        <div className="pt-1"><Badge variant={failed ? 'destructive' : 'secondary'}>{dailyStatusLabels[currentStatus]}</Badge></div>
+        <div className="pt-1"><Badge variant={failed ? 'destructive' : 'secondary'}>{adminTaskStatusLabel(currentStatus, task.mainTask)}</Badge></div>
       </DialogHeader>
       <DialogClose asChild>
         <Button type="button" variant="ghost" size="icon" className="absolute right-2 top-2 z-10 size-11" aria-label="关闭日志详情"><X aria-hidden="true" /></Button>

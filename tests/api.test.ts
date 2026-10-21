@@ -129,7 +129,7 @@ test('user management and daily task APIs enforce admin identity, JSON and same-
   };
   await withApi({ admin: adminService }, async base => {
     const routes = [{ path: '/api/admin/users', method: 'GET' }, { path: `/api/admin/users/${user.id}`, method: 'GET' },
-      { path: '/api/admin/daily-tasks?date=2026-10-07&page=2', method: 'GET' }, { path: '/api/admin/users', method: 'POST' },
+      { path: '/api/admin/daily-tasks?date=2026-10-07&page=2&mainTask=arena_weekly', method: 'GET' }, { path: '/api/admin/users', method: 'POST' },
       { path: `/api/admin/users/${user.id}`, method: 'PATCH' }, { path: `/api/admin/users/${user.id}`, method: 'DELETE' },
       { path: `/api/admin/daily-tasks/${id}/failure-details`, method: 'GET' },
       { path: `/api/admin/daily-tasks/${id}/logs`, method: 'GET' },
@@ -157,7 +157,7 @@ test('user management and daily task APIs enforce admin identity, JSON and same-
     assert.equal(calls.length, 9);
     assert.ok(calls.every(call => call[1] === admin.id));
     assert.equal(calls[2][0], 'daily');
-    assert.deepEqual({ ...(calls[2][2] as object) }, { date: '2026-10-07', page: '2' });
+    assert.deepEqual({ ...(calls[2][2] as object) }, { date: '2026-10-07', page: '2', mainTask: 'arena_weekly' });
     assert.deepEqual(calls[3], ['create', admin.id, mutation]);
     assert.deepEqual(calls[4], ['update', admin.id, user.id, mutation]);
     assert.deepEqual(calls[5], ['delete', admin.id, user.id]);

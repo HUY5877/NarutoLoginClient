@@ -115,7 +115,7 @@ test('recent history includes today and six previous Beijing dates with an exclu
   } }, [run]);
   assert.deepEqual(await f.service.dailyTasks(admin, { page: '2' }), {
     items: [{ id, username: user.username, requestedAt: event.createdAt, scannedAt: run.authorizedAt,
-      completedAt: run.finishedAt, status: 'completed', loginType: 'android_qq' }], total: 21, page: 2, pageSize: 20, date: '2026-10-09', startDate: '2026-10-03', timeZone: 'Asia/Shanghai',
+      completedAt: run.finishedAt, status: 'completed', loginType: 'android_qq', mainTask: 'daily' }], total: 21, page: 2, pageSize: 20, date: '2026-10-09', startDate: '2026-10-03', mainTask: 'daily', timeZone: 'Asia/Shanghai',
   });
   assert.deepEqual(f.calls, [[id]]);
   const beforeMidnight = fixture({ listDailyEvents: async (start, end) => {
@@ -131,6 +131,51 @@ test('日常列表显示申请保存的渠道，历史缺失值默认安卓 QQ',
   const f = fixture({ listDailyEvents: async () => ({ items, total: items.length }) });
   assert.deepEqual((await f.service.dailyTasks(admin, {})).items.map(task => task.loginType),
     ['android_qq', 'ios_qq', 'android_wechat', 'ios_wechat', 'android_qq']);
+});
+
+test('近七天扫码列表按选定主任务分页，缺省日常并返回每条申请的任务类型', async () => {
+  for (const selected of [undefined, 'daily', 'arena_weekly'] as const) {
+    const mainTask = selected ?? 'daily';
+    const event: DailyEvent = { id, username: user.username, createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 60_000).toISOString(), status: 'queued',
+      ...(selected ? { userOptions: { mainTask: selected, equipmentStamina: true, secretRealmMode: 'all' } } : {}) };
+    const f = fixture({ listDailyEvents: async (start, end, offset, limit, selectedTask) => {
+      assert.equal(selectedTask, mainTask);
+      assert.equal(start.toISOString(), '2026-10-08T16:00:00.000Z');
+      assert.equal(end.toISOString(), '2026-10-09T16:00:00.000Z');
+      assert.equal(offset, 20); assert.equal(limit, 20);
+      return { items: [event], total: 21 };
+    } });
+    const result = await f.service.dailyTasks(admin, { date: '2026-10-09', page: '2', mainTask: selected });
+    assert.equal(result.mainTask, mainTask);
+    assert.equal(result.items[0].mainTask, mainTask);
+    assert.equal(result.page, 2); assert.equal(result.total, 21);
+    assert.equal(result.selectedDate, '2026-10-09');
+  }
+});
+
+test('近七天扫码列表在访问数据库前拒绝非法任务类型', async () => {
+  const f = fixture({ initialize: fail });
+  for (const mainTask of ['', 'all', 'arena', 'DAILY', "daily' OR 1=1", ['daily'], ['daily', 'arena_weekly'], { mainTask: 'daily' }, 0, null]) {
+    await assert.rejects(f.service.dailyTasks(admin, { mainTask }), errorIs(400, 'INVALID_MAIN_TASK'));
+  }
+});
+
+test('周胜筛选保留真实失败和完成状态，不套用首次秘境完成规则', async () => {
+  const events: DailyEvent[] = ['failed', 'completed'].map((_, index) => ({ id: `${id}-${index}`, username: user.username,
+    createdAt: new Date(now - 5000).toISOString(), expiresAt: new Date(now - 1000).toISOString(), status: 'failed',
+    userOptions: { mainTask: 'arena_weekly', equipmentStamina: true, secretRealmMode: 'all' } }));
+  const runs: TaskRun[] = (['failed', 'completed'] as const).map((status, index) => ({ taskId: events[index].id,
+    status, errorCode: status === 'failed' ? 'arena_weekly_failed' : undefined, updatedAt: new Date(now).toISOString(),
+    startedAt: new Date(now - 4000).toISOString(), secretRealmCompletedAt: new Date(now - 2000).toISOString(),
+    finishedAt: new Date(now).toISOString() }));
+  const f = fixture({ listDailyEvents: async () => ({ items: events, total: events.length }) }, runs);
+  const result = await f.service.dailyTasks(admin, { mainTask: 'arena_weekly' });
+  assert.equal(result.mainTask, 'arena_weekly');
+  assert.deepEqual(result.items.map(item => item.mainTask), ['arena_weekly', 'arena_weekly']);
+  assert.deepEqual(result.items.map(item => item.status), ['failed', 'completed']);
+  assert.deepEqual(result.items.map(item => item.completedAt), [null, runs[1].finishedAt]);
+  assert.equal(result.items[0].errorCode, 'arena_weekly_failed');
 });
 
 test('daily date filters use one Beijing day and retain pagination across calendar boundaries', async () => {

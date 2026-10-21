@@ -8,6 +8,7 @@ import type { DailyTask, DailyTaskFailureDetails, DailyTaskLogPage, DailyTaskPag
 import { DEFAULT_LOGIN_TYPE } from '../shared/login-types.js';
 import { taskFailureMessage } from '../shared/task-errors.js';
 import { getDailyMilestoneAt } from '../shared/daily-completion.js';
+import { getMainTask } from '../shared/user-options.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const pageSize = 20;
@@ -93,8 +94,12 @@ export class AdminService {
     if (id === admin.id) throw new ApiError(409, '不能删除当前登录的管理员账号。', 'USER_SELF_PROTECTED');
     await this.database(store => store.deleteUser(admin.id, id));
   }
-  async dailyTasks(admin: User, query: { page?: unknown; date?: unknown }): Promise<DailyTaskPage> {
+  async dailyTasks(admin: User, query: { page?: unknown; date?: unknown; mainTask?: unknown }): Promise<DailyTaskPage> {
     requireAdmin(admin);
+    const mainTask = query.mainTask === undefined ? 'daily' : query.mainTask;
+    if (mainTask !== 'daily' && mainTask !== 'arena_weekly') {
+      throw new ApiError(400, '请选择日常任务或决斗场周胜。', 'INVALID_MAIN_TASK');
+    }
     const page = pageNumber(query.page), now = this.now();
     const date = new Date(now + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const midnight = new Date(`${date}T00:00:00+08:00`).getTime();
@@ -106,7 +111,7 @@ export class AdminService {
     const startDate = dates[6];
     const start = new Date(`${selectedDate ?? startDate}T00:00:00+08:00`);
     const end = new Date((selectedDate ? start.getTime() : midnight) + 24 * 60 * 60 * 1000);
-    const events = await this.database(store => store.listDailyEvents(start, end, (page - 1) * pageSize, pageSize));
+    const events = await this.database(store => store.listDailyEvents(start, end, (page - 1) * pageSize, pageSize, mainTask));
     const summaries = await this.options.runs.getSummaries(events.items.map(event => event.id));
     const items: DailyTask[] = events.items.map((event, index) => {
       const run = summaries[index];
@@ -115,6 +120,7 @@ export class AdminService {
       const status: DailyTask['status'] = milestoneCompleted ? 'completed' : run?.status ?? (event.status === 'failed' ? 'failed'
         : Date.parse(event.expiresAt) <= now ? 'unavailable' : event.status === 'qr_ready' ? 'waiting_scan' : event.status);
       return { id: event.id, username: event.username, requestedAt: event.createdAt, loginType: event.loginType ?? DEFAULT_LOGIN_TYPE,
+        mainTask: getMainTask(event.userOptions),
         scannedAt: run?.authorizedAt ?? null,
         // A later sweep failure cannot erase an already recorded daily milestone.
         completedAt: run?.status === 'completed' && run.startedAt ? run.finishedAt : milestoneCompleted ? milestoneAt : null,
@@ -124,7 +130,7 @@ export class AdminService {
           errorMessage: taskFailureMessage(run?.errorCode, '未记录具体错误原因。'),
         } : {}) };
     });
-    return { items, total: events.total, page, pageSize, date, startDate,
+    return { items, total: events.total, page, pageSize, date, startDate, mainTask,
       ...(selectedDate ? { selectedDate } : {}), timeZone: 'Asia/Shanghai' };
   }
   async dailyTaskFailureDetails(admin: User, taskId: string): Promise<DailyTaskFailureDetails> {

@@ -1,5 +1,6 @@
-import { dailyStatusLabels, type DailyTaskPage, type DailyTaskFailureDetails, type ManagedUser, type PageResult, type MonthlyStatsPage } from '../../shared/admin';
+import { dailyStatusLabels, type DailyStatus, type DailyTaskPage, type DailyTaskFailureDetails, type ManagedUser, type PageResult, type MonthlyStatsPage } from '../../shared/admin';
 import { parseLoginType } from '../../shared/login-types';
+import { mainTasks, type MainTask } from '../../shared/user-options';
 
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const date = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value));
@@ -23,16 +24,22 @@ export function isUsersPage(value: unknown): value is PageResult<ManagedUser> {
 }
 export function isDailyPage(value: unknown): value is DailyTaskPage {
   return isPage(value) && object(value) && calendarDate(value.date)
+    && (value.mainTask === undefined || mainTasks.includes(value.mainTask as MainTask))
     && (value.startDate === undefined || calendarDate(value.startDate))
     && (value.selectedDate === undefined || calendarDate(value.selectedDate) && value.selectedDate <= value.date
       && (value.startDate === undefined || value.selectedDate >= value.startDate))
     && value.timeZone === 'Asia/Shanghai' && value.items.every(item => object(item)
       && typeof item.id === 'string' && typeof item.username === 'string' && date(item.requestedAt)
+      && (item.mainTask === undefined || mainTasks.includes(item.mainTask as MainTask))
+      && (item.mainTask ?? 'daily') === (value.mainTask ?? 'daily')
       && parseLoginType(item.loginType) !== null
       && nullableDate(item.scannedAt) && nullableDate(item.completedAt)
       && (item.errorCode === undefined || typeof item.errorCode === 'string' && /^[a-z0-9_]{1,64}$/.test(item.errorCode))
       && (item.errorMessage === undefined || typeof item.errorMessage === 'string')
       && typeof item.status === 'string' && Object.hasOwn(dailyStatusLabels, item.status));
+}
+export function adminTaskStatusLabel(status: DailyStatus, mainTask: MainTask = 'daily') {
+  return status === 'running_daily' && mainTask === 'arena_weekly' ? '刷周胜中' : dailyStatusLabels[status];
 }
 export function isMonthlyStatsPage(value: unknown): value is MonthlyStatsPage {
   const positive = (number: unknown) => Number.isSafeInteger(number) && (number as number) > 0;

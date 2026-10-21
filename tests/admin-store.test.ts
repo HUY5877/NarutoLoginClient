@@ -95,19 +95,23 @@ test('store defends self mutations and missing targets and deletes through the e
   }
 });
 
-test('日常列表的总数与分页仅统计日常任务，缺省主任务兼容旧记录且不读取内部凭证', async t => {
+test('扫码列表的总数与分页使用同一主任务条件，缺省日常兼容旧记录且不读取内部凭证', async t => {
   const f = fixture(t), start = new Date('2026-10-07T16:00:00Z'), end = new Date('2026-10-08T16:00:00Z');
-  const result = await f.store.listDailyEvents(start, end, 20, 20);
-  assert.equal(result.total, 41); assert.equal(result.items[0].createdAt, now.toISOString());
-  assert.doesNotMatch(JSON.stringify(result), /accessToken|private-token/);
-  const query = f.calls.find(call => call.sql.includes('FROM naruto_login.login_events e'))!;
-  const count = f.calls.find(call => call.sql.startsWith('SELECT count(*)') && call.sql.includes('FROM naruto_login.login_events'))!;
-  assert.match(count.sql, /AND COALESCE\(user_options ->> 'mainTask', 'daily'\) = 'daily'/);
-  assert.match(query.sql, /AND COALESCE\(e.user_options ->> 'mainTask', 'daily'\) = 'daily'/);
-  assert.match(query.sql, /e.user_options AS "userOptions"/);
-  assert.match(query.sql, /e.created_at >= \$1 AND e.created_at < \$2/);
-  assert.doesNotMatch(query.sql, /access_token|request_id|password/);
-  assert.deepEqual(query.values, [start, end, 20, 20]);
+  for (const mainTask of [undefined, 'daily', 'arena_weekly'] as const) {
+    const result = await f.store.listDailyEvents(start, end, 20, 20, mainTask);
+    assert.equal(result.total, 41); assert.equal(result.items[0].createdAt, now.toISOString());
+    assert.doesNotMatch(JSON.stringify(result), /accessToken|private-token/);
+    const query = f.calls.filter(call => call.sql.includes('FROM naruto_login.login_events e')).at(-1)!;
+    const count = f.calls.filter(call => call.sql.startsWith('SELECT count(*)') && call.sql.includes('FROM naruto_login.login_events')).at(-1)!;
+    assert.match(count.sql, /AND COALESCE\(user_options ->> 'mainTask', 'daily'\) = \$3/);
+    assert.match(query.sql, /AND COALESCE\(e.user_options ->> 'mainTask', 'daily'\) = \$3/);
+    assert.match(query.sql, /e.user_options AS "userOptions"/);
+    assert.match(query.sql, /e.created_at >= \$1 AND e.created_at < \$2/);
+    assert.doesNotMatch(query.sql, /access_token|request_id|password/);
+    assert.deepEqual(count.values, [start, end, mainTask ?? 'daily']);
+    assert.deepEqual(query.values, [start, end, mainTask ?? 'daily', 20, 20]);
+    assert.match(query.sql, /LIMIT \$4 OFFSET \$5/);
+  }
 });
 
 test('日常列表读取持久选项供首次完成判定，兼容旧记录且保留跳过秘境选择', async t => {

@@ -47,6 +47,22 @@ test('daily pages validate the selected calendar date within the available histo
   assert.equal(isDailyPage({ ...page, startDate: '2026-02-25', date: '2026-03-02', selectedDate: '2026-02-30' }), false);
 });
 
+test('扫码列表校验任务筛选并拒绝混入另一种任务，旧记录仍按日常处理', () => {
+  const item = { id: 'task', username: 'Naruto', requestedAt: user.createdAt,
+    scannedAt: null, completedAt: null, status: 'running_daily' };
+  const page = { items: [item], total: 1, page: 1, pageSize: 20, date: '2026-10-09', timeZone: 'Asia/Shanghai' };
+  assert.ok(isDailyPage(page));
+  assert.ok(isDailyPage({ ...page, mainTask: 'daily' }));
+  assert.ok(isDailyPage({ ...page, mainTask: 'arena_weekly', items: [{ ...item, mainTask: 'arena_weekly' }] }));
+  assert.ok(isDailyPage({ ...page, mainTask: 'arena_weekly', items: [], total: 0 }));
+  for (const mainTask of ['other', '', null, ['daily'], 1]) {
+    assert.equal(isDailyPage({ ...page, mainTask }), false);
+    assert.equal(isDailyPage({ ...page, items: [{ ...item, mainTask }] }), false);
+  }
+  assert.equal(isDailyPage({ ...page, mainTask: 'arena_weekly' }), false);
+  assert.equal(isDailyPage({ ...page, mainTask: 'daily', items: [{ ...item, mainTask: 'arena_weekly' }] }), false);
+});
+
 test('monthly leaderboard accepts both rankings and rejects malformed counts, days and filters', () => {
   const item = { userId: 'user', username: 'Naruto', rank: 1, requestCount: 9, requestDays: 3 };
   const page = { items: [item], total: 1, page: 1, pageSize: 20, month: '2026-10', sort: 'requests', totalRequests: 9, timeZone: 'Asia/Shanghai' };

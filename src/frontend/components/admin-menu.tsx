@@ -194,7 +194,7 @@ export function AdminMenu({ userId, refreshAuth, mobileAccount }: {
             <ClipboardCheck aria-hidden="true" />注册申请审核
           </DropdownMenuItem>
           <DropdownMenuItem className="py-2" onSelect={() => { openingDialogRef.current = true; setDailyOpen(true); }}>
-            <CalendarCheck aria-hidden="true" />近七天刷日常情况
+            <CalendarCheck aria-hidden="true" />近七天扫码情况
           </DropdownMenuItem>
           <DropdownMenuItem className="py-2" onSelect={() => { openingDialogRef.current = true; setMonthlyOpen(true); }}>
             <Trophy aria-hidden="true" />月度排行榜

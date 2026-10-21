@@ -1,4 +1,5 @@
 import type { LoginType } from './login-types';
+import type { MainTask } from './user-options';
 
 export interface ManagedUser {
   id: string;
@@ -19,6 +20,7 @@ export type DailyStatus = keyof typeof dailyStatusLabels;
 export interface DailyTask {
   id: string;
   loginType?: LoginType;
+  mainTask?: MainTask;
   username: string;
   requestedAt: string;
   scannedAt: string | null;
@@ -30,6 +32,7 @@ export interface DailyTask {
 export interface PageResult<T> { items: T[]; total: number; page: number; pageSize: number }
 export interface DailyTaskPage extends PageResult<DailyTask> {
   date: string; startDate?: string; selectedDate?: string; timeZone: 'Asia/Shanghai';
+  mainTask?: MainTask;
 }
 export type MonthlySort = 'requests' | 'days';
 export interface MonthlyUserStats {
