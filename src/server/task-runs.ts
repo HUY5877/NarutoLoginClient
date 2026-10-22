@@ -174,6 +174,29 @@ return {run, entries, upper, firstId, added, length, exists}
 `;
 // New tasks only keep a lightweight state/watermark in Redis, never a log stream.
 const archiveStateScript = `return redis.call('GET', KEYS[1])`;
+// Modify the original snapshot atomically, keeping private worker/attempt fields
+// and its expiry. Public TaskRun projections must never be written back here.
+const interruptRunScript = `
+local kind = redis.call('TYPE', KEYS[1]).ok
+if kind == 'none' then return 0 end
+if kind ~= 'string' then return -1 end
+local raw = redis.call('GET', KEYS[1])
+if not raw then return 0 end
+if #raw > 20000 then return -1 end
+local ok, run = pcall(cjson.decode, raw)
+if not ok or type(run) ~= 'table' or run.taskId ~= ARGV[1] then return -1 end
+if run.status == 'interrupted' then return 2 end
+if run.status == 'completed' or run.status == 'failed' or run.status == 'expired' then return 3 end
+if run.status ~= 'starting_emulator' and run.status ~= 'opening_game'
+  and run.status ~= 'preparing_qr' and run.status ~= 'waiting_scan'
+  and run.status ~= 'finishing_login' and run.status ~= 'running_daily' then return -1 end
+run.status = 'interrupted'
+run.errorCode = 'admin_interrupted'
+run.updatedAt = ARGV[2]
+run.finishedAt = ARGV[2]
+redis.call('SET', KEYS[1], cjson.encode(run), 'KEEPTTL')
+return 1
+`;
 function isGenericFailure(message: string, errorCode?: string): boolean {
   return message === taskFailureMessage(errorCode)
     || message === '日常任务执行失败，本次任务已停止。'
@@ -222,7 +245,7 @@ export class TaskRunService {
     const event = await this.database(store => store.getLatestForUser(userId));
     return { task: event ? this.publicTask(event) : null };
   }
-  private async readRedis(script: string, keys: string[], args: string[]): Promise<unknown> {
+  private async callRedis(script: string, keys: string[], args: string[]): Promise<unknown> {
     if (!this.config.redisUrl) throw new ApiError(503, 'Redis 未配置，请先配置 REDIS_URL。', 'REDIS_NOT_CONFIGURED');
     let connection: NonNullable<TaskRunService['connection']> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -247,11 +270,20 @@ export class TaskRunService {
       throw new ApiError(503, '任务日志暂时不可用，请稍后重试。', 'TASK_LOGS_UNAVAILABLE');
     } finally { if (timer) clearTimeout(timer); }
   }
+  async interrupt(taskId: string): Promise<{ taskId: string; status: 'interrupted' }> {
+    if (taskId !== taskId.trim() || !taskIdPattern.test(taskId)) throw new ApiError(400, '无效的任务编号。');
+    const result = await this.callRedis(interruptRunScript, [`${this.config.redisQueueKey}:runs:${taskId}`],
+      [taskId, new Date(this.now()).toISOString()]);
+    if (result === 0) throw new ApiError(404, '执行记录不存在或已过期，请刷新列表。', 'TASK_RUN_NOT_FOUND');
+    if (result === 3) throw new ApiError(409, '任务已经结束，无法中断，请刷新列表。', 'TASK_NOT_RUNNING');
+    if (result !== 1 && result !== 2) throw invalidData();
+    return { taskId, status: 'interrupted' };
+  }
   async getSummaries(taskIds: string[]): Promise<Array<TaskRun | null>> {
     if (!taskIds.length) return [];
     if (taskIds.length > 100 || taskIds.some(id => !taskIdPattern.test(id))) throw new ApiError(400, '无效的任务编号。');
     // GET only: the administrator list never dispatches work or reads worker logs.
-    const raw = await this.readRedis(`local results = {}
+    const raw = await this.callRedis(`local results = {}
       for i, key in ipairs(KEYS) do results[i] = redis.call('GET', key) or false end
       return results`, taskIds.map(id => `${this.config.redisQueueKey}:runs:${id}`), []);
     if (!Array.isArray(raw) || raw.length !== taskIds.length) throw invalidData();
@@ -263,7 +295,7 @@ export class TaskRunService {
     if (archived?.page) return this.failureDetails(taskId, archived.run, archived.page.logs.slice(0, failureLogLimit),
       archived.page.truncated || archived.page.hasMore);
     if (archived?.run?.logSource) return this.waitingFailure(taskId, archived.run);
-    const raw = await this.readRedis(failureSnapshotScript,
+    const raw = await this.callRedis(failureSnapshotScript,
       [`${this.config.redisQueueKey}:runs:${taskId}`, `${this.config.redisQueueKey}:logs:${taskId}`], [String(failureLogLimit + 1)]);
     if (!Array.isArray(raw) || raw.length !== 2 || !Array.isArray(raw[1]) || raw[1].length > failureLogLimit + 1) throw invalidData();
     const run = parseRun(raw[0], taskId);
@@ -311,7 +343,7 @@ export class TaskRunService {
     const archived = await this.readArchive(taskId, after, snapshot);
     if (archived?.page) return { taskId, status: archived.run?.status ?? null, ...archived.page, logsPending: false };
     if (archived?.run?.logSource) return this.waitingPage(taskId, archived.run, after, snapshot);
-    const raw = await this.readRedis(adminLogSnapshotScript,
+    const raw = await this.callRedis(adminLogSnapshotScript,
       [`${this.config.redisQueueKey}:runs:${taskId}`, `${this.config.redisQueueKey}:logs:${taskId}`],
       [after, snapshot ?? '', String(pageSize + 1)]);
     if (!Array.isArray(raw) || raw.length !== 7 || !Array.isArray(raw[1]) || raw[1].length > pageSize + 1
@@ -352,7 +384,7 @@ export class TaskRunService {
     let run: TaskRun | null = null;
     let redisFailure: unknown;
     try {
-      const raw = await this.readRedis(archiveStateScript, [`${this.config.redisQueueKey}:runs:${taskId}`], []);
+      const raw = await this.callRedis(archiveStateScript, [`${this.config.redisQueueKey}:runs:${taskId}`], []);
       run = parseRun(raw, taskId);
     } catch (error) { redisFailure = error; }
     // A rejection can publish its source before its first emit has a cursor. That gap is not completion.
@@ -382,7 +414,7 @@ export class TaskRunService {
     }
     if (archived?.run?.logSource) return { task: this.publicTask(event), run: archived.run, logs: [], nextCursor: after,
       hasMore: false, truncated: false, logsPending: archived.run.logSource === 'sls' };
-    const raw = await this.readRedis(snapshotScript,
+    const raw = await this.callRedis(snapshotScript,
       [`${this.config.redisQueueKey}:runs:${event.id}`, `${this.config.redisQueueKey}:logs:${event.id}`], [after, String(pageSize + 1)]);
     if (!Array.isArray(raw) || raw.length !== 5 || !Array.isArray(raw[1]) || raw[1].length > pageSize + 1
       || typeof raw[2] !== 'string' || raw[2] !== '' && !isStreamCursor(raw[2])

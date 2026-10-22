@@ -312,7 +312,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
         await f.open('近七天扫码情况');
         const list = f.page.getByRole('dialog', { name: '近七天扫码情况', exact: true });
         await list.getByRole('cell', { name: user.username, exact: true }).waitFor();
-        assert.deepEqual(await list.getByRole('columnheader').allTextContents(), ['用户名', '登录渠道', '申请时间', '扫描完成时间', '脚本执行完成时间', '任务状态', '日志详情']);
+        assert.deepEqual(await list.getByRole('columnheader').allTextContents(), ['用户名', '登录渠道', '申请时间', '扫描完成时间', '脚本执行完成时间', '任务状态', '操作']);
         assert.match(await list.innerText(), /08:02:00/); assert.match(await list.innerText(), /08:30:00/);
         assert.equal(await list.getByRole('button', { name: /的日志详情$/ }).count(), 12);
         await mkdir(path.join(repository, '.data/admin-preview'), { recursive: true });

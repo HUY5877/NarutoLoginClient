@@ -18,7 +18,7 @@ function fixture(overrides: Partial<AdminStore> = {}, runs: Array<TaskRun | null
   const store: AdminStore = { initialize: async () => {}, listUsers: fail, getManagedUser: fail, createUser: fail,
     updateUser: fail, deleteUser: fail, listDailyEvents: fail, listMonthlyStats: fail, ...overrides };
   const service = new AdminService({ store, now: () => clock, runs: {
-    getSummaries: async ids => { calls.push(ids); return runs; }, getFailureDetails: fail, getAdminLogPage: fail,
+    getSummaries: async ids => { calls.push(ids); return runs; }, getFailureDetails: fail, getAdminLogPage: fail, interrupt: fail,
   } });
   return { service, store, calls };
 }
@@ -32,12 +32,12 @@ test('all administrator methods reject ordinary accounts before touching storage
   for (const operation of [() => service.listUsers(normal, {}), () => service.getUser(normal, id),
     () => service.createUser(normal, {}), () => service.updateUser(normal, id, {}), () => service.deleteUser(normal, id),
     () => service.dailyTasks(normal, {}), () => service.monthlyStats(normal, {}), () => service.dailyTaskFailureDetails(normal, id),
-    () => service.dailyTaskLogs(normal, id)]) await assert.rejects(operation(), errorIs(403, 'ADMIN_REQUIRED'));
+    () => service.dailyTaskLogs(normal, id), () => service.interruptDailyTask(normal, id)]) await assert.rejects(operation(), errorIs(403, 'ADMIN_REQUIRED'));
 });
 
 test('administrator failure details read the requested task without dispatching jobs or querying a user-owned event', async () => {
   const details = { taskId: id, errorCode: 'daily_failed', errorMessage: '具体错误：未找到挑战按钮', logs: [], truncated: false };
-  const service = new AdminService({ runs: { getSummaries: fail, getAdminLogPage: fail, getFailureDetails: async taskId => {
+  const service = new AdminService({ runs: { getSummaries: fail, getAdminLogPage: fail, interrupt: fail, getFailureDetails: async taskId => {
     assert.equal(taskId, id); return details;
   } } });
   assert.deepEqual(await service.dailyTaskFailureDetails(admin, id), details);
@@ -47,7 +47,7 @@ test('administrator log pages forward the snapshot and cursor without owner look
   const page = { taskId: id, status: 'completed' as const, logs: [], nextCursor: '1-1',
     snapshotCursor: '1-2', hasMore: true, truncated: false };
   const calls: unknown[][] = [];
-  const service = new AdminService({ runs: { getSummaries: fail, getFailureDetails: fail,
+  const service = new AdminService({ runs: { getSummaries: fail, getFailureDetails: fail, interrupt: fail,
     getAdminLogPage: async (...args) => { calls.push(args); return page; } } });
   assert.deepEqual(await service.dailyTaskLogs(admin, id), page);
   assert.deepEqual(await service.dailyTaskLogs(admin, id, '1-1', '1-2'), page);

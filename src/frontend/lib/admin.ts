@@ -41,6 +41,13 @@ export function isDailyPage(value: unknown): value is DailyTaskPage {
 export function adminTaskStatusLabel(status: DailyStatus, mainTask: MainTask = 'daily') {
   return status === 'running_daily' && mainTask === 'arena_weekly' ? '刷周胜中' : dailyStatusLabels[status];
 }
+export function canInterruptDailyTask(status: DailyStatus) {
+  return ['starting_emulator', 'opening_game', 'preparing_qr', 'waiting_scan', 'finishing_login', 'running_daily'].includes(status);
+}
+export function isTaskInterruptResponse(value: unknown, taskId: string): value is { taskId: string; status: 'interrupted' } {
+  return object(value) && value.taskId === taskId && value.status === 'interrupted'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(taskId);
+}
 export function isMonthlyStatsPage(value: unknown): value is MonthlyStatsPage {
   const positive = (number: unknown) => Number.isSafeInteger(number) && (number as number) > 0;
   return isPage(value) && object(value) && typeof value.month === 'string' && /^[2-9]\d{3}-(0[1-9]|1[0-2])$/.test(value.month)

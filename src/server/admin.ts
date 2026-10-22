@@ -39,7 +39,7 @@ function userInput(body: unknown, creating: boolean): UserChanges {
 export class AdminService {
   private readonly now: () => number;
   constructor(private readonly options: {
-    store?: AdminStore; runs: Pick<TaskRunService, 'getSummaries' | 'getFailureDetails' | 'getAdminLogPage'>; now?: () => number;
+    store?: AdminStore; runs: Pick<TaskRunService, 'getSummaries' | 'getFailureDetails' | 'getAdminLogPage' | 'interrupt'>; now?: () => number;
   }) { this.now = options.now ?? Date.now; }
 
   private async database<T>(run: (store: AdminStore) => Promise<T>): Promise<T> {
@@ -136,6 +136,11 @@ export class AdminService {
   async dailyTaskFailureDetails(admin: User, taskId: string): Promise<DailyTaskFailureDetails> {
     requireAdmin(admin);
     return await this.options.runs.getFailureDetails(taskId);
+  }
+  async interruptDailyTask(admin: User, taskId: string) {
+    requireAdmin(admin);
+    if (taskId !== taskId.trim() || !uuid.test(taskId)) throw new ApiError(400, '无效的任务编号。');
+    return await this.options.runs.interrupt(taskId);
   }
   async dailyTaskLogs(admin: User, taskId: string, after = '0-0', snapshot?: string): Promise<DailyTaskLogPage> {
     requireAdmin(admin);

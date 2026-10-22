@@ -17,6 +17,7 @@ const taskFailureMessages = {
   daily_timeout: '日常任务执行超时，请查看执行日志。',
   daily_failed: '日常任务执行失败，请查看执行日志。',
   instance_cleanup_failed: '游戏环境清理失败，请联系管理员检查模拟器状态。',
+  admin_interrupted: '管理员已中断任务，请重新申请。',
 } as const;
 export type TaskFailureCode = keyof typeof taskFailureMessages;
 export function knownTaskFailureCode(code: unknown): TaskFailureCode | undefined {

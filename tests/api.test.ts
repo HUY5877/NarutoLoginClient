@@ -113,6 +113,7 @@ test('user management and daily task APIs enforce admin identity, JSON and same-
   const calls: unknown[][] = [];
   const managed = { ...user, isInvalid: false, createdAt: new Date(start).toISOString(), applicationStatus: null };
   const adminService: NonNullable<Dependencies['admin']> = {
+    interruptDailyTask: async () => assert.fail('unexpected interruption'),
     listUsers: async (actor, query) => { calls.push(['list', actor.id, query]); return { items: [managed], total: 1, page: 1, pageSize: 20 }; },
     getUser: async (actor, target) => { calls.push(['get', actor.id, target]); return { user: managed }; },
     createUser: async (actor, body) => { calls.push(['create', actor.id, body]); return { user: managed }; },
