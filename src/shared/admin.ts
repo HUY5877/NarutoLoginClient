@@ -13,6 +13,15 @@ export interface ManagedUser {
   applicationStatus: 'pending' | 'approved' | 'rejected' | null;
 }
 
+export const userStatusLabels = { enabled: '已启用', pending: '待审核', rejected: '已拒绝', disabled: '已停用' } as const;
+export type UserStatus = keyof typeof userStatusLabels;
+export type UserStatusFilter = UserStatus | 'all';
+export function getUserStatus(user: Pick<ManagedUser, 'isInvalid' | 'applicationStatus'>): UserStatus {
+  if (!user.isInvalid) return 'enabled';
+  if (user.applicationStatus === 'pending' || user.applicationStatus === 'rejected') return user.applicationStatus;
+  return 'disabled';
+}
+
 export const dailyStatusLabels = {
   queued: '排队中', starting_emulator: '启动模拟器', opening_game: '打开游戏',
   preparing_qr: '生成二维码', waiting_scan: '等待扫码', finishing_login: '进入游戏',

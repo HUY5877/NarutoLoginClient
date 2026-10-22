@@ -6,6 +6,7 @@ import { UserManagementError, UsernameTakenError, type AdminStore, type DailyEve
 import type { User } from '../src/server/auth.js';
 import type { TaskRun } from '../src/server/task-runs.js';
 import type { ManagedUser } from '../src/shared/admin.js';
+import * as adminTypes from '../src/shared/admin.js';
 import type { UserOptions } from '../src/shared/user-options.js';
 
 const admin: User = { id: '10000000-0000-4000-8000-000000000001', username: 'Admin', isAdmin: true };
@@ -61,6 +62,42 @@ test('user search is validated, trimmed and paginated without silently dropping 
   assert.deepEqual(await f.service.listUsers(admin, { search: ' Naru_to ', page: '2' }), { items: [user], total: 41, page: 2, pageSize: 20 });
   for (const page of ['0', '-1', '1.1', '01', '1000000', ['1', '2']]) await assert.rejects(f.service.listUsers(admin, { page }), errorIs(400, 'INVALID_PAGE'));
   for (const search of [['x'], 'x'.repeat(101)]) await assert.rejects(f.service.listUsers(admin, { search }), errorIs(400, 'INVALID_SEARCH'));
+});
+
+test('用户状态按是否启用及最新申请互斥分类，启用优先于申请审核状态', () => {
+  assert.deepEqual(adminTypes.userStatusLabels, { enabled: '已启用', pending: '待审核', rejected: '已拒绝', disabled: '已停用' });
+  const cases = [
+    { isInvalid: false, applicationStatus: null, expected: 'enabled' },
+    { isInvalid: false, applicationStatus: 'approved', expected: 'enabled' },
+    { isInvalid: false, applicationStatus: 'pending', expected: 'enabled' },
+    { isInvalid: false, applicationStatus: 'rejected', expected: 'enabled' },
+    { isInvalid: true, applicationStatus: 'pending', expected: 'pending' },
+    { isInvalid: true, applicationStatus: 'rejected', expected: 'rejected' },
+    { isInvalid: true, applicationStatus: null, expected: 'disabled' },
+    { isInvalid: true, applicationStatus: 'approved', expected: 'disabled' },
+  ] as const;
+  for (const { expected, ...value } of cases) assert.equal(adminTypes.getUserStatus(value), expected);
+});
+
+test('用户状态筛选与搜索分页一同传入存储，旧客户端缺省查看全部', async () => {
+  for (const status of [undefined, 'all', 'enabled', 'pending', 'rejected', 'disabled'] as const) {
+    const f = fixture({ listUsers: async (search, offset, limit, selectedStatus) => {
+      assert.equal(search, '群友_小明');
+      assert.equal(offset, 40); assert.equal(limit, 20);
+      assert.equal(selectedStatus, status ?? 'all');
+      return { items: [user], total: 41 };
+    } });
+    assert.deepEqual(await f.service.listUsers(admin, { search: ' 群友_小明 ', page: '3', status }),
+      { items: [user], total: 41, page: 3, pageSize: 20 });
+  }
+});
+
+test('用户状态筛选拒绝非法值，权限和参数校验均先于数据库访问', async () => {
+  const f = fixture({ initialize: fail });
+  for (const status of ['', 'approved', 'active', 'ALL', ' enabled ', "pending' OR 1=1", null, true, 0, ['all'], { status: 'all' }]) {
+    await assert.rejects(f.service.listUsers(admin, { status }), errorIs(400, 'INVALID_USER_STATUS'));
+  }
+  await assert.rejects(f.service.listUsers({ ...admin, isAdmin: false }, { status: 'enabled' }), errorIs(403, 'ADMIN_REQUIRED'));
 });
 
 test('管理员可按一百个 Unicode 字符的备注搜索，去掉两侧空白并保留分页', async () => {

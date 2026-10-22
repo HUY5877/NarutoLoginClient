@@ -106,7 +106,13 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
           }
           if (url.pathname === '/api/admin/users' && method === 'GET') {
             const search = (url.searchParams.get('search') || '').toLowerCase();
-            const filtered = state.users.filter(value => value.username.toLowerCase().includes(search) || (value.note ?? '').toLowerCase().includes(search));
+            const status = url.searchParams.get('status') || 'all';
+            const filtered = state.users.filter(value => {
+              const accountStatus = !value.isInvalid ? 'enabled' : value.applicationStatus === 'pending' ? 'pending'
+                : value.applicationStatus === 'rejected' ? 'rejected' : 'disabled';
+              return (status === 'all' || accountStatus === status)
+                && (value.username.toLowerCase().includes(search) || (value.note ?? '').toLowerCase().includes(search));
+            });
             const page = Number(url.searchParams.get('page') || 1);
             return reply({ items: filtered.slice((page - 1) * 20, page * 20), total: filtered.length, page, pageSize: 20 });
           }
@@ -132,6 +138,107 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       return { context, page, state, async open(name) { await page.getByRole('button', { name: /^(管理员|管理员账号)$/ }).click(); await page.getByRole('menuitem', { name }).click(); },
         async close() { await context.close(); assert.deepEqual(state.errors, []); } };
     }
+
+    await t.test('account status filters combine with search, preserve state and recover from editing the final page on desktop and mobile', async () => {
+      for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+        const f = await fixture(true, viewport, viewport.width < 768);
+        try {
+          f.state.users.push(...Array.from({ length: 21 }, (_, index) => ({ ...user, id: `pending-${index}`,
+            username: `Pending_${String(index).padStart(2, '0')}`, note: '筛选成员', isInvalid: true, applicationStatus: 'pending' })),
+            { ...user, id: 'enabled-pending', username: 'Enabled_Pending', note: '筛选成员', applicationStatus: 'pending' },
+            { ...user, id: 'rejected', username: 'Rejected_User', note: '筛选成员', isInvalid: true, applicationStatus: 'rejected' },
+            { ...user, id: 'disabled-null', username: 'Disabled_Null', isInvalid: true, applicationStatus: null },
+            { ...user, id: 'disabled-approved', username: 'Disabled_Approved', isInvalid: true, applicationStatus: 'approved' });
+          await f.open('用户管理');
+          const list = f.page.getByRole('dialog', { name: '用户管理', exact: true });
+          const picker = list.getByRole('combobox', { name: '筛选账号状态', exact: true });
+          const search = list.getByRole('textbox', { name: '搜索用户名或备注', exact: true });
+          await picker.waitFor();
+          assert.equal(await picker.innerText(), '全部状态');
+          assert.equal(await picker.getAttribute('data-slot'), 'select-trigger');
+          await list.getByText('共 27 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
+          assert.deepEqual([...new Set(f.state.adminReads)], ['/api/admin/users?search=&page=1']);
+          await picker.click();
+          assert.deepEqual(await f.page.getByRole('option').allTextContents(), ['全部状态', '已启用', '待审核', '已拒绝', '已停用']);
+          await f.page.getByRole('option', { name: '已启用', exact: true }).click();
+          await list.getByText('共 3 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
+          assert.equal(f.state.adminReads.at(-1), '/api/admin/users?search=&page=1&status=enabled');
+          await list.getByText('Enabled_Pending', { exact: true }).waitFor();
+          assert.equal(await list.getByText('Pending_00', { exact: true }).count(), 0);
+          await picker.click(); await f.page.getByRole('option', { name: '已拒绝', exact: true }).click();
+          await list.getByText('共 1 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
+          await list.getByText('Rejected_User', { exact: true }).waitFor();
+          assert.equal(f.state.adminReads.at(-1), '/api/admin/users?search=&page=1&status=rejected');
+          await picker.click(); await f.page.getByRole('option', { name: '已停用', exact: true }).click();
+          await list.getByText('共 2 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
+          await list.getByText('Disabled_Null', { exact: true }).waitFor();
+          await list.getByText('Disabled_Approved', { exact: true }).waitFor();
+          assert.equal(f.state.adminReads.at(-1), '/api/admin/users?search=&page=1&status=disabled');
+          await picker.click(); await f.page.getByRole('option', { name: '待审核', exact: true }).click();
+          await list.getByText('共 21 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
+          await list.getByRole('button', { name: '下一页', exact: true }).click();
+          await list.getByText('共 21 条 · 第 2 页 / 2 页', { exact: true }).waitFor();
+          assert.equal(f.state.adminReads.at(-1), '/api/admin/users?search=&page=2&status=pending');
+          await picker.click(); await f.page.getByRole('option', { name: '全部状态', exact: true }).click();
+          await list.getByText('共 27 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
+          assert.equal(f.state.adminReads.at(-1), '/api/admin/users?search=&page=1', 'Selecting all removes the status query and resets pagination');
+          await picker.click(); await f.page.getByRole('option', { name: '待审核', exact: true }).click();
+          await list.getByText('共 21 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
+          await list.getByRole('button', { name: '下一页', exact: true }).click();
+          await list.getByText('共 21 条 · 第 2 页 / 2 页', { exact: true }).waitFor();
+          await search.fill('筛选成员'); await list.getByRole('button', { name: '搜索', exact: true }).click();
+          await list.getByText('共 21 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
+          const keywordQuery = encodeURIComponent('筛选成员');
+          assert.equal(f.state.adminReads.at(-1), `/api/admin/users?search=${keywordQuery}&page=1&status=pending`);
+          assert.equal(await list.getByText('Enabled_Pending', { exact: true }).count(), 0, 'Keyword and status are applied together');
+          await list.getByRole('button', { name: '下一页', exact: true }).click();
+          await list.getByText('共 21 条 · 第 2 页 / 2 页', { exact: true }).waitFor();
+          const refreshResponse = f.page.waitForResponse(response => response.url().endsWith(`/api/admin/users?search=${keywordQuery}&page=2&status=pending`));
+          await list.getByRole('button', { name: '刷新', exact: true }).click(); await refreshResponse;
+          assert.equal(f.state.adminReads.at(-1), `/api/admin/users?search=${keywordQuery}&page=2&status=pending`);
+          await search.fill('尚未提交的搜索词');
+          await picker.click(); await f.page.getByRole('option', { name: '已启用', exact: true }).click();
+          await list.getByText('共 1 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
+          await list.getByText('Enabled_Pending', { exact: true }).waitFor();
+          assert.equal(f.state.adminReads.at(-1), `/api/admin/users?search=${keywordQuery}&page=1&status=enabled`, 'Status changes preserve the submitted keyword instead of the unsubmitted draft');
+          await list.getByRole('button', { name: 'Close', exact: true }).click(); await list.waitFor({ state: 'hidden' });
+          await f.open('用户管理'); await list.getByText('共 1 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
+          assert.equal(await picker.innerText(), '已启用');
+          assert.equal(f.state.adminReads.at(-1), `/api/admin/users?search=${keywordQuery}&page=1&status=enabled`);
+          await search.fill('不存在的用户名'); await list.getByRole('button', { name: '搜索', exact: true }).click();
+          await list.getByText('没有匹配的用户', { exact: true }).waitFor();
+          assert.equal(await picker.innerText(), '已启用');
+          assert.equal(await list.getByRole('button', { name: '下一页', exact: true }).isDisabled(), true);
+          await search.fill(''); await list.getByRole('button', { name: '搜索', exact: true }).click();
+          await list.getByText('共 3 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
+          await picker.click(); await f.page.getByRole('option', { name: '待审核', exact: true }).click();
+          await list.getByText('共 21 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
+          const box = await list.boundingBox();
+          assert.ok(box.x >= 0 && box.x + box.width <= viewport.width);
+          assert.equal(await list.evaluate(element => element.scrollWidth <= element.clientWidth), true);
+          await mkdir(path.join(repository, '.data/admin-preview'), { recursive: true });
+          await f.page.screenshot({ animations: 'disabled', path: path.join(repository, `.data/admin-preview/users-status-${viewport.width < 768 ? 'mobile' : 'desktop'}.png`) });
+          await list.getByRole('button', { name: '下一页', exact: true }).click();
+          await list.getByText('共 21 条 · 第 2 页 / 2 页', { exact: true }).waitFor();
+          await list.getByRole('button', { name: '编辑 Pending_20', exact: true }).click();
+          const edit = f.page.getByRole('dialog', { name: '编辑用户', exact: true });
+          await edit.getByLabel('账号状态', { exact: true }).click(); await f.page.getByRole('option', { name: '启用', exact: true }).click();
+          const readsBeforeSave = f.state.adminReads.length;
+          await edit.getByRole('button', { name: '保存修改', exact: true }).click();
+          await list.getByText('共 20 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
+          assert.equal(f.state.mutations.at(-1).body.isInvalid, false);
+          assert.equal(await picker.innerText(), '待审核');
+          assert.equal(f.state.adminReads.at(-1), '/api/admin/users?search=&page=1&status=pending');
+          assert.ok(f.state.adminReads.slice(readsBeforeSave).every(url => url.endsWith('&status=pending')), 'Editing never drops the selected status filter');
+          assert.equal(await list.getByText('Pending_20', { exact: true }).count(), 0);
+          assert.equal(await list.getByRole('button', { name: '下一页', exact: true }).isDisabled(), true);
+          await picker.click(); await f.page.getByRole('option', { name: '已启用', exact: true }).click();
+          await list.getByText('共 4 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
+          await list.getByText('Pending_20', { exact: true }).waitFor();
+          assert.equal(f.state.mutations.length, 1);
+        } finally { await f.close(); }
+      }
+    });
 
     await t.test('administrator notes can be created, viewed, searched and cleared without changing usernames on desktop and mobile', async () => {
       for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
@@ -223,18 +330,29 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       }
     });
 
-    await t.test('scan history and monthly ranking keep usernames with administrator-only notes below them', async () => {
+    await t.test('scan history prefers trimmed notes while logs and monthly rankings preserve the original username', async () => {
       for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
         const f = await fixture(true, viewport, viewport.width < 768);
         try {
           const note = '好友 <img src=x onerror=window.noteInjected=true>';
           f.state.users.find(value => value.id === user.id).note = note;
+          f.state.extraDaily.push(
+            { ...task, id: 'empty-note', username: 'Empty_Note', note: '' },
+            { ...task, id: 'blank-note', username: 'Whitespace_Note', note: '  \t  ' },
+            { ...task, id: 'padded-note', username: 'Padded_Note', note: '  同群好友  ' },
+            { ...task, id: 'weekly-note', username: 'Arena_Original', note: '  周胜好友  ', mainTask: 'arena_weekly' });
           await f.open('近七天扫码情况');
           const history = f.page.getByRole('dialog', { name: '近七天扫码情况', exact: true });
-          await history.getByText(`备注：${note}`, { exact: true }).waitFor();
-          const username = history.getByText(user.username, { exact: true });
-          assert.equal(await username.count(), 1);
-          assert.ok((await history.getByText(`备注：${note}`, { exact: true }).boundingBox()).y > (await username.boundingBox()).y);
+          await history.getByText(note, { exact: true }).waitFor();
+          assert.equal(await history.getByText(user.username, { exact: true }).count(), 0);
+          assert.equal(await history.getByText(`备注：${note}`, { exact: true }).count(), 0);
+          await history.getByText('Empty_Note', { exact: true }).waitFor();
+          await history.getByText('Whitespace_Note', { exact: true }).waitFor();
+          const trimmedNote = history.getByText('同群好友', { exact: true });
+          await trimmedNote.waitFor();
+          assert.equal(await trimmedNote.textContent(), '同群好友', 'The primary display name trims surrounding whitespace');
+          assert.equal(await history.getByText('Padded_Note', { exact: true }).count(), 0);
+          assert.doesNotMatch(await history.innerText(), /备注：/);
           assert.equal(await history.evaluate(element => element.scrollWidth <= element.clientWidth), true);
           assert.equal(await history.locator('img').count(), 0);
           assert.equal(await f.page.evaluate(() => window.noteInjected), undefined);
@@ -243,6 +361,44 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
           await logs.getByText(`备注：${note}`, { exact: true }).waitFor();
           assert.match(await logs.innerText(), new RegExp(user.username));
           assert.equal(await logs.locator('img').count(), 0);
+          assert.ok(f.state.adminReads.some(url => url.startsWith(`/api/admin/daily-tasks/${task.id}/logs?`)), 'Reading logs still addresses the real task ID');
+          await logs.getByRole('button', { name: '关闭日志详情', exact: true }).click(); await logs.waitFor({ state: 'hidden' });
+          const tableBefore = viewport.width >= 768 ? await history.getByRole('table').boundingBox() : null;
+          const longNote = 'N'.repeat(100);
+          f.state.extraDaily.push({ ...task, id: 'long-note', username: 'Long_Note', note: longNote });
+          await history.getByRole('button', { name: '刷新', exact: true }).click();
+          await history.getByText(longNote, { exact: true }).waitFor();
+          assert.equal(await history.getByText('Long_Note', { exact: true }).count(), 0);
+          assert.equal(await history.evaluate(element => element.scrollWidth <= element.clientWidth), true);
+          if (tableBefore) assert.ok((await history.getByRole('table').boundingBox()).width <= tableBefore.width + 1,
+            'A long primary display name must not widen the desktop table');
+
+          // The shared mock normalizes absent notes to an empty string; this one response exercises an older wire format without note.
+          const missingNoteTask = { ...task, id: 'missing-note', username: 'Missing_Note' };
+          delete missingNoteTask.note;
+          await f.page.route('**/api/admin/daily-tasks?*', route => route.fulfill({ status: 200, json: {
+            items: [missingNoteTask], total: 1, page: 1, pageSize: 20, mainTask: 'daily', selectedDate: '2026-10-08',
+            startDate: '2026-10-02', date: '2026-10-08', timeZone: 'Asia/Shanghai',
+          } }), { times: 1 });
+          await history.getByRole('button', { name: '刷新', exact: true }).click();
+          await history.getByText('Missing_Note', { exact: true }).waitFor();
+          assert.doesNotMatch(await history.innerText(), /备注：/);
+
+          await history.getByRole('combobox', { name: '任务类型', exact: true }).click();
+          await f.page.getByRole('option', { name: '刷周胜', exact: true }).click();
+          const weeklyName = history.getByText('周胜好友', { exact: true });
+          await weeklyName.waitFor();
+          assert.equal(await weeklyName.textContent(), '周胜好友');
+          assert.equal(await history.getByText('Arena_Original', { exact: true }).count(), 0);
+          assert.doesNotMatch(await history.innerText(), /备注：/);
+          assert.equal(await history.evaluate(element => element.scrollWidth <= element.clientWidth), true);
+          await mkdir(path.join(repository, '.data/admin-preview'), { recursive: true });
+          await f.page.screenshot({ animations: 'disabled', path: path.join(repository,
+            `.data/admin-preview/scan-display-name-${viewport.width < 768 ? 'mobile' : 'desktop'}.png`) });
+          await history.getByRole('button', { name: 'Arena_Original的日志详情', exact: true }).click();
+          await logs.getByText('已加载 3 条', { exact: true }).waitFor();
+          assert.match(await logs.innerText(), /Arena_Original/);
+          assert.ok(f.state.adminReads.some(url => url.startsWith('/api/admin/daily-tasks/weekly-note/logs?')));
           await logs.getByRole('button', { name: '关闭日志详情', exact: true }).click(); await logs.waitFor({ state: 'hidden' });
           await history.getByRole('button', { name: 'Close', exact: true }).click(); await history.waitFor({ state: 'hidden' });
           await f.open('月度排行榜');
@@ -446,7 +602,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
         await f.open('近七天扫码情况');
         const list = f.page.getByRole('dialog', { name: '近七天扫码情况', exact: true });
         await list.getByRole('cell', { name: user.username, exact: true }).waitFor();
-        assert.deepEqual(await list.getByRole('columnheader').allTextContents(), ['用户名', '登录渠道', '申请时间', '扫描完成时间', '脚本执行完成时间', '任务状态', '操作']);
+        assert.deepEqual(await list.getByRole('columnheader').allTextContents(), ['用户', '登录渠道', '申请时间', '扫描完成时间', '脚本执行完成时间', '任务状态', '操作']);
         assert.match(await list.innerText(), /08:02:00/); assert.match(await list.innerText(), /08:30:00/);
         assert.equal(await list.getByRole('button', { name: /的日志详情$/ }).count(), 12);
         await mkdir(path.join(repository, '.data/admin-preview'), { recursive: true });

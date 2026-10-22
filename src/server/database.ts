@@ -5,7 +5,7 @@ import { logBackend, requestLogContext } from './logging.js';
 import { parseUserOptions, type MainTask, type UserOptions } from '../shared/user-options.js';
 import { DEFAULT_LOGIN_TYPE, parseLoginType, type LoginType } from '../shared/login-types.js';
 import type { Status, Submission } from './queue.js';
-import type { ManagedUser, MonthlySort, MonthlyUserStats } from '../shared/admin.js';
+import type { ManagedUser, MonthlySort, MonthlyUserStats, UserStatusFilter } from '../shared/admin.js';
 
 export interface PublicUser { id: string; username: string; isAdmin: boolean }
 export type ApplicationStatus = 'pending' | 'approved' | 'rejected';
@@ -48,7 +48,7 @@ export interface DailyEvent {
 }
 export interface AdminStore {
   initialize(): Promise<void>;
-  listUsers(search: string, offset: number, limit: number): Promise<{ items: ManagedUser[]; total: number }>;
+  listUsers(search: string, offset: number, limit: number, status?: UserStatusFilter): Promise<{ items: ManagedUser[]; total: number }>;
   getManagedUser(id: string): Promise<ManagedUser | null>;
   createUser(adminId: string, user: StoredUser & { note?: string }, now: Date): Promise<ManagedUser>;
   updateUser(adminId: string, id: string, changes: UserChanges, now: Date): Promise<ManagedUser>;
@@ -60,9 +60,10 @@ export class UserManagementError extends Error {
   constructor(public code: 'NOT_FOUND' | 'ADMIN_REQUIRED' | 'SELF_PROTECTED') { super('User management failed'); }
 }
 type ManagedUserRow = Omit<ManagedUser, 'createdAt'> & { createdAt: Timestamp };
+const latestApplicationStatus = `(SELECT a.status FROM naruto_login.registration_applications a WHERE a.user_id = u.id
+   ORDER BY a.created_at DESC, a.id DESC LIMIT 1)`;
 const managedUserColumns = `u.id, u.username, u.admin_note AS note, u.is_admin AS "isAdmin", u.is_invalid AS "isInvalid", u.created_at AS "createdAt",
-  (SELECT a.status FROM naruto_login.registration_applications a WHERE a.user_id = u.id
-   ORDER BY a.created_at DESC, a.id DESC LIMIT 1) AS "applicationStatus"`;
+  ${latestApplicationStatus} AS "applicationStatus"`;
 const managedUser = (row: ManagedUserRow): ManagedUser => ({
   id: row.id, username: row.username, note: row.note ?? '', isAdmin: row.isAdmin, isInvalid: row.isInvalid,
   createdAt: new Date(row.createdAt).toISOString(), applicationStatus: row.applicationStatus,
@@ -314,15 +315,20 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
     return result.rows[0] ?? null;
   }
 
-  async listUsers(search: string, offset: number, limit: number) {
+  async listUsers(search: string, offset: number, limit: number, status: UserStatusFilter = 'all') {
     await this.initialize();
     return this.transaction(async client => {
       await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
       // Literal substring search: underscores in valid usernames must not become wildcards.
-      const where = `(strpos(lower(u.username), lower($1)) > 0 OR strpos(lower(u.admin_note), lower($1)) > 0)`;
-      const count = await client.query<{ total: number }>(`SELECT count(*)::int AS total FROM naruto_login.users u WHERE ${where}`, [search]);
+      // Keep filtering aligned with getUserStatus: an enabled account wins over review history.
+      const where = `(strpos(lower(u.username), lower($1)) > 0 OR strpos(lower(u.admin_note), lower($1)) > 0) AND
+        ($2 = 'all' OR CASE WHEN NOT u.is_invalid THEN 'enabled'
+          WHEN ${latestApplicationStatus} = 'pending' THEN 'pending'
+          WHEN ${latestApplicationStatus} = 'rejected' THEN 'rejected'
+          ELSE 'disabled' END = $2)`;
+      const count = await client.query<{ total: number }>(`SELECT count(*)::int AS total FROM naruto_login.users u WHERE ${where}`, [search, status]);
       const result = await client.query<ManagedUserRow>(`SELECT ${managedUserColumns} FROM naruto_login.users u
-        WHERE ${where} ORDER BY u.created_at DESC, u.id DESC LIMIT $2 OFFSET $3`, [search, limit, offset]);
+        WHERE ${where} ORDER BY u.created_at DESC, u.id DESC LIMIT $3 OFFSET $4`, [search, status, limit, offset]);
       return { items: result.rows.map(managedUser), total: count.rows[0].total };
     });
   }

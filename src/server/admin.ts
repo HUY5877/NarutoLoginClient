@@ -5,7 +5,7 @@ import { ApiError } from './errors.js';
 import { logBackend } from './logging.js';
 import type { TaskRunService } from './task-runs.js';
 import type { DailyTask, DailyTaskFailureDetails, DailyTaskLogPage, DailyTaskPage, ManagedUser, PageResult, MonthlyStatsPage } from '../shared/admin.js';
-import { MAX_USER_NOTE_LENGTH } from '../shared/admin.js';
+import { MAX_USER_NOTE_LENGTH, userStatusLabels, type UserStatusFilter } from '../shared/admin.js';
 import { DEFAULT_LOGIN_TYPE } from '../shared/login-types.js';
 import { taskFailureMessage } from '../shared/task-errors.js';
 import { getDailyMilestoneAt } from '../shared/daily-completion.js';
@@ -70,13 +70,18 @@ export class AdminService {
       throw new ApiError(503, '管理数据暂时不可用，请稍后重试。', 'ADMIN_UNAVAILABLE');
     }
   }
-  async listUsers(admin: User, query: { search?: unknown; page?: unknown }): Promise<PageResult<ManagedUser>> {
+  async listUsers(admin: User, query: { search?: unknown; page?: unknown; status?: unknown }): Promise<PageResult<ManagedUser>> {
     requireAdmin(admin);
     if (query.search !== undefined && (typeof query.search !== 'string' || [...query.search.trim()].length > MAX_USER_NOTE_LENGTH)) {
       throw new ApiError(400, `搜索内容最多为 ${MAX_USER_NOTE_LENGTH} 个字符。`, 'INVALID_SEARCH');
     }
+    const status = query.status === undefined ? 'all' : query.status;
+    if (typeof status !== 'string' || status !== 'all' && !Object.hasOwn(userStatusLabels, status)) {
+      throw new ApiError(400, '请选择有效的账号状态。', 'INVALID_USER_STATUS');
+    }
     const page = pageNumber(query.page);
-    return { ...await this.database(store => store.listUsers(typeof query.search === 'string' ? query.search.trim() : '', (page - 1) * pageSize, pageSize)), page, pageSize };
+    return { ...await this.database(store => store.listUsers(typeof query.search === 'string' ? query.search.trim() : '',
+      (page - 1) * pageSize, pageSize, status as UserStatusFilter)), page, pageSize };
   }
   async getUser(admin: User, id: string) {
     requireAdmin(admin); userId(id);

@@ -46,9 +46,9 @@ test('admin lists use literal parameterized search, consistent count/page snapsh
   const condition = "(strpos(lower(u.username), lower($1)) > 0 OR strpos(lower(u.admin_note), lower($1)) > 0)";
   assert.ok(search.sql.includes(`WHERE ${condition}`));
   const count = f.calls.find(call => call.sql.startsWith('SELECT count(*)') && call.sql.includes('FROM naruto_login.users'))!;
-  assert.ok(count.sql.endsWith(`WHERE ${condition}`));
-  assert.deepEqual(count.values, ["Naru_to'"]);
-  assert.deepEqual(search.values, ["Naru_to'", 20, 20]);
+  assert.ok(count.sql.includes(`WHERE ${condition} AND`));
+  assert.deepEqual(count.values, ["Naru_to'", 'all']);
+  assert.deepEqual(search.values, ["Naru_to'", 'all', 20, 20]);
   assert.ok(!search.sql.includes("Naru_to'"));
   assert.ok(f.calls.some(call => call.sql === 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ'));
   assert.equal((await f.store.getManagedUser(id))?.applicationStatus, 'pending');
@@ -86,6 +86,29 @@ test('activation resolves pending registration in the same transaction; blank pa
   assert.equal(f.calls.at(-1)?.sql, 'COMMIT');
   f.setFailure(new Error('storage failed'));
   await assert.rejects(f.store.updateUser(adminId, id, changes, now)); assert.equal(f.calls.at(-1)?.sql, 'ROLLBACK');
+});
+
+test('用户状态与姓名备注搜索共同限制总数和分页，并只依据最新申请分类', async t => {
+  const f = fixture(t);
+  for (const status of ['all', 'enabled', 'pending', 'rejected', 'disabled'] as const) {
+    const result = await f.store.listUsers('群友_小明', 40, 20, status);
+    assert.equal(result.total, 41); assert.equal(result.items.length, 1);
+    const count = f.calls.filter(call => call.sql.startsWith('SELECT count(*)') && call.sql.includes('FROM naruto_login.users')).at(-1)!;
+    const page = f.calls.filter(call => call.sql.includes('ORDER BY u.created_at DESC')).at(-1)!;
+    const countFilter = count.sql.split('FROM naruto_login.users u WHERE ')[1];
+    const pageFilter = page.sql.split('FROM naruto_login.users u WHERE ')[1].split(' ORDER BY u.created_at DESC')[0];
+    assert.equal(pageFilter, countFilter, '总数与当前页必须使用同一状态和搜索条件');
+    assert.match(countFilter, /^\(strpos\(lower\(u.username\), lower\(\$1\)\) > 0 OR strpos\(lower\(u.admin_note\), lower\(\$1\)\) > 0\) AND/);
+    assert.match(countFilter, /\(\$2 = 'all' OR CASE WHEN NOT u.is_invalid THEN 'enabled'/);
+    assert.match(countFilter, /WHEN \(SELECT a.status FROM naruto_login.registration_applications a WHERE a.user_id = u.id ORDER BY a.created_at DESC, a.id DESC LIMIT 1\) = 'pending' THEN 'pending'/);
+    assert.match(countFilter, /WHEN \(SELECT a.status FROM naruto_login.registration_applications a WHERE a.user_id = u.id ORDER BY a.created_at DESC, a.id DESC LIMIT 1\) = 'rejected' THEN 'rejected'/);
+    assert.match(countFilter, /ELSE 'disabled' END = \$2\)$/);
+    assert.doesNotMatch(countFilter, /EXISTS\s*\(/);
+    assert.deepEqual(count.values, ['群友_小明', status]);
+    assert.deepEqual(page.values, ['群友_小明', status, 20, 40]);
+    assert.match(page.sql, /LIMIT \$3 OFFSET \$4$/);
+    assert.ok(!page.sql.includes('群友_小明'));
+  }
 });
 
 test('管理员备注独立持久化，省略保持、空串清空，扫码和月榜读取当前备注', async t => {

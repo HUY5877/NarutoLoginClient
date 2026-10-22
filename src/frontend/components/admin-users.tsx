@@ -1,6 +1,6 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, Eye, Pencil, Plus, RefreshCw, Search, Trash2, Users } from 'lucide-react';
-import { MAX_USER_NOTE_LENGTH, type ManagedUser } from '../../shared/admin';
+import { MAX_USER_NOTE_LENGTH, getUserStatus, userStatusLabels, type ManagedUser, type UserStatusFilter } from '../../shared/admin';
 import { useAdminData, useAdminMutation } from '@/hooks/use-admin';
 import { formatAdminDate, isUserResponse, isUsersPage } from '@/lib/admin';
 import { AdminError, AdminLoading, AdminPagination } from '@/components/admin-common';
@@ -17,8 +17,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
 type Editor = { mode: 'create' } | { mode: 'view' | 'edit'; user: ManagedUser };
-const accountLabel = (user: ManagedUser) => !user.isInvalid ? '已启用'
-  : user.applicationStatus === 'pending' ? '待审核' : user.applicationStatus === 'rejected' ? '已拒绝' : '已停用';
+const accountLabel = (user: ManagedUser) => userStatusLabels[getUserStatus(user)];
 
 function UserEditor({ editor, currentUserId, onClose, onSaved, onAccessLost, restoreFocus }: {
   editor: Editor; currentUserId: string; onClose: () => void; onSaved: (notice: string) => void;
@@ -111,12 +110,21 @@ export function AdminUsers({ open, onOpenChange, currentUserId, onAccessLost, re
   open: boolean; onOpenChange: (open: boolean) => void; currentUserId: string; onAccessLost: () => void; refreshAuth: () => Promise<void>; returnFocus: () => void;
 }) {
   const [search, setSearch] = useState(''), [query, setQuery] = useState(''), [page, setPage] = useState(1);
+  const [status, setStatus] = useState<UserStatusFilter>('all');
   const [editor, setEditor] = useState<Editor | null>(null), [deleting, setDeleting] = useState<ManagedUser | null>(null);
   const [notice, setNotice] = useState('');
   const focusTarget = useRef<HTMLButtonElement | null>(null);
   const searchInput = useRef<HTMLInputElement | null>(null);
   const restoreFocus = () => (focusTarget.current?.isConnected ? focusTarget.current : searchInput.current)?.focus();
-  const { data, loading, error, reload } = useAdminData(open ? `/api/admin/users?search=${encodeURIComponent(query)}&page=${page}` : null, isUsersPage, onAccessLost);
+  const { data, loading, error, reload } = useAdminData(open
+    ? `/api/admin/users?search=${encodeURIComponent(query)}&page=${page}${status === 'all' ? '' : `&status=${status}`}`
+    : null, isUsersPage, onAccessLost);
+  const filtered = Boolean(query) || status !== 'all';
+  useEffect(() => {
+    if (!open || loading || !data || data.page !== page) return;
+    const lastPage = Math.max(1, Math.ceil(data.total / data.pageSize));
+    if (page > lastPage) setPage(lastPage);
+  }, [open, loading, data, page]);
   const deletion = useAdminMutation(onAccessLost);
   function openEditor(value: Editor, target: HTMLButtonElement) { focusTarget.current = target; setEditor(value); setNotice(''); }
   return <Dialog open={open} onOpenChange={next => { if (!editor && !deleting) onOpenChange(next); }}>
@@ -126,18 +134,25 @@ export function AdminUsers({ open, onOpenChange, currentUserId, onAccessLost, re
         <DialogTitle className="flex items-center gap-2 text-lg font-semibold"><Users className="size-5 text-primary" aria-hidden="true" />用户管理</DialogTitle>
         <DialogDescription className="leading-6">查看已注册用户，管理备注、登录信息、角色与账号状态。</DialogDescription>
       </DialogHeader>
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
         <form className="flex w-full gap-2 sm:w-auto" onSubmit={event => { event.preventDefault(); setQuery(search.trim()); setPage(1); setNotice(''); }}>
           <Input ref={searchInput} aria-label="搜索用户名或备注" value={search}
             onChange={event => setSearch([...event.target.value].slice(0, MAX_USER_NOTE_LENGTH).join(''))} maxLength={MAX_USER_NOTE_LENGTH * 2}
             placeholder="搜索用户名或备注" className="h-9 min-w-0 bg-white/40 sm:w-52" />
-          <Button type="submit" size="sm" variant="outline" disabled={loading}><Search aria-hidden="true" />搜索</Button>
+          <Button type="submit" size="sm" variant="outline" className="h-9" disabled={loading}><Search aria-hidden="true" />搜索</Button>
         </form>
-        <div className="flex gap-2">
-          <Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => { void reload(); }}>
+        <Select value={status} onValueChange={value => { setStatus(value as UserStatusFilter); setPage(1); setNotice(''); }} disabled={loading}>
+          <SelectTrigger aria-label="筛选账号状态" className="h-9! min-w-28 flex-1 bg-white/40 sm:w-32 sm:flex-none"><SelectValue /></SelectTrigger>
+          <SelectContent position="popper" align="start">
+            <SelectItem value="all">全部状态</SelectItem>
+            {Object.entries(userStatusLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <div className="ml-auto flex gap-2">
+          <Button type="button" variant="outline" size="sm" className="h-9" disabled={loading} onClick={() => { void reload(); }}>
             {loading ? <Spinner aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}刷新
           </Button>
-          <Button type="button" size="sm" onClick={event => openEditor({ mode: 'create' }, event.currentTarget)}><Plus aria-hidden="true" />新增用户</Button>
+          <Button type="button" size="sm" className="h-9" onClick={event => openEditor({ mode: 'create' }, event.currentTarget)}><Plus aria-hidden="true" />新增用户</Button>
         </div>
       </div>
       <AdminError message={error} />
@@ -166,8 +181,8 @@ export function AdminUsers({ open, onOpenChange, currentUserId, onAccessLost, re
         </div>}
         {!loading && data?.items.length === 0 && <Empty className="py-12"><EmptyHeader>
           <EmptyMedia variant="icon" className="bg-white/40"><Users aria-hidden="true" /></EmptyMedia>
-          <EmptyTitle>{query ? '没有匹配的用户' : data.total ? '本页暂无用户' : '暂无注册用户'}</EmptyTitle>
-          <EmptyDescription>{query ? '修改用户名或备注关键词后重新搜索。' : data.total ? '返回上一页查看用户。' : '点击「新增用户」创建账号。'}</EmptyDescription>
+          <EmptyTitle>{filtered ? '没有匹配的用户' : data.total ? '本页暂无用户' : '暂无注册用户'}</EmptyTitle>
+          <EmptyDescription>{filtered ? '调整账号状态或用户名、备注关键词后重试。' : data.total ? '返回上一页查看用户。' : '点击「新增用户」创建账号。'}</EmptyDescription>
         </EmptyHeader></Empty>}
       </div>
       {data && <AdminPagination page={data.page} pageSize={data.pageSize} total={data.total} disabled={loading} onPageChange={setPage} />}

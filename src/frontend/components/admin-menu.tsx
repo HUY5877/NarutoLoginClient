@@ -279,7 +279,7 @@ export function AdminMenu({ userId, refreshAuth, mobileAccount }: {
       </Dialog>
       {dailyOpen && <AdminDailyTasks open={dailyOpen} onOpenChange={setDailyOpen} onAccessLost={loseAccess} returnFocus={returnFocus} />}
       {monthlyOpen && <AdminMonthlyStats open={monthlyOpen} onOpenChange={setMonthlyOpen} onAccessLost={loseAccess} returnFocus={returnFocus} />}
-      {usersOpen && <AdminUsers open={usersOpen} onOpenChange={setUsersOpen} currentUserId={userId} onAccessLost={loseAccess} refreshAuth={refreshAuth} returnFocus={returnFocus} />}
+      <AdminUsers open={usersOpen} onOpenChange={setUsersOpen} currentUserId={userId} onAccessLost={loseAccess} refreshAuth={refreshAuth} returnFocus={returnFocus} />
     </>
   );
 }
