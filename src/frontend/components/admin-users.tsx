@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, Eye, Pencil, Plus, RefreshCw, Search, Trash2, Users } from 'lucide-react';
+import { Check, Eye, Pencil, Plus, RefreshCw, Search, Tag, Trash2, UserRoundCheck, Users } from 'lucide-react';
 import { MAX_USER_NOTE_LENGTH, getUserStatus, userStatusLabels, type ManagedUser, type UserStatusFilter } from '../../shared/admin';
 import { useAdminData, useAdminMutation } from '@/hooks/use-admin';
 import { formatAdminDate, isUserResponse, isUsersPage } from '@/lib/admin';
@@ -164,9 +164,19 @@ export function AdminUsers({ open, onOpenChange, currentUserId, onAccessLost, re
             <TableHeader className="bg-secondary/50"><TableRow><TableHead className="pl-4">用户名</TableHead><TableHead>角色</TableHead>
               <TableHead>账号状态</TableHead><TableHead>注册时间（北京时间）</TableHead><TableHead className="pr-4 text-right">操作</TableHead></TableRow></TableHeader>
             <TableBody>{data.items.map(user => <TableRow key={user.id}>
-              <TableCell className="max-w-44 py-3 pl-4"><div className="truncate font-medium" title={user.username}>{user.username}</div>
-                {user.note && <p className="mt-1 truncate text-xs text-muted-foreground" title={user.note}>备注：{user.note}</p>}
-                {user.id === currentUserId && <span className="text-xs text-muted-foreground">当前账号</span>}</TableCell>
+              <TableCell className="w-40 max-w-40 py-3 pl-4 sm:w-64 sm:max-w-64">
+                <div className="flex h-5 min-w-0 items-center gap-2">
+                  <span className="min-w-0 max-w-32 truncate font-medium" title={user.username}>{user.username}</span>
+                  {user.note && <Badge variant="outline" title={user.note} aria-label={`备注：${user.note}`}
+                    className="min-w-0 max-w-28 shrink rounded-md border-primary/10 bg-primary/5 px-1.5 font-normal text-muted-foreground">
+                    <Tag className="shrink-0 opacity-70" aria-hidden="true" /><span className="truncate">{user.note}</span>
+                  </Badge>}
+                  {user.id === currentUserId && <Badge variant="outline" title="当前账号" aria-label="当前账号"
+                    className="rounded-md px-1.5 font-normal text-muted-foreground">
+                    <UserRoundCheck className="sm:hidden" aria-hidden="true" /><span className="hidden sm:inline">当前账号</span>
+                  </Badge>}
+                </div>
+              </TableCell>
               <TableCell><Badge variant={user.isAdmin ? 'default' : 'outline'}>{user.isAdmin ? '管理员' : '普通用户'}</Badge></TableCell>
               <TableCell><Badge variant="secondary" className={user.isInvalid ? 'text-muted-foreground' : 'bg-primary/10 text-primary'}>{accountLabel(user)}</Badge></TableCell>
               <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatAdminDate(user.createdAt)}</TableCell>

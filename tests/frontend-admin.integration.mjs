@@ -244,6 +244,9 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
         const f = await fixture(true, viewport, viewport.width < 768);
         try {
+          f.state.users[0].note = '当前管理员';
+          f.state.users.push({ ...user, id: 'plain-note-user', username: 'Plain_User' },
+            { ...user, id: 'long-note-user', username: 'VeryLongUsername12345678', note: '长备注'.repeat(30) });
           await f.open('用户管理');
           const list = f.page.getByRole('dialog', { name: '用户管理', exact: true });
           await list.getByRole('button', { name: `编辑 ${user.username}`, exact: true }).click();
@@ -264,16 +267,40 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
           await mkdir(path.join(repository, '.data/admin-preview'), { recursive: true });
           if (viewport.width < 768) await f.page.screenshot({ animations: 'disabled', path: path.join(repository, '.data/admin-preview/user-note-editor-mobile.png') });
           await edit.getByRole('button', { name: '保存修改', exact: true }).click();
-          await list.getByText(`备注：${readableNote}`, { exact: true }).waitFor();
+          await list.getByText(readableNote, { exact: true }).waitFor();
           assert.equal(f.state.mutations.at(-1).body.username, user.username);
           assert.equal(f.state.mutations.at(-1).body.note, readableNote);
           assert.equal(f.state.mutations.at(-1).body.password, '');
           const accountRow = list.getByRole('row').filter({ has: f.page.getByRole('button', { name: `编辑 ${user.username}`, exact: true }) });
           const originalUsername = accountRow.getByText(user.username, { exact: true });
-          const noteText = accountRow.getByText(`备注：${readableNote}`, { exact: true });
+          const noteText = accountRow.getByText(readableNote, { exact: true });
           await originalUsername.waitFor();
-          assert.ok((await noteText.boundingBox()).y > (await originalUsername.boundingBox()).y, 'Note is secondary text below the original username');
-          if (viewport.width >= 768) await f.page.screenshot({ animations: 'disabled', path: path.join(repository, '.data/admin-preview/users-note-desktop.png') });
+          const nameBox = await originalUsername.boundingBox(), noteBox = await noteText.boundingBox();
+          assert.ok(noteBox.x >= nameBox.x + nameBox.width - 1, 'The note is beside the username');
+          assert.ok(Math.abs((noteBox.y + noteBox.height / 2) - (nameBox.y + nameBox.height / 2)) <= 1, 'Username and note share one visual line');
+          assert.equal(await accountRow.locator('[data-slot="badge"]').filter({ hasText: readableNote }).count(), 1);
+          assert.equal(await accountRow.getByTitle(readableNote, { exact: true }).count(), 1);
+          assert.doesNotMatch(await accountRow.innerText(), /备注：/);
+          const currentRow = list.getByRole('row').filter({ has: f.page.getByRole('button', { name: `编辑 ${admin.username}`, exact: true }) });
+          const currentNameBox = await currentRow.getByText(admin.username, { exact: true }).boundingBox();
+          const currentBadgeBox = await currentRow.getByTitle('当前账号', { exact: true }).boundingBox();
+          assert.ok(Math.abs((currentBadgeBox.y + currentBadgeBox.height / 2) - (currentNameBox.y + currentNameBox.height / 2)) <= 1,
+            'The current-account badge also stays on the username line');
+          async function assertCompactRows() {
+            const measurements = await list.locator('tbody tr').evaluateAll(rows => rows.map(row => ({
+              height: row.getBoundingClientRect().height,
+              fits: row.cells[0].firstElementChild.scrollWidth <= row.cells[0].firstElementChild.clientWidth,
+            })));
+            const heights = measurements.map(row => row.height);
+            assert.ok(Math.max(...heights) - Math.min(...heights) <= 1, 'Rows with a note, without a note and for the current account have equal height');
+            assert.ok(Math.max(...heights) <= 46, 'Notes do not increase the original compact row height');
+            assert.ok(measurements.every(row => row.fits), 'Long usernames and notes stay inside their name cell');
+            return heights;
+          }
+          await assertCompactRows();
+          await list.locator('[data-slot="table-container"]').evaluate(element => { element.scrollLeft = 0; });
+          await f.page.screenshot({ animations: 'disabled', path: path.join(repository,
+            `.data/admin-preview/users-note-inline-${viewport.width < 768 ? 'mobile' : 'desktop'}.png`) });
           await list.getByRole('button', { name: `查看 ${user.username}`, exact: true }).click();
           const view = f.page.getByRole('dialog', { name: '查看用户', exact: true });
           await view.getByLabel('备注', { exact: true }).waitFor();
@@ -288,7 +315,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
           assert.match(f.state.adminReads.at(-1), /search=%E5%B0%8F%E6%9E%97&page=1$/);
           assert.equal(await list.getByText(user.username, { exact: true }).count(), 1);
           await search.fill(''); await list.getByRole('button', { name: '搜索', exact: true }).click();
-          await list.getByText('共 2 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
+          await list.getByText('共 4 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
 
           await list.getByRole('button', { name: '新增用户', exact: true }).click();
           const create = f.page.getByRole('dialog', { name: '新增用户', exact: true });
@@ -296,21 +323,25 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
           await create.getByLabel('登录密码', { exact: true }).fill('fixture-password');
           await create.getByLabel('备注', { exact: true }).fill('新朋友');
           await create.getByRole('button', { name: '创建用户', exact: true }).click();
-          await list.getByText('备注：新朋友', { exact: true }).waitFor();
+          await list.getByText('新朋友', { exact: true }).waitFor();
           assert.deepEqual(f.state.mutations.at(-1).body, { username: 'Noted_User', note: '新朋友', password: 'fixture-password', isAdmin: false, isInvalid: false });
           assert.equal(await list.getByText('Noted_User', { exact: true }).count(), 1);
 
           const literal = '<img src=x onerror=window.noteInjected=true>';
           await list.getByRole('button', { name: `编辑 ${user.username}`, exact: true }).click();
           await note.fill(literal); await edit.getByRole('button', { name: '保存修改', exact: true }).click();
-          await list.getByText(`备注：${literal}`, { exact: true }).waitFor();
+          await list.getByText(literal, { exact: true }).waitFor();
           assert.equal(await list.locator('img').count(), 0, 'Administrator notes are rendered as literal text');
           assert.equal(await f.page.evaluate(() => window.noteInjected), undefined);
           const tableBefore = await list.getByRole('table').boundingBox();
           const longNote = 'N'.repeat(100);
           await list.getByRole('button', { name: `编辑 ${user.username}`, exact: true }).click();
           await note.fill(longNote); await edit.getByRole('button', { name: '保存修改', exact: true }).click();
-          await list.getByText(`备注：${longNote}`, { exact: true }).waitFor();
+          await list.getByText(longNote, { exact: true }).waitFor();
+          assert.equal(await accountRow.getByTitle(longNote, { exact: true }).count(), 1, 'The full note remains available in its title');
+          assert.ok(await accountRow.getByText(longNote, { exact: true }).evaluate(element =>
+            getComputedStyle(element).textOverflow === 'ellipsis' && element.scrollWidth > element.clientWidth), 'Long note text is truncated');
+          t.diagnostic(`Compact user row heights at ${viewport.width}px: ${JSON.stringify(await assertCompactRows())}`);
           assert.ok((await list.getByRole('table').boundingBox()).width <= tableBefore.width + 1, 'An unbroken 100-character note must not widen the table');
           assert.equal(await list.evaluate(element => element.scrollWidth <= element.clientWidth), true);
           await search.fill(longNote); assert.equal(await search.inputValue(), longNote, 'Search supports the complete 100-character note');
@@ -324,7 +355,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
           assert.equal(f.state.users.find(value => value.id === user.id).username, user.username);
           await search.fill(user.username); await list.getByRole('button', { name: '搜索', exact: true }).click();
           await list.getByText('共 1 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
-          assert.equal(await list.getByText(`备注：${longNote}`, { exact: true }).count(), 0);
+          assert.equal(await list.getByText(longNote, { exact: true }).count(), 0);
           assert.equal(await list.getByText(user.username, { exact: true }).count(), 1);
         } finally { await f.close(); }
       }
