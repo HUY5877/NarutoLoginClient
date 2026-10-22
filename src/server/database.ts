@@ -39,17 +39,18 @@ export interface AuthStore {
   close(): Promise<void>;
 }
 
-export interface UserChanges { username: string; usernameKey: string; password?: string; isInvalid: boolean; isAdmin: boolean }
+export interface UserChanges { username: string; usernameKey: string; password?: string; isInvalid: boolean; isAdmin: boolean; note?: string }
 export interface DailyEvent {
   id: string; username: string; createdAt: string; expiresAt: string; status: Status;
   loginType?: LoginType;
   userOptions?: UserOptions;
+  note?: string;
 }
 export interface AdminStore {
   initialize(): Promise<void>;
   listUsers(search: string, offset: number, limit: number): Promise<{ items: ManagedUser[]; total: number }>;
   getManagedUser(id: string): Promise<ManagedUser | null>;
-  createUser(adminId: string, user: StoredUser, now: Date): Promise<ManagedUser>;
+  createUser(adminId: string, user: StoredUser & { note?: string }, now: Date): Promise<ManagedUser>;
   updateUser(adminId: string, id: string, changes: UserChanges, now: Date): Promise<ManagedUser>;
   deleteUser(adminId: string, id: string): Promise<void>;
   listDailyEvents(start: Date, end: Date, offset: number, limit: number, mainTask?: MainTask): Promise<{ items: DailyEvent[]; total: number }>;
@@ -59,11 +60,11 @@ export class UserManagementError extends Error {
   constructor(public code: 'NOT_FOUND' | 'ADMIN_REQUIRED' | 'SELF_PROTECTED') { super('User management failed'); }
 }
 type ManagedUserRow = Omit<ManagedUser, 'createdAt'> & { createdAt: Timestamp };
-const managedUserColumns = `u.id, u.username, u.is_admin AS "isAdmin", u.is_invalid AS "isInvalid", u.created_at AS "createdAt",
+const managedUserColumns = `u.id, u.username, u.admin_note AS note, u.is_admin AS "isAdmin", u.is_invalid AS "isInvalid", u.created_at AS "createdAt",
   (SELECT a.status FROM naruto_login.registration_applications a WHERE a.user_id = u.id
    ORDER BY a.created_at DESC, a.id DESC LIMIT 1) AS "applicationStatus"`;
 const managedUser = (row: ManagedUserRow): ManagedUser => ({
-  id: row.id, username: row.username, isAdmin: row.isAdmin, isInvalid: row.isInvalid,
+  id: row.id, username: row.username, note: row.note ?? '', isAdmin: row.isAdmin, isInvalid: row.isInvalid,
   createdAt: new Date(row.createdAt).toISOString(), applicationStatus: row.applicationStatus,
 });
 
@@ -153,6 +154,7 @@ CREATE TABLE IF NOT EXISTS naruto_login.users (
 ALTER TABLE naruto_login.users ADD COLUMN IF NOT EXISTS is_invalid boolean NOT NULL DEFAULT false;
 ALTER TABLE naruto_login.users ALTER COLUMN is_invalid SET DEFAULT true;
 ALTER TABLE naruto_login.users ADD COLUMN IF NOT EXISTS is_admin boolean NOT NULL DEFAULT false;
+ALTER TABLE naruto_login.users ADD COLUMN IF NOT EXISTS admin_note text NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS naruto_login.registration_applications (
   id uuid PRIMARY KEY,
   user_id uuid NOT NULL REFERENCES naruto_login.users(id) ON DELETE CASCADE,
@@ -317,7 +319,7 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
     return this.transaction(async client => {
       await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
       // Literal substring search: underscores in valid usernames must not become wildcards.
-      const where = `strpos(lower(u.username), lower($1)) > 0`;
+      const where = `(strpos(lower(u.username), lower($1)) > 0 OR strpos(lower(u.admin_note), lower($1)) > 0)`;
       const count = await client.query<{ total: number }>(`SELECT count(*)::int AS total FROM naruto_login.users u WHERE ${where}`, [search]);
       const result = await client.query<ManagedUserRow>(`SELECT ${managedUserColumns} FROM naruto_login.users u
         WHERE ${where} ORDER BY u.created_at DESC, u.id DESC LIMIT $2 OFFSET $3`, [search, limit, offset]);
@@ -348,11 +350,11 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
     }
   }
 
-  async createUser(adminId: string, user: StoredUser, now: Date): Promise<ManagedUser> {
+  async createUser(adminId: string, user: StoredUser & { note?: string }, now: Date): Promise<ManagedUser> {
     return this.manageUser(adminId, async client => {
-      await client.query(`INSERT INTO naruto_login.users (id, username, username_key, password, is_invalid, is_admin, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)`, [user.id, user.username, user.usernameKey, user.password, user.isInvalid, user.isAdmin, now]);
-      return { id: user.id, username: user.username, isInvalid: user.isInvalid, isAdmin: user.isAdmin,
+      await client.query(`INSERT INTO naruto_login.users (id, username, username_key, password, is_invalid, is_admin, created_at, admin_note)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [user.id, user.username, user.usernameKey, user.password, user.isInvalid, user.isAdmin, now, user.note ?? '']);
+      return { id: user.id, username: user.username, note: user.note ?? '', isInvalid: user.isInvalid, isAdmin: user.isAdmin,
         createdAt: now.toISOString(), applicationStatus: null };
     });
   }
@@ -364,8 +366,9 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
       await client.query(`SELECT id FROM naruto_login.registration_applications
         WHERE user_id = $1 AND status = 'pending' ORDER BY id FOR UPDATE`, [id]);
       const result = await client.query<ManagedUserRow>(`UPDATE naruto_login.users u
-        SET username = $2, username_key = $3, password = COALESCE($4, password), is_invalid = $5, is_admin = $6
-        WHERE u.id = $1 RETURNING ${managedUserColumns}`, [id, changes.username, changes.usernameKey, changes.password ?? null, changes.isInvalid, changes.isAdmin]);
+        SET username = $2, username_key = $3, password = COALESCE($4, password), is_invalid = $5, is_admin = $6,
+          admin_note = COALESCE($7, admin_note)
+        WHERE u.id = $1 RETURNING ${managedUserColumns}`, [id, changes.username, changes.usernameKey, changes.password ?? null, changes.isInvalid, changes.isAdmin, changes.note ?? null]);
       if (!result.rows[0]) throw new UserManagementError('NOT_FOUND');
       // Explicit activation resolves any pending application so a later review cannot undo this edit.
       if (!changes.isInvalid) await client.query(`UPDATE naruto_login.registration_applications
@@ -394,7 +397,7 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
       const result = await client.query<Omit<DailyEvent, 'createdAt' | 'expiresAt' | 'userOptions'> & {
         createdAt: Timestamp; expiresAt: Timestamp; userOptions: unknown;
       }>(
-        `SELECT e.id, u.username, e.created_at AS "createdAt", e.expires_at AS "expiresAt", e.status, e.login_type AS "loginType",
+        `SELECT e.id, u.username, u.admin_note AS note, e.created_at AS "createdAt", e.expires_at AS "expiresAt", e.status, e.login_type AS "loginType",
            e.user_options AS "userOptions"
          FROM naruto_login.login_events e JOIN naruto_login.users u ON u.id = e.user_id
          WHERE e.created_at >= $1 AND e.created_at < $2 AND COALESCE(e.user_options ->> 'mainTask', 'daily') = $3
@@ -402,7 +405,7 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
       return { items: result.rows.map(row => {
         const userOptions = parseUserOptions(row.userOptions);
         if (!userOptions) throw new Error('Stored daily event user options are invalid');
-        return { id: row.id, username: row.username, status: row.status, loginType: row.loginType ?? DEFAULT_LOGIN_TYPE, userOptions,
+        return { id: row.id, username: row.username, note: row.note ?? '', status: row.status, loginType: row.loginType ?? DEFAULT_LOGIN_TYPE, userOptions,
           createdAt: new Date(row.createdAt).toISOString(), expiresAt: new Date(row.expiresAt).toISOString() };
       }), total: count.rows[0].total };
     });
@@ -438,11 +441,11 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
            FROM naruto_login.login_events WHERE created_at >= $1 AND created_at < $2
              AND COALESCE(user_options ->> 'mainTask', 'daily') = 'daily' GROUP BY user_id
          )
-         SELECT s.user_id AS "userId", u.username, s.request_count AS "requestCount", s.request_days AS "requestDays",
+         SELECT s.user_id AS "userId", u.username, u.admin_note AS note, s.request_count AS "requestCount", s.request_days AS "requestDays",
            dense_rank() OVER (ORDER BY ${primary} DESC)::int AS rank
          FROM stats s JOIN naruto_login.users u ON u.id = s.user_id
          ORDER BY ${primary} DESC, ${secondary} DESC, s.user_id ASC LIMIT $3 OFFSET $4`, [start, end, limit, offset]);
-      return { items: result.rows.map(row => ({ userId: row.userId, username: row.username, rank: row.rank,
+      return { items: result.rows.map(row => ({ userId: row.userId, username: row.username, note: row.note ?? '', rank: row.rank,
         requestCount: row.requestCount, requestDays: row.requestDays })), ...count.rows[0] };
     });
   }

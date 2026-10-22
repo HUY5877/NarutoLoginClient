@@ -141,7 +141,7 @@ test('user management and daily task APIs enforce admin identity, JSON and same-
       assert.equal(response.status, attempt.status); assert.equal(response.headers.get('cache-control'), 'no-store');
     }
     assert.deepEqual(calls, []);
-    const mutation = { username: 'new-user', password: 'password', isAdmin: false, isInvalid: false, adminId: 'forged' };
+    const mutation = { username: 'new-user', password: 'password', isAdmin: false, isInvalid: false, note: '群友备注', adminId: 'forged' };
     for (const route of routes) {
       const options = { method: route.method, headers: { ...adminHeaders, ...jsonHeaders }, ...(route.method === 'GET' ? {} : { body: JSON.stringify(mutation) }) };
       if (route.method !== 'GET') {

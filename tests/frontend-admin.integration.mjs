@@ -25,7 +25,7 @@ const user = { ...admin, id: '10000000-0000-4000-8000-000000000002', username: '
 const task = { id: '20000000-0000-4000-8000-000000000001', username: user.username, mainTask: 'daily',
   requestedAt: '2026-10-08T00:00:00.000Z', scannedAt: '2026-10-08T00:02:00.000Z', completedAt: '2026-10-08T00:30:00.000Z', status: 'completed' };
 
-test('administrator menu, scan history and user CRUD', { skip: skip || false, timeout: 120_000 }, async t => {
+test('administrator menu, scan history and user CRUD', { skip: skip || false, timeout: 150_000 }, async t => {
   const { createServer } = await import(pathToFileURL(require.resolve('vite')).href);
   const { default: react } = await import(pathToFileURL(require.resolve('@vitejs/plugin-react')).href);
   const { default: tailwindcss } = await import(pathToFileURL(require.resolve('@tailwindcss/vite')).href);
@@ -88,7 +88,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
             const items = [{ userId: 'naruto', username: 'Naruto_01', requestCount: 30, requestDays: 3 },
               { userId: 'sasuke', username: 'Sasuke_02', requestCount: 12, requestDays: 7 }];
             if (sort === 'days') items.reverse();
-            return reply({ items: month === '2020-01' ? [] : items.map((item, index) => ({ ...item, rank: index + 1 })),
+            return reply({ items: month === '2020-01' ? [] : items.map((item, index) => ({ ...item, rank: index + 1, note: state.users.find(account => account.username === item.username)?.note ?? '' })),
               total: month === '2020-01' ? 0 : 2, totalRequests: month === '2020-01' ? 0 : 42,
               month, sort, page: 1, pageSize: 20, timeZone: 'Asia/Shanghai' });
           }
@@ -98,13 +98,15 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
             const mainTask = url.searchParams.get('mainTask') || 'daily';
             const items = [task, { ...task, id: 'running', username: 'Sasuke_02', scannedAt: null, completedAt: null, status: 'running_daily' },
               { ...task, id: 'failed', username: 'Sakura_03', completedAt: null, status: 'failed', ...state.failureDetails }, ...state.extraDaily]
+              .map(item => ({ ...item, note: state.users.find(account => account.username === item.username)?.note ?? item.note ?? '' }))
               .filter(item => item.mainTask === mainTask)
               .filter(item => !selectedDate || new Date(Date.parse(item.requestedAt) + 8 * 60 * 60 * 1000).toISOString().slice(0, 10) === selectedDate);
             return reply({ items: items.slice((page - 1) * 20, page * 20), total: items.length, page, pageSize: 20, mainTask,
               ...(selectedDate ? { selectedDate } : {}), startDate: '2026-10-02', date: '2026-10-08', timeZone: 'Asia/Shanghai' });
           }
           if (url.pathname === '/api/admin/users' && method === 'GET') {
-            const filtered = state.users.filter(value => value.username.toLowerCase().includes((url.searchParams.get('search') || '').toLowerCase()));
+            const search = (url.searchParams.get('search') || '').toLowerCase();
+            const filtered = state.users.filter(value => value.username.toLowerCase().includes(search) || (value.note ?? '').toLowerCase().includes(search));
             const page = Number(url.searchParams.get('page') || 1);
             return reply({ items: filtered.slice((page - 1) * 20, page * 20), total: filtered.length, page, pageSize: 20 });
           }
@@ -118,7 +120,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
           if (target && method === 'GET') return reply({ user: target });
           if (target && method === 'PATCH') {
             const input = route.request().postDataJSON();
-            Object.assign(target, { username: input.username.trim(), isAdmin: input.isAdmin, isInvalid: input.isInvalid });
+            Object.assign(target, { username: input.username.trim(), note: input.note ?? target.note ?? '', isAdmin: input.isAdmin, isInvalid: input.isInvalid });
             return reply({ user: target });
           }
           if (target && method === 'DELETE') { state.users = state.users.filter(value => value !== target); return route.fulfill({ status: 204 }); }
@@ -130,6 +132,138 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       return { context, page, state, async open(name) { await page.getByRole('button', { name: /^(管理员|管理员账号)$/ }).click(); await page.getByRole('menuitem', { name }).click(); },
         async close() { await context.close(); assert.deepEqual(state.errors, []); } };
     }
+
+    await t.test('administrator notes can be created, viewed, searched and cleared without changing usernames on desktop and mobile', async () => {
+      for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+        const f = await fixture(true, viewport, viewport.width < 768);
+        try {
+          await f.open('用户管理');
+          const list = f.page.getByRole('dialog', { name: '用户管理', exact: true });
+          await list.getByRole('button', { name: `编辑 ${user.username}`, exact: true }).click();
+          const edit = f.page.getByRole('dialog', { name: '编辑用户', exact: true });
+          const note = edit.getByLabel('备注', { exact: true });
+          await note.waitFor();
+          assert.equal(await note.inputValue(), '', 'Existing users without note remain editable');
+          await note.fill('备'.repeat(101));
+          assert.equal([...await note.inputValue()].length, 100);
+          await note.fill('😀'.repeat(100));
+          assert.equal(await note.inputValue(), '😀'.repeat(100), 'The 100-character limit counts emoji as one character each');
+          assert.match(await edit.innerText(), /仅管理员可见/);
+          assert.match(await edit.innerText(), /登录.*用户名|用户名.*登录/);
+          const readableNote = '小林 · QQ 群成员';
+          await note.fill(readableNote);
+          assert.equal(await edit.getByLabel('用户名', { exact: true }).inputValue(), user.username);
+          assert.equal(await edit.evaluate(element => element.scrollWidth <= element.clientWidth), true);
+          await mkdir(path.join(repository, '.data/admin-preview'), { recursive: true });
+          if (viewport.width < 768) await f.page.screenshot({ animations: 'disabled', path: path.join(repository, '.data/admin-preview/user-note-editor-mobile.png') });
+          await edit.getByRole('button', { name: '保存修改', exact: true }).click();
+          await list.getByText(`备注：${readableNote}`, { exact: true }).waitFor();
+          assert.equal(f.state.mutations.at(-1).body.username, user.username);
+          assert.equal(f.state.mutations.at(-1).body.note, readableNote);
+          assert.equal(f.state.mutations.at(-1).body.password, '');
+          const accountRow = list.getByRole('row').filter({ has: f.page.getByRole('button', { name: `编辑 ${user.username}`, exact: true }) });
+          const originalUsername = accountRow.getByText(user.username, { exact: true });
+          const noteText = accountRow.getByText(`备注：${readableNote}`, { exact: true });
+          await originalUsername.waitFor();
+          assert.ok((await noteText.boundingBox()).y > (await originalUsername.boundingBox()).y, 'Note is secondary text below the original username');
+          if (viewport.width >= 768) await f.page.screenshot({ animations: 'disabled', path: path.join(repository, '.data/admin-preview/users-note-desktop.png') });
+          await list.getByRole('button', { name: `查看 ${user.username}`, exact: true }).click();
+          const view = f.page.getByRole('dialog', { name: '查看用户', exact: true });
+          await view.getByLabel('备注', { exact: true }).waitFor();
+          assert.equal(await view.getByLabel('备注', { exact: true }).inputValue(), readableNote);
+          assert.equal(await view.getByLabel('备注', { exact: true }).getAttribute('readonly'), '');
+          assert.equal(await view.getByLabel('用户名', { exact: true }).inputValue(), user.username);
+          await view.getByRole('button', { name: '关闭', exact: true }).click();
+          const search = list.getByRole('textbox', { name: '搜索用户名或备注', exact: true });
+          assert.equal(await search.getAttribute('placeholder'), '搜索用户名或备注');
+          await search.fill('小林'); await list.getByRole('button', { name: '搜索', exact: true }).click();
+          await list.getByText('共 1 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
+          assert.match(f.state.adminReads.at(-1), /search=%E5%B0%8F%E6%9E%97&page=1$/);
+          assert.equal(await list.getByText(user.username, { exact: true }).count(), 1);
+          await search.fill(''); await list.getByRole('button', { name: '搜索', exact: true }).click();
+          await list.getByText('共 2 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
+
+          await list.getByRole('button', { name: '新增用户', exact: true }).click();
+          const create = f.page.getByRole('dialog', { name: '新增用户', exact: true });
+          await create.getByLabel('用户名', { exact: true }).fill('Noted_User');
+          await create.getByLabel('登录密码', { exact: true }).fill('fixture-password');
+          await create.getByLabel('备注', { exact: true }).fill('新朋友');
+          await create.getByRole('button', { name: '创建用户', exact: true }).click();
+          await list.getByText('备注：新朋友', { exact: true }).waitFor();
+          assert.deepEqual(f.state.mutations.at(-1).body, { username: 'Noted_User', note: '新朋友', password: 'fixture-password', isAdmin: false, isInvalid: false });
+          assert.equal(await list.getByText('Noted_User', { exact: true }).count(), 1);
+
+          const literal = '<img src=x onerror=window.noteInjected=true>';
+          await list.getByRole('button', { name: `编辑 ${user.username}`, exact: true }).click();
+          await note.fill(literal); await edit.getByRole('button', { name: '保存修改', exact: true }).click();
+          await list.getByText(`备注：${literal}`, { exact: true }).waitFor();
+          assert.equal(await list.locator('img').count(), 0, 'Administrator notes are rendered as literal text');
+          assert.equal(await f.page.evaluate(() => window.noteInjected), undefined);
+          const tableBefore = await list.getByRole('table').boundingBox();
+          const longNote = 'N'.repeat(100);
+          await list.getByRole('button', { name: `编辑 ${user.username}`, exact: true }).click();
+          await note.fill(longNote); await edit.getByRole('button', { name: '保存修改', exact: true }).click();
+          await list.getByText(`备注：${longNote}`, { exact: true }).waitFor();
+          assert.ok((await list.getByRole('table').boundingBox()).width <= tableBefore.width + 1, 'An unbroken 100-character note must not widen the table');
+          assert.equal(await list.evaluate(element => element.scrollWidth <= element.clientWidth), true);
+          await search.fill(longNote); assert.equal(await search.inputValue(), longNote, 'Search supports the complete 100-character note');
+          await list.getByRole('button', { name: '搜索', exact: true }).click();
+          await list.getByText('共 1 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
+          await list.getByRole('button', { name: `编辑 ${user.username}`, exact: true }).click();
+          await note.fill(''); await edit.getByRole('button', { name: '保存修改', exact: true }).click();
+          await list.getByText('没有匹配的用户', { exact: true }).waitFor();
+          assert.equal(f.state.mutations.at(-1).body.note, '');
+          assert.equal(f.state.mutations.at(-1).body.username, user.username);
+          assert.equal(f.state.users.find(value => value.id === user.id).username, user.username);
+          await search.fill(user.username); await list.getByRole('button', { name: '搜索', exact: true }).click();
+          await list.getByText('共 1 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
+          assert.equal(await list.getByText(`备注：${longNote}`, { exact: true }).count(), 0);
+          assert.equal(await list.getByText(user.username, { exact: true }).count(), 1);
+        } finally { await f.close(); }
+      }
+    });
+
+    await t.test('scan history and monthly ranking keep usernames with administrator-only notes below them', async () => {
+      for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+        const f = await fixture(true, viewport, viewport.width < 768);
+        try {
+          const note = '好友 <img src=x onerror=window.noteInjected=true>';
+          f.state.users.find(value => value.id === user.id).note = note;
+          await f.open('近七天扫码情况');
+          const history = f.page.getByRole('dialog', { name: '近七天扫码情况', exact: true });
+          await history.getByText(`备注：${note}`, { exact: true }).waitFor();
+          const username = history.getByText(user.username, { exact: true });
+          assert.equal(await username.count(), 1);
+          assert.ok((await history.getByText(`备注：${note}`, { exact: true }).boundingBox()).y > (await username.boundingBox()).y);
+          assert.equal(await history.evaluate(element => element.scrollWidth <= element.clientWidth), true);
+          assert.equal(await history.locator('img').count(), 0);
+          assert.equal(await f.page.evaluate(() => window.noteInjected), undefined);
+          await history.getByRole('button', { name: `${user.username}的日志详情`, exact: true }).click();
+          const logs = f.page.getByRole('dialog', { name: '日志详情', exact: true });
+          await logs.getByText(`备注：${note}`, { exact: true }).waitFor();
+          assert.match(await logs.innerText(), new RegExp(user.username));
+          assert.equal(await logs.locator('img').count(), 0);
+          await logs.getByRole('button', { name: '关闭日志详情', exact: true }).click(); await logs.waitFor({ state: 'hidden' });
+          await history.getByRole('button', { name: 'Close', exact: true }).click(); await history.waitFor({ state: 'hidden' });
+          await f.open('月度排行榜');
+          const ranking = f.page.getByRole('dialog', { name: '月度排行榜', exact: true });
+          await ranking.getByText(`备注：${note}`, { exact: true }).waitFor();
+          const rankedUsername = ranking.getByText(user.username, { exact: true });
+          assert.equal(await rankedUsername.count(), 1);
+          assert.ok((await ranking.getByText(`备注：${note}`, { exact: true }).boundingBox()).y > (await rankedUsername.boundingBox()).y);
+          assert.equal(await ranking.evaluate(element => element.scrollWidth <= element.clientWidth), true);
+          assert.equal(await ranking.locator('img').count(), 0);
+          assert.equal(await f.page.evaluate(() => window.noteInjected), undefined);
+          assert.deepEqual(f.state.mutations, []);
+        } finally { await f.close(); }
+      }
+      const ordinary = await fixture(false);
+      try {
+        assert.equal(await ordinary.page.getByLabel('备注', { exact: true }).count(), 0);
+        assert.equal(await ordinary.page.getByText('好友识别备注', { exact: true }).count(), 0);
+        assert.deepEqual(ordinary.state.adminReads, []);
+      } finally { await ordinary.close(); }
+    });
 
     await t.test('scan history filters task type with date, pagination, logs and reopening on desktop and mobile', async () => {
       for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
@@ -575,7 +709,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
         await create.getByRole('button', { name: '创建用户', exact: true }).click();
         await list.getByRole('cell', { name: 'New_User', exact: true }).waitFor();
         assert.equal(f.state.mutations.at(-1).method, 'POST');
-        assert.deepEqual(f.state.mutations.at(-1).body, { username: 'New_User', password: 'fixture-password', isAdmin: false, isInvalid: false });
+        assert.deepEqual(f.state.mutations.at(-1).body, { username: 'New_User', note: '', password: 'fixture-password', isAdmin: false, isInvalid: false });
         await list.getByRole('button', { name: '查看 New_User', exact: true }).click();
         const view = f.page.getByRole('dialog', { name: '查看用户', exact: true });
         await view.getByLabel('用户名', { exact: true }).waitFor();
@@ -589,7 +723,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
         await edit.getByRole('button', { name: '保存修改', exact: true }).click();
         await list.getByRole('cell', { name: 'Edited_User', exact: true }).waitFor();
         assert.equal(f.state.mutations.at(-1).body.password, ''); assert.equal(f.state.mutations.at(-1).body.isInvalid, true);
-        await list.getByRole('textbox', { name: '搜索用户名', exact: true }).fill('Edited');
+        await list.getByRole('textbox', { name: '搜索用户名或备注', exact: true }).fill('Edited');
         await list.getByRole('button', { name: '搜索', exact: true }).click();
         await list.getByText('共 1 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
         await list.getByRole('button', { name: '删除 Edited_User', exact: true }).click();

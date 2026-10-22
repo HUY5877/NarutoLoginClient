@@ -5,6 +5,7 @@ import { ApiError } from './errors.js';
 import { logBackend } from './logging.js';
 import type { TaskRunService } from './task-runs.js';
 import type { DailyTask, DailyTaskFailureDetails, DailyTaskLogPage, DailyTaskPage, ManagedUser, PageResult, MonthlyStatsPage } from '../shared/admin.js';
+import { MAX_USER_NOTE_LENGTH } from '../shared/admin.js';
 import { DEFAULT_LOGIN_TYPE } from '../shared/login-types.js';
 import { taskFailureMessage } from '../shared/task-errors.js';
 import { getDailyMilestoneAt } from '../shared/daily-completion.js';
@@ -32,7 +33,15 @@ function userInput(body: unknown, creating: boolean): UserChanges {
   if (typeof input.isAdmin !== 'boolean' || typeof input.isInvalid !== 'boolean') {
     throw new ApiError(400, '请选择用户角色和账号状态。', 'INVALID_USER');
   }
+  let note: string | undefined;
+  if (input.note !== undefined) {
+    if (typeof input.note !== 'string' || [...input.note.trim()].length > MAX_USER_NOTE_LENGTH) {
+      throw new ApiError(400, `备注最多为 ${MAX_USER_NOTE_LENGTH} 个字符。`, 'INVALID_USER_NOTE');
+    }
+    note = input.note.trim();
+  } else if (creating) note = '';
   return { username: parsed.username, usernameKey: parsed.usernameKey, isAdmin: input.isAdmin, isInvalid: input.isInvalid,
+    ...(note === undefined ? {} : { note }),
     ...(keepPassword ? {} : { password: parsed.password }) };
 }
 
@@ -63,8 +72,8 @@ export class AdminService {
   }
   async listUsers(admin: User, query: { search?: unknown; page?: unknown }): Promise<PageResult<ManagedUser>> {
     requireAdmin(admin);
-    if (query.search !== undefined && (typeof query.search !== 'string' || [...query.search].length > 24)) {
-      throw new ApiError(400, '搜索内容最多为 24 个字符。', 'INVALID_SEARCH');
+    if (query.search !== undefined && (typeof query.search !== 'string' || [...query.search.trim()].length > MAX_USER_NOTE_LENGTH)) {
+      throw new ApiError(400, `搜索内容最多为 ${MAX_USER_NOTE_LENGTH} 个字符。`, 'INVALID_SEARCH');
     }
     const page = pageNumber(query.page);
     return { ...await this.database(store => store.listUsers(typeof query.search === 'string' ? query.search.trim() : '', (page - 1) * pageSize, pageSize)), page, pageSize };
@@ -120,6 +129,7 @@ export class AdminService {
       const status: DailyTask['status'] = milestoneCompleted ? 'completed' : run?.status ?? (event.status === 'failed' ? 'failed'
         : Date.parse(event.expiresAt) <= now ? 'unavailable' : event.status === 'qr_ready' ? 'waiting_scan' : event.status);
       return { id: event.id, username: event.username, requestedAt: event.createdAt, loginType: event.loginType ?? DEFAULT_LOGIN_TYPE,
+        note: event.note ?? '',
         mainTask: getMainTask(event.userOptions),
         scannedAt: run?.authorizedAt ?? null,
         // A later sweep failure cannot erase an already recorded daily milestone.

@@ -93,7 +93,10 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
               <TableHead>扫描完成时间</TableHead><TableHead>脚本执行完成时间</TableHead><TableHead>任务状态</TableHead><TableHead className="pr-4">操作</TableHead>
             </TableRow></TableHeader>
             <TableBody>{data.items.map(task => <TableRow key={task.id}>
-              <TableCell className="max-w-44 truncate py-4 pl-4 font-medium" title={task.username}>{task.username}</TableCell>
+              <TableCell className="max-w-44 py-4 pl-4">
+                <div className="truncate font-medium" title={task.username}>{task.username}</div>
+                {task.note && <p className="mt-1 truncate text-xs text-muted-foreground" title={task.note}>备注：{task.note}</p>}
+              </TableCell>
               <TableCell className="whitespace-nowrap text-xs">{loginTypeLabels[task.loginType ?? DEFAULT_LOGIN_TYPE]}</TableCell>
               <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatAdminDate(task.requestedAt)}</TableCell>
               <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatAdminDate(task.scannedAt)}</TableCell>
@@ -108,7 +111,10 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
         </div> : <ul aria-label="近七天任务列表" className="space-y-3">
           {data.items.map(task => <li key={task.id} className="rounded-xl border bg-white/45 p-4">
             <div className="mb-3 flex items-start justify-between gap-3">
-              <span className="min-w-0 break-all text-sm font-semibold">{task.username}</span>
+              <div className="min-w-0 break-all">
+                <span className="text-sm font-semibold">{task.username}</span>
+                {task.note && <p className="mt-1 text-xs leading-5 text-muted-foreground">备注：{task.note}</p>}
+              </div>
               <Badge variant={statusVariant(task.status)} className="shrink-0">{adminTaskStatusLabel(task.status, task.mainTask)}</Badge>
             </div>
             <dl className="space-y-2 text-xs leading-5">

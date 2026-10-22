@@ -3,6 +3,25 @@ import { test } from 'node:test';
 import { isMonthlyStatsPage, isDailyPage, isDailyTaskFailureDetails, isUserResponse, isUsersPage, formatAdminDate } from '../src/frontend/lib/admin.js';
 
 const user = { id: 'user', username: 'Naruto', isAdmin: false, isInvalid: false, createdAt: '2026-10-08T16:00:00.000Z', applicationStatus: null };
+
+test('管理员备注兼容旧记录并拒绝非文本或超长返回', () => {
+  const scan = { id: 'task', username: 'Naruto', requestedAt: user.createdAt, scannedAt: null, completedAt: null, status: 'completed' };
+  const monthly = { userId: 'user', username: 'Naruto', rank: 1, requestCount: 3, requestDays: 2 };
+  const page = { page: 1, pageSize: 20, total: 1, timeZone: 'Asia/Shanghai' };
+  for (const note of [undefined, '', '群昵称：小鸣人', '<img src=x onerror=alert(1)>', '😀'.repeat(100)]) {
+    const managed = { ...user, note };
+    assert.ok(isUserResponse({ user: managed }));
+    assert.ok(isUsersPage({ ...page, items: [managed] }));
+    assert.ok(isDailyPage({ ...page, date: '2026-10-09', items: [{ ...scan, note }] }));
+    assert.ok(isMonthlyStatsPage({ ...page, month: '2026-10', sort: 'requests', totalRequests: 3, items: [{ ...monthly, note }] }));
+  }
+  for (const note of [null, {}, [], 1, true, '备'.repeat(101)]) {
+    assert.equal(isUserResponse({ user: { ...user, note } }), false);
+    assert.equal(isUsersPage({ ...page, items: [{ ...user, note }] }), false);
+    assert.equal(isDailyPage({ ...page, date: '2026-10-09', items: [{ ...scan, note }] }), false);
+    assert.equal(isMonthlyStatsPage({ ...page, month: '2026-10', sort: 'requests', totalRequests: 3, items: [{ ...monthly, note }] }), false);
+  }
+});
 test('administrator responses validate timestamps, roles, pagination and known task states', () => {
   assert.ok(isUserResponse({ user }));
   assert.ok(isUsersPage({ items: [user], page: 1, pageSize: 20, total: 1 }));

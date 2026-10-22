@@ -155,9 +155,19 @@ test('迁移保留旧账号有效性，新账号默认禁用，管理员默认 f
   for (const operation of operations) assert.doesNotMatch(operation.sql, /naruto_login\.sessions/);
 });
 
+test('管理员备注迁移可重复执行，已有用户默认空备注且不改登录名或唯一约束', async t => {
+  const { store, operations } = fixture(t);
+  await store.initialize();
+  const schema = operations.find(value => value.sql.includes('CREATE TABLE IF NOT EXISTS naruto_login.users'))!.sql;
+  assert.match(schema, /ALTER TABLE naruto_login\.users ADD COLUMN IF NOT EXISTS admin_note text NOT NULL DEFAULT ''/);
+  assert.match(schema, /UNIQUE \(username_key\)/);
+  assert.doesNotMatch(schema, /UPDATE naruto_login\.users|UNIQUE[^;]*admin_note|admin_note[^;]*UNIQUE/);
+});
+
 test('注册强制创建禁用且非管理员的账号和 pending 申请，不访问会话表或公开密码', async t => {
   const { store, users, operations } = fixture(t);
-  const application = await store.createRegistration(user(), appId, now);
+  const suppliedUser = { ...user(), note: '内部管理备注', admin_note: '内部管理备注' };
+  const application = await store.createRegistration(suppliedUser, appId, now);
   assert.deepEqual(application, { id: appId, userId, username: 'Naruto', status: 'pending',
     createdAt: now.toISOString(), reviewedAt: null, reviewedBy: null, reason: null });
   assert.equal(users.get(userId)?.isInvalid, true);
@@ -168,6 +178,20 @@ test('注册强制创建禁用且非管理员的账号和 pending 申请，不�
   const insert = operations.find(value => value.sql.startsWith('INSERT INTO naruto_login.users'))!;
   assert.ok(!insert.sql.includes(password));
   assert.equal(insert.values[3], password);
+  assert.doesNotMatch(insert.sql, /admin_note|\bnote\b/);
+  assert.ok(!insert.values.includes('内部管理备注'));
+  assert.doesNotMatch(JSON.stringify(application), /admin_note|"note"|内部管理备注/);
+});
+
+test('登录查找与当前用户查询不读取管理员备注，认证只按 username_key 匹配', async t => {
+  const { store, operations } = fixture(t);
+  await store.findUser('admin');
+  await store.findActiveUser(adminId);
+  const reads = operations.filter(value => value.sql.startsWith('SELECT ') && value.sql.includes('FROM naruto_login.users'));
+  assert.equal(reads.length, 2);
+  for (const read of reads) assert.doesNotMatch(read.sql, /admin_note|\bnote\b|SELECT \*|SELECT u\.\*/);
+  assert.match(reads[0].sql, /WHERE u\.username_key = \$1$/);
+  assert.deepEqual(reads[0].values, ['admin']);
 });
 
 test('重复用户名映射为 UsernameTakenError，申请插入失败会回滚新账号', async t => {

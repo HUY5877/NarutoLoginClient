@@ -1,9 +1,12 @@
 import type { LoginType } from './login-types';
 import type { MainTask } from './user-options';
 
+export const MAX_USER_NOTE_LENGTH = 100;
+
 export interface ManagedUser {
   id: string;
   username: string;
+  note?: string;
   isAdmin: boolean;
   isInvalid: boolean;
   createdAt: string;
@@ -22,6 +25,7 @@ export interface DailyTask {
   loginType?: LoginType;
   mainTask?: MainTask;
   username: string;
+  note?: string;
   requestedAt: string;
   scannedAt: string | null;
   completedAt: string | null;
@@ -37,6 +41,7 @@ export interface DailyTaskPage extends PageResult<DailyTask> {
 export type MonthlySort = 'requests' | 'days';
 export interface MonthlyUserStats {
   userId: string; username: string; rank: number; requestCount: number; requestDays: number;
+  note?: string;
 }
 export interface MonthlyStatsPage extends PageResult<MonthlyUserStats> {
   month: string; timeZone: 'Asia/Shanghai'; sort: MonthlySort; totalRequests: number;

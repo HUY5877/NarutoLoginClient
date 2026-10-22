@@ -30,6 +30,7 @@ export function AdminTaskLogDetails({ task, onAccessLost }: { task: DailyTask; o
       <DialogHeader className="shrink-0 border-b px-4 py-4 pr-16">
         <DialogTitle className="text-base font-semibold">日志详情</DialogTitle>
         <DialogDescription className="text-xs [overflow-wrap:anywhere]">{task.username} · {formatAdminDate(task.requestedAt)} 申请</DialogDescription>
+        {task.note && <p className="text-xs leading-5 text-muted-foreground [overflow-wrap:anywhere]">备注：{task.note}</p>}
         <div className="pt-1"><Badge variant={failed ? 'destructive' : 'secondary'}>{adminTaskStatusLabel(currentStatus, task.mainTask)}</Badge></div>
       </DialogHeader>
       <DialogClose asChild>

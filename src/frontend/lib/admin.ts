@@ -1,14 +1,16 @@
-import { dailyStatusLabels, type DailyStatus, type DailyTaskPage, type DailyTaskFailureDetails, type ManagedUser, type PageResult, type MonthlyStatsPage } from '../../shared/admin';
+import { MAX_USER_NOTE_LENGTH, dailyStatusLabels, type DailyStatus, type DailyTaskPage, type DailyTaskFailureDetails, type ManagedUser, type PageResult, type MonthlyStatsPage } from '../../shared/admin';
 import { parseLoginType } from '../../shared/login-types';
 import { mainTasks, type MainTask } from '../../shared/user-options';
 
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const date = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value));
 const nullableDate = (value: unknown) => value === null || date(value);
+const validNote = (value: unknown) => value === undefined || typeof value === 'string' && [...value].length <= MAX_USER_NOTE_LENGTH;
 const calendarDate = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
   && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 export function isManagedUser(value: unknown): value is ManagedUser {
   return object(value) && typeof value.id === 'string' && typeof value.username === 'string'
+    && validNote(value.note)
     && typeof value.isAdmin === 'boolean' && typeof value.isInvalid === 'boolean' && date(value.createdAt)
     && (value.applicationStatus === null || ['pending', 'approved', 'rejected'].includes(String(value.applicationStatus)));
 }
@@ -30,6 +32,7 @@ export function isDailyPage(value: unknown): value is DailyTaskPage {
       && (value.startDate === undefined || value.selectedDate >= value.startDate))
     && value.timeZone === 'Asia/Shanghai' && value.items.every(item => object(item)
       && typeof item.id === 'string' && typeof item.username === 'string' && date(item.requestedAt)
+      && validNote(item.note)
       && (item.mainTask === undefined || mainTasks.includes(item.mainTask as MainTask))
       && (item.mainTask ?? 'daily') === (value.mainTask ?? 'daily')
       && parseLoginType(item.loginType) !== null
@@ -54,6 +57,7 @@ export function isMonthlyStatsPage(value: unknown): value is MonthlyStatsPage {
     && value.timeZone === 'Asia/Shanghai' && ['requests', 'days'].includes(String(value.sort))
     && Number.isSafeInteger(value.totalRequests) && (value.totalRequests as number) >= 0
     && value.items.every(item => object(item) && typeof item.userId === 'string' && typeof item.username === 'string'
+      && validNote(item.note)
       && positive(item.rank) && positive(item.requestCount) && positive(item.requestDays)
       && (item.requestDays as number) <= 31 && (item.requestDays as number) <= (item.requestCount as number));
 }

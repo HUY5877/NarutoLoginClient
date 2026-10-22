@@ -60,7 +60,44 @@ test('user search is validated, trimmed and paginated without silently dropping 
   } });
   assert.deepEqual(await f.service.listUsers(admin, { search: ' Naru_to ', page: '2' }), { items: [user], total: 41, page: 2, pageSize: 20 });
   for (const page of ['0', '-1', '1.1', '01', '1000000', ['1', '2']]) await assert.rejects(f.service.listUsers(admin, { page }), errorIs(400, 'INVALID_PAGE'));
-  for (const search of [['x'], 'x'.repeat(25)]) await assert.rejects(f.service.listUsers(admin, { search }), errorIs(400, 'INVALID_SEARCH'));
+  for (const search of [['x'], 'x'.repeat(101)]) await assert.rejects(f.service.listUsers(admin, { search }), errorIs(400, 'INVALID_SEARCH'));
+});
+
+test('管理员可按一百个 Unicode 字符的备注搜索，去掉两侧空白并保留分页', async () => {
+  const search = '😀'.repeat(100);
+  const f = fixture({ listUsers: async (value, offset, limit) => {
+    assert.equal(value, search); assert.equal(offset, 20); assert.equal(limit, 20);
+    return { items: [user], total: 1 };
+  } });
+  const result = await f.service.listUsers(admin, { search: `  ${search}  `, page: '2' });
+  assert.equal(result.items[0].username, user.username);
+  await assert.rejects(f.service.listUsers(admin, { search: search + '😀' }), errorIs(400, 'INVALID_SEARCH'));
+});
+
+test('管理员新增备注默认空白，编辑省略保留，显式空白清空，备注不替换用户名', async () => {
+  const writes: Array<{ username: string; usernameKey: string; note?: string }> = [];
+  const f = fixture({ createUser: async (_actor, input) => { writes.push(input); return { ...user, note: input.note }; },
+    updateUser: async (_actor, _target, input) => { writes.push(input); return { ...user, note: input.note }; } });
+  const input = { username: ' Naruto ', password: 'fixture-password', isAdmin: false, isInvalid: false };
+  await f.service.createUser(admin, input);
+  await f.service.createUser(admin, { ...input, note: '  群友 小明 😀  ' });
+  await f.service.updateUser(admin, id, input);
+  await f.service.updateUser(admin, id, { ...input, note: ' \t ' });
+  await f.service.updateUser(admin, id, { ...input, note: '😀'.repeat(100) });
+  assert.deepEqual(writes.map(value => value.note), ['', '群友 小明 😀', undefined, '', '😀'.repeat(100)]);
+  assert.equal(Object.hasOwn(writes[2], 'note'), false, '旧客户端没有传备注时不能清空');
+  assert.ok(writes.every(value => value.username === 'Naruto' && value.usernameKey === 'naruto'));
+});
+
+test('非法备注在写数据库前返回明确错误，普通用户没有备注编辑权限', async () => {
+  const f = fixture({ initialize: fail });
+  const input = { username: 'Naruto', password: 'fixture-password', isAdmin: false, isInvalid: false };
+  for (const note of [null, 1, true, [], {}, '汉'.repeat(101), '😀'.repeat(101)]) {
+    await assert.rejects(f.service.createUser(admin, { ...input, note }), errorIs(400, 'INVALID_USER_NOTE'));
+    await assert.rejects(f.service.updateUser(admin, id, { ...input, note }), errorIs(400, 'INVALID_USER_NOTE'));
+  }
+  const ordinary = { ...admin, isAdmin: false };
+  await assert.rejects(f.service.updateUser(ordinary, id, { ...input, note: '越权编辑' }), errorIs(403, 'ADMIN_REQUIRED'));
 });
 
 test('create and edit validate account information; empty edit password preserves the stored password', async () => {
@@ -114,7 +151,7 @@ test('recent history includes today and six previous Beijing dates with an exclu
     assert.equal(offset, 20); assert.equal(limit, 20); return { items: [event], total: 21 };
   } }, [run]);
   assert.deepEqual(await f.service.dailyTasks(admin, { page: '2' }), {
-    items: [{ id, username: user.username, requestedAt: event.createdAt, scannedAt: run.authorizedAt,
+    items: [{ id, username: user.username, note: '', requestedAt: event.createdAt, scannedAt: run.authorizedAt,
       completedAt: run.finishedAt, status: 'completed', loginType: 'android_qq', mainTask: 'daily' }], total: 21, page: 2, pageSize: 20, date: '2026-10-09', startDate: '2026-10-03', mainTask: 'daily', timeZone: 'Asia/Shanghai',
   });
   assert.deepEqual(f.calls, [[id]]);
@@ -131,6 +168,16 @@ test('日常列表显示申请保存的渠道，历史缺失值默认安卓 QQ',
   const f = fixture({ listDailyEvents: async () => ({ items, total: items.length }) });
   assert.deepEqual((await f.service.dailyTasks(admin, {})).items.map(task => task.loginType),
     ['android_qq', 'ios_qq', 'android_wechat', 'ios_wechat', 'android_qq']);
+});
+
+test('扫码列表返回账号当前备注，旧记录没有备注时返回空字符串', async () => {
+  const events: DailyEvent[] = ['', '群友 小明'].map((note, index) => ({ id: `${id}-${index}`, username: user.username,
+    createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 1000).toISOString(), status: 'queued',
+    ...(note ? { note } : {}) }));
+  const f = fixture({ listDailyEvents: async () => ({ items: events, total: events.length }) });
+  const result = await f.service.dailyTasks(admin, {});
+  assert.deepEqual(result.items.map(item => item.note), ['', '群友 小明']);
+  assert.ok(result.items.every(item => item.username === user.username));
 });
 
 test('近七天扫码列表按选定主任务分页，缺省日常并返回每条申请的任务类型', async () => {

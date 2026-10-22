@@ -58,7 +58,10 @@ export function AdminMonthlyStats({ open, onOpenChange, onAccessLost, returnFocu
               </TableRow></TableHeader>
               <TableBody>{result.items.map(user => <TableRow key={user.userId}>
                 <TableCell className={`pl-3 tabular-nums ${user.rank <= 3 ? 'font-semibold text-primary' : 'text-muted-foreground'}`}>{user.rank}</TableCell>
-                <TableCell className="whitespace-normal break-all py-4 text-sm font-medium">{user.username}</TableCell>
+                <TableCell className="whitespace-normal break-all py-4 text-sm">
+                  <span className="font-medium">{user.username}</span>
+                  {user.note && <p className="mt-1 text-xs leading-5 text-muted-foreground">备注：{user.note}</p>}
+                </TableCell>
                 <TableCell className="text-right tabular-nums">{user.requestCount.toLocaleString('zh-CN')}</TableCell>
                 <TableCell className="pr-3 text-right tabular-nums">{user.requestDays} 天</TableCell>
               </TableRow>)}</TableBody>
