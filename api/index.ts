@@ -7,6 +7,7 @@ import { TaskService } from '../src/server/queue.js';
 import { TaskRunService } from '../src/server/task-runs.js';
 import { createObjectReader } from '../src/server/storage.js';
 import { AdminService } from '../src/server/admin.js';
+import { createQqAuthorizationService } from '../src/server/qq-authorizations.js';
 
 const config = await loadRuntimeConfig();
 const store = config.databaseUrl ? new PgAuthStore(config.databaseUrl, config.timeoutMs) : undefined;
@@ -15,6 +16,7 @@ const runs = new TaskRunService(config, { store });
 const app = createApp(config, {
   events: new LoginEventService(config, { store, tasks }),
   runs,
+  qqAuthorizations: createQqAuthorizationService(config),
   admin: new AdminService({ store, runs }),
   auth: new AuthService(config, { store }), storage: createObjectReader(config),
 });

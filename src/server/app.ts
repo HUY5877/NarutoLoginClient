@@ -12,12 +12,15 @@ import { parseUserOptions } from '../shared/user-options.js';
 import { parseLoginType } from '../shared/login-types.js';
 import type { AdminService } from './admin.js';
 import { logBackend, requestLogContext } from './logging.js';
+import type { QqAuthorizationService } from './qq-authorizations.js';
+import { validateQqJson } from './qq-authorization-data.js';
 
 export interface Dependencies {
   events: Pick<LoginEventService, 'create' | 'getForUser' | 'getActive' | 'recordStatus'> & Partial<Pick<LoginEventService, 'refresh'>>;
   auth: Pick<AuthService, 'register' | 'login' | 'getUser' | 'listApplications' | 'reviewApplication'>;
   storage: ObjectReader;
   runs?: Pick<TaskRunService, 'getLatest' | 'getEvents'>;
+  qqAuthorizations?: Pick<QqAuthorizationService, 'upload' | 'list' | 'get' | 'delete'>;
   admin?: Pick<AdminService, 'listUsers' | 'getUser' | 'createUser' | 'updateUser' | 'deleteUser' | 'dailyTasks' | 'dailyTaskFailureDetails' | 'dailyTaskLogs' | 'monthlyStats'>;
   now?: () => number;
 }
@@ -41,11 +44,11 @@ function cookieOptions(req: Request): CookieOptions {
 function logPath(req: Request): string {
   const path = req.originalUrl.split('?')[0].replace(/\/[0-9a-f-]{36}(?=\/|$)/gi, '/:id');
   // Unknown paths can contain arbitrary user input; never include them in diagnostics.
-  return /^\/api\/(?:health|auth\/(?:me|login|register|logout)|login-sessions(?:\/(?:active|:id)(?:\/(?:refresh|qr))?)?|task-runs\/(?:latest|:id\/events)|admin\/(?:users(?:\/:id)?|monthly-stats|daily-tasks(?:\/:id\/(?:failure-details|logs))?|registration-applications(?:\/:id\/review)?))$/.test(path)
+  return /^\/api\/(?:health|auth\/(?:me|login|register|logout)|qq-authorizations(?:\/:id)?|login-sessions(?:\/(?:active|:id)(?:\/(?:refresh|qr))?)?|task-runs\/(?:latest|:id\/events)|admin\/(?:users(?:\/:id)?|monthly-stats|daily-tasks(?:\/:id\/(?:failure-details|logs))?|registration-applications(?:\/:id\/review)?))$/.test(path)
     ? path : '/api/unknown';
 }
 
-export function createApp(config: Config, { events, auth, storage, runs, admin, now = Date.now }: Dependencies) {
+export function createApp(config: Config, { events, auth, storage, runs, admin, qqAuthorizations, now = Date.now }: Dependencies) {
   const app = express();
   const cookieName = config.sessionCookieName ?? 'naruto_session';
   app.disable('x-powered-by');
@@ -58,7 +61,12 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     res.set('X-Request-Id', requestId);
     requestLogContext.run({ requestId, method: req.method, path: logPath(req), ...(vercelRequestId ? { vercelRequestId } : {}) }, next);
   });
-  app.use(express.json({ limit: '2kb' }));
+  const standardJson = express.json({ limit: '2kb' });
+  const authorizationJson = express.json({ limit: '64kb', verify: (_req, _res, buffer) => validateQqJson(buffer) });
+  app.use((req, res, next) => {
+    const authorizationUpload = config.appEnv === 'test' && req.method === 'POST' && req.path === '/api/qq-authorizations';
+    (authorizationUpload ? authorizationJson : standardJson)(req, res, next);
+  });
   app.get('/api/health', (_req, res) => res.json({
     ok: true, storage: config.storageDriver, simulation: true, environment: config.appEnv ?? 'prod',
   }));
@@ -88,6 +96,20 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
   app.post('/api/auth/logout', (req, res) => {
     res.clearCookie(cookieName, cookieOptions(req));
     res.status(204).end();
+  });
+
+  app.use('/api/qq-authorizations', async (req, res, next) => {
+    if (config.appEnv !== 'test') throw new ApiError(404, '接口不存在。', 'QQ_AUTHORIZATION_DISABLED');
+    const user = await auth.getUser(sessionToken(req, cookieName));
+    if (!user) throw new ApiError(401, '请先登录账号。', 'AUTH_REQUIRED');
+    if (!qqAuthorizations) throw new ApiError(503, 'QQ 授权服务尚未配置。', 'QQ_AUTHORIZATION_UNAVAILABLE');
+    res.locals.user = user; next();
+  });
+  app.get('/api/qq-authorizations', async (_req, res) => res.json(await qqAuthorizations!.list((res.locals.user as User).id)));
+  app.post('/api/qq-authorizations', async (req, res) => res.status(201).json(await qqAuthorizations!.upload((res.locals.user as User).id, req.body)));
+  app.get('/api/qq-authorizations/:id', async (req, res) => res.json(await qqAuthorizations!.get((res.locals.user as User).id, req.params.id as string)));
+  app.delete('/api/qq-authorizations/:id', async (req, res) => {
+    await qqAuthorizations!.delete((res.locals.user as User).id, req.params.id as string); res.status(204).end();
   });
 
   app.use('/api/admin', async (req, res, next) => {

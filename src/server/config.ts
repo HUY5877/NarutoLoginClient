@@ -12,6 +12,7 @@ export interface Config {
   redisUrl?: string;
   databaseUrl?: string;
   jwtSecret?: string;
+  qqAuthorizationEncryptionKey?: string;
   redisQueueKey: string;
   localObjectsDir: string;
   sessionTtlMs: number;
@@ -90,6 +91,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     appEnv,
     host: env.HOST ?? '127.0.0.1', port: integer(env, 'PORT', 4300, 1, 65535),
     redisUrl, redisQueueKey, databaseUrl, jwtSecret,
+    // This optional test feature validates its key lazily; mistakes must not disable the existing website.
+    qqAuthorizationEncryptionKey: env.QQ_AUTHORIZATION_ENCRYPTION_KEY?.trim() || undefined,
     localObjectsDir: resolve(env.LOCAL_OBJECTS_DIR ?? resolve(serverRoot, '../../.data/login-objects')),
     sessionTtlMs: integer(env, 'SESSION_TTL_MS', 300000, 5000, 600000),
     timeoutMs: integer(env, 'REQUEST_TIMEOUT_MS', 5000, 100, 30000),
