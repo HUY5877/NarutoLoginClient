@@ -434,13 +434,39 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
           await history.getByRole('button', { name: 'Close', exact: true }).click(); await history.waitFor({ state: 'hidden' });
           await f.open('月度排行榜');
           const ranking = f.page.getByRole('dialog', { name: '月度排行榜', exact: true });
-          await ranking.getByText(`备注：${note}`, { exact: true }).waitFor();
+          const rankedNote = ranking.getByText(note, { exact: true });
+          await rankedNote.waitFor();
           const rankedUsername = ranking.getByText(user.username, { exact: true });
           assert.equal(await rankedUsername.count(), 1);
-          assert.ok((await ranking.getByText(`备注：${note}`, { exact: true }).boundingBox()).y > (await rankedUsername.boundingBox()).y);
+          const nameBox = await rankedUsername.boundingBox();
+          const noteBox = await rankedNote.boundingBox();
+          assert.ok(noteBox.x >= nameBox.x + nameBox.width - 1, 'The note sits beside the original username');
+          assert.ok(Math.abs((noteBox.y + noteBox.height / 2) - (nameBox.y + nameBox.height / 2)) <= 1,
+            'The username and note remain on the same line');
+          assert.equal(await ranking.locator('[data-slot="badge"]').filter({ hasText: note }).count(), 1);
+          assert.equal(await ranking.getByTitle(note, { exact: true }).count(), 1, 'The full note is available on hover');
+          assert.doesNotMatch(await ranking.innerText(), /备注：/);
+          const rowHeights = await ranking.locator('tbody tr').evaluateAll(rows => rows.map(row => row.getBoundingClientRect().height));
+          assert.ok(Math.max(...rowHeights) - Math.min(...rowHeights) <= 1, 'Noted and unnoted ranking rows have equal height');
+          assert.ok(rowHeights.every(height => height >= 44 && height <= 46), 'Ranking rows keep the compact original height');
           assert.equal(await ranking.evaluate(element => element.scrollWidth <= element.clientWidth), true);
           assert.equal(await ranking.locator('img').count(), 0);
           assert.equal(await f.page.evaluate(() => window.noteInjected), undefined);
+          const rankingWidth = (await ranking.getByRole('table').boundingBox()).width;
+          f.state.users.find(value => value.id === user.id).note = longNote;
+          await ranking.getByRole('button', { name: '刷新', exact: true }).click();
+          const longRankedNote = ranking.getByText(longNote, { exact: true });
+          await longRankedNote.waitFor();
+          assert.equal(await ranking.getByTitle(longNote, { exact: true }).count(), 1);
+          assert.ok(await longRankedNote.evaluate(element => getComputedStyle(element).textOverflow === 'ellipsis' && element.scrollWidth > element.clientWidth),
+            'Long ranking notes are truncated instead of wrapping');
+          assert.deepEqual(await ranking.locator('tbody tr').evaluateAll(rows => rows.map(row => row.getBoundingClientRect().height)), rowHeights);
+          assert.ok((await ranking.getByRole('table').boundingBox()).width <= rankingWidth + 1, 'Long notes must not widen the ranking table');
+          assert.equal(await ranking.evaluate(element => element.scrollWidth <= element.clientWidth), true);
+          assert.equal(await ranking.locator('tbody tr').first().locator('td').nth(1).locator('div').evaluate(element => element.scrollWidth <= element.clientWidth), true);
+          console.log(`monthly inline notes ${viewport.width}px row heights: ${rowHeights.join(', ')}`);
+          await f.page.screenshot({ animations: 'disabled', path: path.join(repository,
+            `.data/admin-preview/monthly-note-inline-long-${viewport.width < 768 ? 'mobile' : 'desktop'}.png`) });
           assert.deepEqual(f.state.mutations, []);
         } finally { await f.close(); }
       }
