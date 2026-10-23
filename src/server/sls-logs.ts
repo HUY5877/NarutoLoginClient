@@ -1,11 +1,12 @@
-import { createRequire } from 'node:module';
+import SlsClientExport, { GetLogsV2Headers, GetLogsV2Request } from '@alicloud/sls20201230';
 import { $OpenApiUtil } from '@alicloud/openapi-core';
 import { RuntimeOptions } from '@darabonba/typescript';
 import type { SlsConfig } from './config.js';
 import type { TaskLog } from './task-runs.js';
 
-// The generated SDK exports a CommonJS `default`; unwrap it explicitly for native ESM and Vercel.
-const { default: SlsClient, GetLogsV2Headers, GetLogsV2Request } = createRequire(import.meta.url)('@alicloud/sls20201230') as typeof import('@alicloud/sls20201230');
+// Static imports keep the SDK in Vercel's dependency trace. Native ESM exposes
+// its CommonJS wrapper, while bundlers may already unwrap the default export.
+const SlsClient = (SlsClientExport as unknown as { default?: typeof SlsClientExport }).default ?? SlsClientExport;
 
 export interface SlsLogPage {
   logs: TaskLog[];
