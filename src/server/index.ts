@@ -14,6 +14,7 @@ import { createObjectReader } from './storage.js';
 import { TaskService } from './queue.js';
 import { TaskRunService } from './task-runs.js';
 import { AdminService } from './admin.js';
+import { QqCaptureService } from './qq-captures.js';
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const serverRoot = existsSync(resolve(moduleDir, 'package.json')) ? moduleDir : resolve(moduleDir, '..');
@@ -33,7 +34,8 @@ const auth = new AuthService(config, { store });
 const events = new LoginEventService(config, { store, tasks });
 const runs = new TaskRunService(config, { store });
 const admin = new AdminService({ store, runs });
-const app = createApp(config, { events, auth, runs, admin, storage: createObjectReader(config) });
+const qqCaptures = new QqCaptureService(config);
+const app = createApp(config, { events, auth, runs, admin, qqCaptures, storage: createObjectReader(config) });
 const server = createServer(app);
 let vite: import('vite').ViteDevServer | undefined;
 
@@ -76,6 +78,7 @@ async function shutdown() {
   setTimeout(() => server.closeAllConnections(), 5000).unref();
   await vite?.close();
   await auth.close();
+  await qqCaptures.close();
 }
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => { void shutdown(); });

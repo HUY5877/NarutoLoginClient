@@ -60,6 +60,18 @@ npm run dev
 
 登录渠道通过顶层 `loginType`（`android_qq`、`ios_qq`、`android_wechat`、`ios_wechat`）随申请、Redis 队列和刷新指令传给执行端，数据库与执行记录保留首次选择；旧申请默认安卓 QQ。需配套更新 NarutoDailyADB 执行端。
 
+### QQ 抓号器自动登录
+
+配套使用 NarutoDailyADB 的 `codex/qq-capture-login` 分支，以及抓号器 1.3.0（版本号 7）和上号器 4.0（版本号 9）或兼容自动化协议 1 的后续版本。执行端在安卓 QQ、iOS QQ 实例中同时发现两款 App 时使用新流程；缺少任意一款时继续原扫码流程。微信及登录后的日常、周胜逻辑保持原样。
+
+抓号器由网站任务自动启动，无需登录网站账号。脚本传入当前任务所属用户和一次性扫码凭证，二维码仍通过原有网页展示。扫码成功后，`POST /api/qq-captures` 将完整 `callback_url` 明文保存到当前环境数据库，并固定账号名称为“自己账号”。脚本读取本轮结果后在上号器输入 URL，再等待游戏界面确认登录完成。上号器登录网站账号后，通过 `GET /api/qq-authorizations` 查看本人的扫码历史；该列表仅返回名称、尾号与时间，不返回授权 URL 或 token。
+
+上线前需一起更新网站、执行端和两款 APK。在执行端选定的 Cloudflare KV namespace 配置 `QQ_CAPTURE_API_BASE`，值为可从模拟器访问的 HTTPS 网站根地址（例如 `https://login.example.com`，不含 `/api`）。网站和执行端的 `DATABASE_URL` 必须指向同一个环境数据库。不要依据 Git 分支推断环境；两端仍由 `APP_ENV` 选择 prod/test。网站收到 QQ 申请时会在入队前初始化新表，现有数据库账号需要建表权限；执行端需要对 `naruto_login.qq_capture_requests` 执行插入、查询和更新。
+
+`qq_capture_requests` 按 `(task_id, attempt_id)` 隔离执行尝试，每次刷新更换 `capture_id` 和凭证，刷新不会延长原任务有效期。上传、读取和取消都绑定原用户及当前轮次，旧二维码结果不能作为新轮结果使用。上传需要完整任务凭证，单独提供公开 `userId` 无法写入账号。`captureToken`、数据库连接串与授权 URL 不写入任务日志或网页公开状态。
+
+新环境自动创建明文 `qq_authorizations` 表，并兼容已有的明文账号表。更早仅包含 `ciphertext`、`nonce`、`auth_tag` 的加密表需先完成既有迁移；本分支不会丢弃或自动解密旧记录。自动化模式下，抓号器本机刷新按钮提示在网页刷新，以保持网页的刷新轮次和展示二维码一致。
+
 任务设置统一放在 `userOptions` JSON 中，例如 `{ "mainTask": "arena_weekly", "equipmentStamina": true, "secretRealmMode": "all" }`。`mainTask` 可取 `daily`（刷日常）或 `arena_weekly`（决斗场周胜），缺省继续执行原来的刷日常；旧请求和旧记录不会被补写此字段。主任务只随现有 `userOptions` JSON 传递，沿用原队列和所有 Redis key，也不增加 SQL 列。提交后，复用申请、重试投递、刷新二维码和执行记录恢复都保留首次主任务选择。执行端通过 `mainTask` 区分日常和周胜任务。
 
 日常设置中的 `secretRealmMode` 可取 `once`、`all`、`skip`，分别对应只刷一次、刷完所有扫荡券、不刷秘境，缺省为 `all`。兼容旧 `secretRealmOnce` 布尔参数：`true` 映射为 `once`，`false` 映射为 `all`；服务响应及新入队数据统一使用模式字段。新旧字段同时提供时必须一致，否则拒绝申请。切换主任务不会清空装备体力和秘境设置，这些选项仍随 `userOptions` 保存，但只对日常任务生效；周胜执行忽略日常专属设置。

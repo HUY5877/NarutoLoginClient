@@ -12,6 +12,8 @@ import { parseUserOptions } from '../shared/user-options.js';
 import { parseLoginType } from '../shared/login-types.js';
 import type { AdminService } from './admin.js';
 import { logBackend, requestLogContext } from './logging.js';
+import type { QqCaptureService } from './qq-captures.js';
+import { validateQqJson } from './qq-authorization-data.js';
 
 export interface Dependencies {
   events: Pick<LoginEventService, 'create' | 'getForUser' | 'getActive' | 'recordStatus'> & Partial<Pick<LoginEventService, 'refresh'>>;
@@ -19,6 +21,7 @@ export interface Dependencies {
   storage: ObjectReader;
   runs?: Pick<TaskRunService, 'getLatest' | 'getEvents'>;
   admin?: Pick<AdminService, 'listUsers' | 'getUser' | 'createUser' | 'updateUser' | 'deleteUser' | 'dailyTasks' | 'dailyTaskFailureDetails' | 'dailyTaskLogs' | 'interruptDailyTask' | 'monthlyStats'>;
+  qqCaptures?: Pick<QqCaptureService, 'upload' | 'list'> & Partial<Pick<QqCaptureService, 'initialize'>>;
   now?: () => number;
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -41,11 +44,11 @@ function cookieOptions(req: Request): CookieOptions {
 function logPath(req: Request): string {
   const path = req.originalUrl.split('?')[0].replace(/\/[0-9a-f-]{36}(?=\/|$)/gi, '/:id');
   // Unknown paths can contain arbitrary user input; never include them in diagnostics.
-  return /^\/api\/(?:health|auth\/(?:me|login|register|logout)|login-sessions(?:\/(?:active|:id)(?:\/(?:refresh|qr))?)?|task-runs\/(?:latest|:id\/events)|admin\/(?:users(?:\/:id)?|monthly-stats|daily-tasks(?:\/:id\/(?:failure-details|logs|interrupt))?|registration-applications(?:\/:id\/review)?))$/.test(path)
+  return /^\/api\/(?:health|auth\/(?:me|login|register|logout)|qq-captures|qq-authorizations|login-sessions(?:\/(?:active|:id)(?:\/(?:refresh|qr))?)?|task-runs\/(?:latest|:id\/events)|admin\/(?:users(?:\/:id)?|monthly-stats|daily-tasks(?:\/:id\/(?:failure-details|logs|interrupt))?|registration-applications(?:\/:id\/review)?))$/.test(path)
     ? path : '/api/unknown';
 }
 
-export function createApp(config: Config, { events, auth, storage, runs, admin, now = Date.now }: Dependencies) {
+export function createApp(config: Config, { events, auth, storage, runs, admin, qqCaptures, now = Date.now }: Dependencies) {
   const app = express();
   const cookieName = config.sessionCookieName ?? 'naruto_session';
   app.disable('x-powered-by');
@@ -58,7 +61,12 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     res.set('X-Request-Id', requestId);
     requestLogContext.run({ requestId, method: req.method, path: logPath(req), ...(vercelRequestId ? { vercelRequestId } : {}) }, next);
   });
-  app.use(express.json({ limit: '2kb' }));
+  const standardJson = express.json({ limit: '2kb' });
+  const captureJson = express.json({ limit: '64kb', verify: (_req, _res, buffer) => validateQqJson(buffer) });
+  app.use((req, res, next) => {
+    const captureUpload = req.method === 'POST' && /^\/api\/qq-captures\/?$/i.test(req.path);
+    (captureUpload ? captureJson : standardJson)(req, res, next);
+  });
   app.get('/api/health', (_req, res) => res.json({
     ok: true, storage: config.storageDriver, simulation: true, environment: config.appEnv ?? 'prod',
   }));
@@ -88,6 +96,18 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
   app.post('/api/auth/logout', (req, res) => {
     res.clearCookie(cookieName, cookieOptions(req));
     res.status(204).end();
+  });
+
+  const captureService = () => {
+    if (!qqCaptures) throw new ApiError(503, 'QQ 抓号服务尚未配置。', 'QQ_AUTHORIZATION_UNAVAILABLE');
+    return qqCaptures;
+  };
+  // Native capture clients authenticate with a short-lived task capability, never a website cookie.
+  app.post('/api/qq-captures', async (req, res) => res.status(201).json(await captureService().upload(req.body)));
+  app.get('/api/qq-authorizations', async (req, res) => {
+    const user = await auth.getUser(sessionToken(req, cookieName));
+    if (!user) throw new ApiError(401, '请先登录账号。', 'AUTH_REQUIRED');
+    res.json(await captureService().list(user.id));
   });
 
   app.use('/api/admin', async (req, res, next) => {
@@ -161,6 +181,8 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     if (!userOptions) throw new ApiError(400, '任务设置格式不正确，请检查主任务、装备栏体力开关和秘境刷取方式。', 'INVALID_USER_OPTIONS');
     const loginType = parseLoginType(req.body?.loginType);
     if (!loginType) throw new ApiError(400, '请选择有效的登录渠道。', 'INVALID_LOGIN_TYPE');
+    // Auth has initialized the parent tables; publish QQ jobs only after their capture table exists.
+    if (loginType === 'android_qq' || loginType === 'ios_qq') await qqCaptures?.initialize?.();
     const task = await events.create(user.id, requestId, userOptions, loginType);
     res.status(202).json({ ...publicTask(task), pollAfterMs: 1000 });
   });
