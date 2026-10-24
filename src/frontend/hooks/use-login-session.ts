@@ -20,6 +20,7 @@ export interface Session {
   loginType?: LoginType;
   loginStartedAt?: string;
   loginAuthorized?: boolean;
+  scanCaptured?: boolean;
   refreshSupported?: boolean;
   refreshRequestId?: string;
   qrRevision?: string;
@@ -276,6 +277,14 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
           updateAvailability(true);
           return;
         }
+        // Capture receipt only ends QR presentation. Game authorization, its
+        // deadline and task execution still arrive through their own signals.
+        if (current.scanCaptured) {
+          replaceQr(null);
+          setPhase('qr_ready');
+          setRetrying(false);
+          return;
+        }
         const path = `/api/login-sessions/${encodeURIComponent(current.id)}`;
         const sessionId = current.id;
         setPhase(current.status === 'qr_ready' ? 'preparing_qr' : current.status);
@@ -461,12 +470,19 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
         const next = await response.json() as Session;
         if (controller.signal.aborted || !validSession(next) || next.id !== session.id) return;
         if (next.loginAuthorized) confirmLogin(next.id);
-        else if (next.refreshRequestId || next.qrRevision !== session.qrRevision || !isLive(next)) void run('query');
+        else if (next.scanCaptured && isLive(next)) { sessionRef.current = next; setSession(next); replaceQr(null); }
+        else if (!isLive(next)) {
+          // The active endpoint intentionally omits ended tasks. Retain the
+          // authoritative terminal response before asking it for availability.
+          sessionRef.current = next;
+          setSession(next);
+          void run('query');
+        } else if (next.refreshRequestId || next.qrRevision !== session.qrRevision) void run('query');
       } catch { /* Existing task/log polling and the deadline remain active. */ }
       finally { checking = false; }
     }, 2000);
     return () => { controller.abort(); clearInterval(timer); };
-  }, [userId, ownerId, phase, session, confirmLogin, run]);
+  }, [userId, ownerId, phase, session, confirmLogin, run, replaceQr]);
   const currentOwner = Boolean(userId && ownerId === userId);
   const visiblePhase = currentOwner ? phase : 'idle';
   const visibleSession = currentOwner ? session : null;

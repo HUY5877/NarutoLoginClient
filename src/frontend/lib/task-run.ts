@@ -8,6 +8,7 @@ export interface TaskRun {
   taskId: string; status: RunStatus; updatedAt: string;
   startedAt: string | null; finishedAt: string | null;
   authorizedAt?: string;
+  scanCapturedAt?: string;
   secretRealmCompletedAt?: string;
   actionIndex?: number; actionTotal?: number; errorCode?: string;
   logSource?: 'sls' | 'disabled'; logCursor?: string;
@@ -57,6 +58,7 @@ export function parseRunEvents(value: unknown, taskId: string, after: string): R
     || (value.run.startedAt !== null && !date(value.run.startedAt))
     || (value.run.finishedAt !== null && !date(value.run.finishedAt))
     || (value.run.authorizedAt !== undefined && !date(value.run.authorizedAt))
+    || (value.run.scanCapturedAt !== undefined && !date(value.run.scanCapturedAt))
     || (value.run.secretRealmCompletedAt !== undefined && !date(value.run.secretRealmCompletedAt))
     || !action(value.run.actionIndex) || !action(value.run.actionTotal)
     || value.run.logSource !== undefined && !['sls', 'disabled'].includes(String(value.run.logSource))

@@ -203,7 +203,7 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     const task = await events.getForUser(id, userId);
     if (task.status === 'failed') return res.json(publicTask(task));
     if (now() >= Date.parse(task.expiresAt) || task.status === 'expired') return res.json(publicTask({ ...task, status: 'expired' }));
-    if (task.refreshRequestId || task.loginAuthorized) return res.json(publicTask(task));
+    if (task.refreshRequestId || task.loginAuthorized || task.scanCaptured) return res.json(publicTask(task));
     // 对象是否存在决定二维码就绪；队列状态只用于显示当前步骤。
     const exists = await storage.exists(id);
     if (now() >= Date.parse(task.expiresAt)) return res.json(publicTask({ ...task, status: 'expired' }));
@@ -217,12 +217,13 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     const task = await events.getForUser(id, (res.locals.user as User).id);
     if (task.status === 'expired' || now() >= Date.parse(task.expiresAt)) throw new ApiError(410, '二维码已过期，请重新生成。');
     if (task.status === 'failed') throw new ApiError(409, '本次二维码生成失败，请重新申请。');
-    if (task.refreshRequestId || task.loginAuthorized) throw new ApiError(409, task.loginAuthorized ? '扫码授权已完成，无需再次扫码。' : '新二维码正在准备，请稍候。');
+    if (task.refreshRequestId || task.loginAuthorized || task.scanCaptured) throw new ApiError(409,
+      task.loginAuthorized || task.scanCaptured ? '扫码已完成，无需再次扫码。' : '新二维码正在准备，请稍候。');
     const content = await storage.read(id);
     if (now() >= Date.parse(task.expiresAt)) throw new ApiError(410, '二维码已过期，请重新生成。');
     const latest = await events.getForUser(id, (res.locals.user as User).id);
     if (now() >= Date.parse(latest.expiresAt)) throw new ApiError(410, '扫码时间已结束，请重新启动模拟器。');
-    if (latest.refreshRequestId || latest.loginAuthorized || latest.qrRevision !== task.qrRevision
+    if (latest.refreshRequestId || latest.loginAuthorized || latest.scanCaptured || latest.qrRevision !== task.qrRevision
       || latest.status === 'failed' || latest.status === 'expired') {
       throw new ApiError(409, '二维码状态已更新，请重新查询。', 'QR_CHANGED');
     }

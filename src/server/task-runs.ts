@@ -18,6 +18,7 @@ export interface TaskRun {
   updatedAt: string;
   startedAt: string | null;
   authorizedAt?: string;
+  scanCapturedAt?: string;
   secretRealmCompletedAt?: string;
   finishedAt: string | null;
   actionIndex?: number;
@@ -99,6 +100,7 @@ function parseRun(raw: unknown, taskId: string): TaskRun | null {
   if (!value || value.taskId !== taskId || !runStatuses.has(value.status as RunStatus) || !timestamp(value.updatedAt)
     || value.startedAt !== null && !timestamp(value.startedAt) || value.finishedAt !== null && !timestamp(value.finishedAt)
     || value.authorizedAt !== undefined && !timestamp(value.authorizedAt)
+    || value.scanCapturedAt !== undefined && !timestamp(value.scanCapturedAt)
     || value.secretRealmCompletedAt !== undefined && !timestamp(value.secretRealmCompletedAt)
     || !validProgress(value)
     || value.logSource !== undefined && !['sls', 'disabled'].includes(String(value.logSource))
@@ -109,6 +111,7 @@ function parseRun(raw: unknown, taskId: string): TaskRun | null {
   return { taskId, status: value.status as RunStatus, updatedAt: value.updatedAt, startedAt: value.startedAt as string | null,
     finishedAt: value.finishedAt as string | null,
     ...(value.authorizedAt !== undefined ? { authorizedAt: value.authorizedAt as string } : {}),
+    ...(value.scanCapturedAt !== undefined ? { scanCapturedAt: value.scanCapturedAt as string } : {}),
     ...(value.secretRealmCompletedAt !== undefined ? { secretRealmCompletedAt: value.secretRealmCompletedAt as string } : {}),
     ...(value.actionIndex !== undefined ? { actionIndex: value.actionIndex as number } : {}),
     ...(value.actionTotal !== undefined ? { actionTotal: value.actionTotal as number } : {}),

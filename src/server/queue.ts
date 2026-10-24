@@ -20,6 +20,7 @@ export interface Task {
   errorCode?: TaskFailureCode;
   loginStartedAt?: string;
   loginAuthorized?: boolean;
+  scanCaptured?: boolean;
   refreshSupported?: boolean;
   refreshRequestId?: string;
   qrRevision?: string;
@@ -120,9 +121,18 @@ if runRaw then
     if type(run.authorizedAt) == 'string' or type(run.startedAt) == 'string' or run.status == 'finishing_login' or run.status == 'running_daily' then
       s.loginAuthorized = true
     end
+    if type(run.scanCapturedAt) == 'string'
+      and (s.attemptId == nil or run.attemptId == s.attemptId) then s.scanCaptured = true end
   end
 end
 if s.loginAuthorized == true then return cjson.encode(s) end
+if s.scanCaptured == true then
+  s.refreshRequestId = nil
+  s.status = 'qr_ready'
+  redis.call('SET', KEYS[1], cjson.encode(s), 'KEEPTTL')
+  redis.call('DEL', KEYS[2])
+  return cjson.encode(s)
+end
 if s.refreshSupported ~= true then return -3 end
 if s.status ~= 'qr_ready' and not s.refreshRequestId then return -4 end
 if not redis.call('GET', KEYS[2]) then
@@ -306,6 +316,7 @@ export class TaskService {
       createdAt: record.createdAt, expiresAt, simulation: true, loginType: record.loginType ?? DEFAULT_LOGIN_TYPE,
       ...(record.loginStartedAt ? { loginStartedAt: record.loginStartedAt } : {}),
       ...(record.loginAuthorized === true ? { loginAuthorized: true } : {}),
+      ...(record.scanCaptured === true ? { scanCaptured: true } : {}),
       ...(record.refreshSupported === true ? { refreshSupported: true } : {}),
       ...(record.refreshRequestId ? { refreshRequestId: record.refreshRequestId } : {}),
       ...(record.qrRevision ? { qrRevision: record.qrRevision } : {}),

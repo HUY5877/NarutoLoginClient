@@ -92,7 +92,7 @@ test('刷新接口使用 Cookie 账户与路径任务 ID，拒绝匿名、跨站
 });
 
 test('刷新上传未确认、授权完成时不使用 OSS 旧图，读取期间发生刷新也不能返回旧图', async () => {
-  for (const flags of [{ refreshRequestId: requestId }, { loginAuthorized: true }]) {
+  for (const flags of [{ refreshRequestId: requestId }, { loginAuthorized: true }, { scanCaptured: true }]) {
     await withApi({ events: events({ getForUser: async () => ({ ...baseTask, ...flags }) }),
       storage: { exists: async () => assert.fail('must not HEAD old QR'), read: async () => assert.fail('must not read old QR') },
     }, async base => {
@@ -103,6 +103,16 @@ test('刷新上传未确认、授权完成时不使用 OSS 旧图，读取期间
   let refreshed = false;
   await withApi({ events: events({ getForUser: async () => ({ ...baseTask, ...(refreshed ? { qrRevision: requestId } : {}) }) }),
     storage: { exists: async () => true, read: async () => { refreshed = true; return png; } },
+  }, async base => {
+    const response = await fetch(`${base}/api/login-sessions/${id}/qr`, { headers });
+    assert.equal(response.status, 409); assert.equal((await response.json()).code, 'QR_CHANGED');
+  });
+});
+
+test('二维码读取期间收到扫码结果时不再发送旧二维码', async () => {
+  let captured = false;
+  await withApi({ events: events({ getForUser: async () => ({ ...baseTask, scanCaptured: captured }) }),
+    storage: { exists: async () => true, read: async () => { captured = true; return png; } },
   }, async base => {
     const response = await fetch(`${base}/api/login-sessions/${id}/qr`, { headers });
     assert.equal(response.status, 409); assert.equal((await response.json()).code, 'QR_CHANGED');

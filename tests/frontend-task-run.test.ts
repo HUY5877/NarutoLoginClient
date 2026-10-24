@@ -21,6 +21,16 @@ function deferred<T>() {
 async function settle() { for (let i = 0; i < 8; i += 1) await new Promise<void>(resolve => setImmediate(resolve)); }
 const blockedPause = () => new Promise<void>(() => {});
 
+test('扫码接收时间独立于游戏授权，接受有效时间并拒绝畸形值', () => {
+  const value = events();
+  Object.assign(value.run!, { status: 'waiting_scan', startedAt: null, scanCapturedAt: task.createdAt });
+  assert.equal((parseRunEvents(value, task.id, '0-0').run as unknown as Record<string, unknown>).scanCapturedAt, task.createdAt);
+  for (const invalid of [null, 1, false, '', 'invalid']) {
+    Object.assign(value.run!, { scanCapturedAt: invalid });
+    assert.throws(() => parseRunEvents(value, task.id, '0-0'));
+  }
+});
+
 test('run records restore after the QR session expired and keep polling daily work', async () => {
   let view = emptyTaskRun();
   const paths: string[] = [];

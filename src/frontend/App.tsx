@@ -87,7 +87,7 @@ import { useLoginSession } from '@/hooks/use-login-session';
 import { useAuth } from '@/hooks/use-auth';
 import { useTaskRun } from '@/hooks/use-task-run';
 import { TaskRunPanel } from '@/components/task-run-panel';
-import { deriveTaskProgress, hasGameAuthorization, isUnclaimedQueueTimeout, selectProgressRun } from '@/lib/task-progress';
+import { deriveTaskProgress, hasCapturedScan, hasGameAuthorization, isUnclaimedQueueTimeout, selectProgressRun } from '@/lib/task-progress';
 import { isRunTerminal } from '@/lib/task-run';
 import { deriveDailyCompletion } from '@/lib/daily-completion';
 import { DEFAULT_USER_OPTIONS, getMainTask, parseUserOptions, type MainTask, type SecretRealmMode } from '../shared/user-options';
@@ -197,7 +197,9 @@ export default function App() {
   const authorizedRun = hasGameAuthorization(currentRun) && (session?.id === currentRun?.taskId
     || !session && phase === 'idle' && ['finishing_login', 'running_daily'].includes(currentRun?.status ?? ''));
   const authorizationComplete = phase === 'login_confirmed' || authorizedRun;
-  const restoringAuthorizedRun = !session && authorizedRun;
+  const scanCaptured = hasCapturedScan(progressInput);
+  const scanComplete = authorizationComplete || scanCaptured;
+  const restoringAuthorizedRun = !session && (authorizedRun || scanCaptured);
   const displayedUserOptions = restoringAuthorizedRun
     ? parseUserOptions(visibleRun.task?.userOptions) ?? DEFAULT_USER_OPTIONS : userOptions;
   const mainTask = getMainTask(displayedUserOptions);
@@ -206,9 +208,9 @@ export default function App() {
   const displayedLoginType = restoringAuthorizedRun ? parseLoginType(visibleRun.task?.loginType) ?? DEFAULT_LOGIN_TYPE : loginType;
   const scanApp = loginScanApp(displayedLoginType);
   const queueTimedOut = phase === 'expired' && isUnclaimedQueueTimeout(session, currentRun);
-  const ready = progressInput.qrReady && !authorizationComplete;
-  const qrPending = pending && !authorizationComplete;
-  const qrError = isError && !authorizationComplete;
+  const ready = progressInput.qrReady && !scanComplete;
+  const qrPending = pending && !scanComplete;
+  const qrError = isError && !scanComplete;
   const progress = deriveTaskProgress({ ...progressInput, qrReady: ready, mainTask });
   useEffect(() => {
     if (session && currentRun?.taskId === session.id && hasGameAuthorization(currentRun)) {
@@ -286,16 +288,16 @@ export default function App() {
         <MobileVillageHero />
 
         <div className="village-workspace grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6">
-          <Card className="village-glass login-card gap-0 overflow-hidden shadow-sm" data-authorized={authorizationComplete} data-phase={ready ? 'qr_ready' : authorizationComplete ? 'authorized' : phase}>
+          <Card className="village-glass login-card gap-0 overflow-hidden shadow-sm" data-authorized={authorizationComplete} data-phase={ready ? 'qr_ready' : authorizationComplete ? 'authorized' : scanCaptured ? 'scan_captured' : phase}>
             <CardHeader className="gap-2 px-6 pb-6 sm:px-8">
               <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-lg font-semibold">
                 <ScanLine className="size-5 text-primary" aria-hidden="true" />
                 <span className="hidden sm:inline">扫码登录</span>
-                <span className="sm:hidden">{authorizationComplete ? '本次登录' : '扫码登录'}</span>
+                <span className="sm:hidden">{scanComplete ? '本次登录' : '扫码登录'}</span>
               </CardTitle>
               <CardDescription className="text-sm">
-                <span className="hidden sm:inline">生成二维码后，用手机{scanApp}扫一扫。</span>
-                <span className="sm:hidden">{authorizationComplete ? isArenaWeekly ? '授权已完成，可查看本次周胜任务进度。' : '进入游戏后，日常任务会自动接着跑。' : `用手机${scanApp}扫码，再确认登录。`}</span>
+                <span className="hidden sm:inline">{scanComplete ? '扫码已完成，请查看本次任务进度。' : `生成二维码后，用手机${scanApp}扫一扫。`}</span>
+                <span className="sm:hidden">{scanComplete ? '扫码已完成，请查看本次任务进度。' : `用手机${scanApp}扫码，再确认登录。`}</span>
               </CardDescription>
               <CardAction>
                 <Badge variant="secondary" className="gap-1.5 font-normal">
@@ -307,7 +309,7 @@ export default function App() {
             <Separator />
 
             <CardContent className="flex flex-col items-center px-6 py-8 sm:px-8 sm:py-9">
-              <div key={ready ? 'qr' : authorizationComplete ? 'authorized' : phase} className="qr-frame w-full max-w-64" data-ready={ready ? 'true' : undefined} aria-busy={qrPending}>
+              <div key={ready ? 'qr' : authorizationComplete ? 'authorized' : scanCaptured ? 'scan_captured' : phase} className="qr-frame w-full max-w-64" data-ready={ready ? 'true' : undefined} aria-busy={qrPending}>
                 <div className="qr-content relative aspect-square overflow-hidden rounded-xl border border-dashed border-foreground/20 bg-transparent">
                   {ready && qrUrl ? (
                     <img
@@ -322,8 +324,8 @@ export default function App() {
                       <Empty className="relative h-full gap-4 border-0 p-5 md:p-5">
                         <EmptyHeader className="gap-2.5">
                           <EmptyMedia variant="icon" className={`mb-1 size-16 rounded-2xl ${qrError ? 'bg-destructive/10 text-destructive' : 'qr-emblem text-muted-foreground'}`}>
-                            <ChakraSeal active={qrPending || authorizationComplete} complete={authorizationComplete} />
-                            {authorizationComplete ? <CheckCheck className="text-primary" aria-hidden="true" />
+                            <ChakraSeal active={qrPending || scanComplete} complete={scanComplete} />
+                            {scanComplete ? <CheckCheck className="text-primary" aria-hidden="true" />
                               : qrPending ? <Spinner aria-hidden="true" className="size-6 motion-reduce:animate-none" />
                               : phase === 'expired' ? <TimerOff aria-hidden="true" />
                                 : isError ? <CircleAlert aria-hidden="true" />
@@ -331,15 +333,15 @@ export default function App() {
                           </EmptyMedia>
                           <div className="qr-copy">
                             <EmptyTitle className="text-base">
-                              {authorizationComplete ? <>
-                                <span className="hidden sm:inline">扫码授权已完成</span>
+                              {scanComplete ? <>
+                                <span className="hidden sm:inline">{authorizationComplete ? '扫码授权已完成' : '扫码成功'}</span>
                                 <span className="sm:hidden" role="status" aria-live="polite">{progress.summary}</span>
                               </> : queueTimedOut ? '排队超时' : phase === 'expired' ? '二维码已过期'
                                 : canRetryQuery ? '等待查询确认' : isError ? '二维码准备失败'
                                   : phase === 'restoring' ? '正在查询登录申请' : pending ? '正在准备二维码' : '登录二维码'}
                             </EmptyTitle>
                             <EmptyDescription className="text-sm leading-6">
-                              {authorizationComplete ? <>
+                              {scanCaptured && !authorizationComplete ? <span>{progress.hint}</span> : authorizationComplete ? <>
                                 <span className="hidden sm:inline">{currentRun?.status === 'finishing_login' ? '正在进入游戏，无需再次扫码' : '无需再次扫码，请在执行记录中查看后续进度'}</span>
                                 <span className="sm:hidden">{currentRun && isRunTerminal(currentRun.status) ? progress.hint : '扫码已完成，无需再次扫码'}</span>
                               </>
@@ -360,11 +362,11 @@ export default function App() {
               <div className="login-status mt-5 flex min-h-6 flex-wrap items-center justify-center gap-x-3 gap-y-2 text-sm" role="status" aria-live="polite" aria-atomic="true">
                 <span className={`inline-flex items-center gap-2 ${qrError ? 'text-destructive' : 'text-muted-foreground'}`}>
                   {qrPending ? <Spinner aria-hidden="true" className="size-3.5 motion-reduce:animate-none" />
-                    : ready || authorizationComplete ? <Check className="size-4 text-primary" aria-hidden="true" />
+                    : ready || scanComplete ? <Check className="size-4 text-primary" aria-hidden="true" />
                       : <Clock3 className="size-3.5" aria-hidden="true" />}
-                  {auth.loading ? '正在读取账户状态' : !auth.user ? '登录后即可获取二维码' : authorizationComplete ? progress.summary : queueTimedOut ? '排队等待超时' : retrying ? '连接暂时中断，正在重试…' : statusLabel}
+                  {auth.loading ? '正在读取账户状态' : !auth.user ? '登录后即可获取二维码' : scanComplete ? progress.summary : queueTimedOut ? '排队等待超时' : retrying ? '连接暂时中断，正在重试…' : statusLabel}
                 </span>
-                {auth.user && !authorizationComplete && remainingSeconds > 0 && !showGetButton && (
+                {auth.user && !scanComplete && remainingSeconds > 0 && !showGetButton && (
                   <Badge variant="secondary" className="gap-1.5 font-mono tabular-nums" aria-label={`剩余 ${remainingSeconds} 秒`}>
                     <Clock3 aria-hidden="true" />
                     {countdown}
@@ -372,7 +374,7 @@ export default function App() {
                 )}
               </div>
 
-              {!authorizationComplete && error && (phase === 'failed' || canRetryQuery || queueTimedOut) && (
+              {!scanComplete && error && (phase === 'failed' || canRetryQuery || queueTimedOut) && (
                 <Alert variant="destructive" className="mt-5">
                   <CircleAlert aria-hidden="true" />
                   <AlertTitle>{canRetryQuery ? '申请状态暂时无法确认' : queueTimedOut ? '排队等待超时' : '本次二维码准备失败'}</AlertTitle>
@@ -479,13 +481,13 @@ export default function App() {
                 {!auth.user ? '登录后获取二维码' : '启动模拟器获取二维码'}
                 {phase === 'idle' && !auth.loading && <ArrowRight className="ml-1" aria-hidden="true" />}
               </Button>}
-              {!auth.loading && auth.user && <Button type="button" variant="outline" size="lg"
+              {!auth.loading && auth.user && !scanComplete && <Button type="button" variant="outline" size="lg"
                 className="qr-refresh-action mt-3 h-11 w-full max-w-sm gap-2"
                 disabled={auth.busy || pending || !session || !['qr_ready', 'query_failed'].includes(phase) || authorizationComplete || remainingSeconds <= 0}
                 onClick={() => { void refreshQr(); }}>
                 <RefreshCw aria-hidden="true" />刷新二维码
               </Button>}
-              {!authorizationComplete && canRetryQuery && auth.user && (
+              {!scanComplete && canRetryQuery && auth.user && (
                 <Button type="button" variant="outline" size="lg" className="mt-6 h-12 w-full max-w-sm gap-2 bg-white/40"
                   disabled={auth.busy || pending} onClick={() => { void retryQuery(); }}>
                   <RefreshCw aria-hidden="true" />{canResumePending ? '继续本次申请' : '重试查询'}
@@ -494,13 +496,13 @@ export default function App() {
               {auth.user && ready && <p className="qr-ready-note mt-5 text-sm font-medium text-primary">请用手机{scanApp}扫码，二维码失效可刷新</p>}
               <p className="qr-sharing-note mt-3 flex items-start gap-1.5 text-center text-xs leading-5 text-muted-foreground">
                 <ShieldCheck className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-                {session?.loginStartedAt ? '实例保留 10 分钟供扫码，刷新不会延长占用' : '同一账户共用一个实例，分配后有 10 分钟扫码时间'}
+                {scanComplete ? '扫码结果已收到，后续游戏登录与任务进度会继续更新' : session?.loginStartedAt ? '实例保留 10 分钟供扫码，刷新不会延长占用' : '同一账户共用一个实例，分配后有 10 分钟扫码时间'}
               </p>
               {auth.user && <>
                 <div className="mobile-progress-overview sm:hidden" aria-label="任务进度概览">
                   {progress.steps.map(({ id, title, description, state }) => {
                     const waitingForScan = id === 'qr' && ready;
-                    const scanned = id === 'qr' && authorizationComplete;
+                    const scanned = id === 'qr' && scanComplete;
                     const label = scanned ? '已扫码' : waitingForScan ? '待扫码'
                       : id === 'submission' ? state === 'completed' ? '已提交' : '提交申请'
                         : id === 'qr' ? '二维码'

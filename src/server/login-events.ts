@@ -65,7 +65,8 @@ export class LoginEventService {
       // Never replay a failed job or revive it from a stale Redis status.
       try {
         const current = await this.options.tasks.getForUser(event.id, event.userId);
-        if (current.status === 'failed') return { ...task, ...loginFailure(current.errorCode) };
+        if (current.status === 'failed') return { ...task, ...loginFailure(current.errorCode),
+          ...(current.scanCaptured ? { scanCaptured: true } : {}) };
       } catch { /* The known failure remains visible when Redis has expired or is unavailable. */ }
       return task;
     }

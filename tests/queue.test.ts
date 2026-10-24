@@ -85,6 +85,25 @@ function driver(overrides: Partial<RedisDriver> = {}): RedisDriver {
     get: async () => JSON.stringify(stored), destroy() {}, ...overrides };
 }
 
+test('扫码接收标记可从会话恢复，刷新在扫码后清理已有请求且不延长租期', async () => {
+  let script = '';
+  const service = new TaskService(config, () => driver({
+    get: async () => JSON.stringify({ ...stored, scanCaptured: true }),
+    eval: async value => { script = value; return JSON.stringify({ ...stored, scanCaptured: true, status: 'qr_ready' }); },
+  }), () => now);
+  assert.equal((await service.getForUser(task.id, task.userId) as unknown as Record<string, unknown>).scanCaptured, true);
+  const refreshed = await service.requestRefresh(task.id, task.userId);
+  assert.equal((refreshed as unknown as Record<string, unknown>).scanCaptured, true);
+  assert.equal(refreshed.loginAuthorized, undefined);
+  const captureGuard = script.slice(script.indexOf('if s.scanCaptured == true then'), script.indexOf('if s.refreshSupported'));
+  assert.match(script, /type\(run.scanCapturedAt\) == 'string'/);
+  assert.match(captureGuard, /s.refreshRequestId = nil/);
+  assert.match(captureGuard, /redis.call\('DEL', KEYS\[2\]\)/);
+  assert.match(captureGuard, /'KEEPTTL'/);
+  assert.match(captureGuard, /return cjson.encode\(s\)/);
+  assert.doesNotMatch(captureGuard, /loginAuthorized\s*=|EXPIRE|LPUSH/);
+});
+
 test('未配置 Redis 时返回明确 503，不创建连接', async () => {
   const service = new TaskService({ ...config, redisUrl: undefined }, () => { assert.fail('must not connect'); }, () => now);
   for (const request of [() => service.enqueue(task), () => service.get(task.id, task.accessToken),

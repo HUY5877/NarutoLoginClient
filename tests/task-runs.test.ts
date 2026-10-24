@@ -69,6 +69,20 @@ test('administrator summary reads use one bounded GET batch and omit worker logs
   f.service.close();
 });
 
+test('任务接口透传扫码接收时间并验证格式，不伪造游戏授权时间', async () => {
+  const f = fixture();
+  f.setSnapshot([JSON.stringify({ ...run, status: 'waiting_scan', startedAt: null, scanCapturedAt: at }), [], '', 0, 0]);
+  const result = await f.service.getEvents(id, owner, '0-0');
+  assert.equal((result.run as unknown as Record<string, unknown>).scanCapturedAt, at);
+  assert.equal(result.run?.authorizedAt, undefined);
+  assert.equal(result.run?.startedAt, null);
+  for (const invalid of [null, 1, false, '', 'invalid']) {
+    f.setSnapshot([JSON.stringify({ ...run, scanCapturedAt: invalid }), [], '', 0, 0]);
+    await assert.rejects(f.service.getEvents(id, owner, '0-0'), { status: 502 });
+  }
+  f.service.close();
+});
+
 function failureFixture(snapshot: unknown = [null, []]) {
   const f = fixture();
   let calls = 0;

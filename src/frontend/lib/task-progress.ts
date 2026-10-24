@@ -35,6 +35,12 @@ export function selectProgressRun({ phase, session, view, awaitingSubmission }: 
     || session && view.task?.id !== session.id) return emptyTaskRun();
   return view;
 }
+export function hasCapturedScan(input: ProgressInput): boolean {
+  if (input.awaitingSubmission || ['restoring', 'submitting'].includes(input.phase)) return false;
+  const view = selectProgressRun(input);
+  return input.session?.scanCaptured === true
+    || Boolean(view.run?.scanCapturedAt && view.run.taskId === view.task?.id);
+}
 export function deriveTaskProgress(input: ProgressInput) {
   const { phase, qrReady, awaitingSubmission } = input;
   const resolving = phase === 'restoring' || phase === 'submitting';
@@ -100,6 +106,19 @@ export function deriveTaskProgress(input: ProgressInput) {
     qr.state = 'completed'; qr.description = '扫码授权已完成';
     script.state = 'active'; script.description = arena ? '正在进入游戏并准备执行周胜任务' : '正在进入游戏并准备执行日常';
     summary = '正在进入游戏'; hint = '授权已经完成，无需再次扫码。';
+  } else if (hasCapturedScan(input)) {
+    qr.state = 'completed'; qr.description = '扫码已完成，授权信息已收到';
+    const failed = run && ['failed', 'interrupted', 'expired'].includes(run.status)
+      || ['failed', 'expired'].includes(task.status) || ['failed', 'expired'].includes(phase);
+    if (failed) {
+      script.state = 'failed';
+      summary = run?.status === 'expired' || phase === 'expired' || task.status === 'expired' ? '游戏登录超时' : '游戏登录未完成';
+      script.description = '扫码已完成，但游戏登录未完成，脚本尚未开始，请重新申请。';
+      tone = 'danger'; hint = script.description;
+    } else {
+      script.description = `正在登录游戏，登录成功后开始执行${taskName}`;
+      summary = '扫码成功'; hint = '扫码结果已收到，正在登录游戏，请稍候。';
+    }
   } else if (isUnclaimedQueueTimeout(session, run)) {
     qr.state = 'failed'; qr.description = taskFailureMessage('queue_timeout');
     script.description = '申请排队超时，脚本尚未开始';

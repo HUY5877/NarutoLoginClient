@@ -263,3 +263,15 @@ test('失败会话过期或 Redis 不可用仍保留数据库失败结果，迟�
   assert.deepEqual(await f.service().getForUser(original.id, userId), expected);
   assert.equal(f.submissions.length, 1);
 });
+
+test('抓号后游戏登录失败的扫码标记在重复查询中保持', async () => {
+  const f = fixture(), userId = randomUUID();
+  const original = await f.service().create(userId, randomUUID());
+  Object.assign(f.queue.get(original.id)!, { status: 'failed', errorCode: 'login_failed', scanCaptured: true });
+  for (let read = 0; read < 2; read++) {
+    const result = await f.service().getForUser(original.id, userId);
+    assert.equal(result.status, 'failed');
+    assert.equal(result.scanCaptured, true);
+    assert.equal(result.loginAuthorized, undefined);
+  }
+});
