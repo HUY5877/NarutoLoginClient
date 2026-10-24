@@ -110,6 +110,79 @@ test('完整回调本地解析保留URL且按原始授权时间计算期限，�
   assert.throws(() => validateQqJson('{"userId":"one","userId":"two"}'), errorIs(400));
 });
 
+test('模拟器抓取时间超前仍可接收，缺少原始授权时间时不延长回调有效期', () => {
+  for (const ahead of [1, 30000, 86400000, 6048000000]) {
+    const value = { ...document(), captured_at_epoch_ms: start + ahead,
+      callback_url: document().callback_url.replace('expires_in=3600', 'expires_in=5184000') };
+    const parsed = parseQqAuthorization(value, start);
+    assert.equal(parsed.authorization.captured_at_epoch_ms, start);
+    assert.equal(parsed.authorization.callback_url, value.callback_url);
+    assert.equal(parsed.expiresAt, start + 5184000000);
+    assert.deepEqual(parseQqAuthorization(parsed.authorization, start + 100), parsed);
+  }
+  const earlier = parseQqAuthorization({ ...document(), captured_at_epoch_ms: start - 30000 }, start);
+  assert.equal(earlier.authorization.captured_at_epoch_ms, start - 30000);
+  assert.equal(earlier.expiresAt, start + 3570000);
+});
+
+test('原始授权时间不与模拟器时钟比较，重复解析保持原始期限且仍拒绝真实过期授权', () => {
+  for (const authTime of [start - 10000, start + 1000]) {
+    const value = { ...document(), captured_at_epoch_ms: start + 30000,
+      callback_url: `${document().callback_url}&auth_time=${authTime}` };
+    const parsed = parseQqAuthorization(value, start);
+    assert.equal(parsed.authorization.captured_at_epoch_ms, start);
+    assert.equal(parsed.expiresAt, authTime + 3600000);
+    assert.deepEqual(parseQqAuthorization(parsed.authorization, start + 100), parsed);
+  }
+  const slowClock = { ...document(), captured_at_epoch_ms: start - 30000,
+    callback_url: `${document().callback_url}&auth_time=${start}` };
+  assert.equal(parseQqAuthorization(slowClock, start).expiresAt, start + 3600000);
+  const expired = { ...document(), captured_at_epoch_ms: start + 30000,
+    callback_url: `${document().callback_url}&auth_time=${start - 3600000}` };
+  assert.throws(() => parseQqAuthorization(expired, start), errorIs(410, 'QQ_AUTHORIZATION_EXPIRED'));
+});
+
+test('时钟超前的扫码结果经真实HTTP接口入库，数据库时钟再次校正且重试不重复保存', async t => {
+  const { db, store, input, begin } = await database(t);
+  const receivedAt = Date.now();
+  input.authorization.captured_at_epoch_ms = receivedAt + 86400000;
+  input.authorization.callback_url = input.authorization.callback_url.replace('expires_in=3600', 'expires_in=5184000');
+  await begin(input);
+  // The API host can also be ahead of the database host; both parsing passes must accept the upload.
+  const service = new QqCaptureService(config, { store, now: () => receivedAt + 60000 });
+  const dependencies = { events: {}, storage: {}, auth: {}, qqCaptures: service } as unknown as Dependencies;
+  const server = createApp(loadConfig({}), dependencies).listen(0, '127.0.0.1');
+  await once(server, 'listening'); const address = server.address(); assert(address && typeof address !== 'string');
+  try {
+    const post = () => fetch(`http://127.0.0.1:${address.port}/api/qq-captures`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+    });
+    const response = await post();
+    assert.equal(response.status, 201);
+    assert.equal((await response.json() as { captureId: string }).captureId, captureId);
+    const rows = (await db.query<{ status: string; callback_url: string; captured_at: Date; authorization_expires_at: Date }>(
+      'SELECT status, callback_url, captured_at, authorization_expires_at FROM naruto_login.qq_capture_requests')).rows;
+    assert.equal(rows.length, 1); assert.equal(rows[0].status, 'completed');
+    assert.equal(rows[0].callback_url, input.authorization.callback_url);
+    const capturedAt = new Date(rows[0].captured_at).getTime();
+    assert(capturedAt >= receivedAt && capturedAt <= Date.now());
+    assert.equal(new Date(rows[0].authorization_expires_at).getTime() - capturedAt, 5184000000);
+    assert.equal((await post()).status, 201);
+    const accounts = (await db.query<{ captured_at: Date; expires_at: Date }>(
+      'SELECT captured_at, expires_at FROM naruto_login.qq_authorizations')).rows;
+    assert.equal(accounts.length, 1);
+    assert.equal(new Date(accounts[0].captured_at).getTime(), capturedAt);
+    assert.equal(new Date(accounts[0].expires_at).getTime(), capturedAt + 5184000000);
+    const next = { ...input, attemptId: 'cd'.repeat(16), captureId: secondCapture,
+      authorization: { ...input.authorization, captured_at_epoch_ms: Date.now(),
+        callback_url: input.authorization.callback_url.replace('access_token=12', 'access_token=56') } };
+    await begin(next);
+    await service.upload(next);
+    const updated = (await db.query<{ callback_url: string }>('SELECT callback_url FROM naruto_login.qq_authorizations')).rows;
+    assert.deepEqual(updated, [{ callback_url: next.authorization.callback_url }]);
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
 test('PostgreSQL保存两类QQ渠道的任务授权，网站历史按本人隔离且不返回任何凭据', async t => {
   const { db, store, service, input, begin } = await database(t);
   await begin(input);

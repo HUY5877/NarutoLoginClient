@@ -66,6 +66,8 @@ npm run dev
 
 抓号器由网站任务自动启动，无需登录网站账号。脚本传入当前任务所属用户和一次性扫码凭证，二维码仍通过原有网页展示。扫码成功后，`POST /api/qq-captures` 将完整 `callback_url` 明文保存到当前环境数据库，并固定账号名称为“自己账号”。脚本读取本轮结果后在上号器输入 URL，再等待游戏界面确认登录完成。上号器登录网站账号后，通过 `GET /api/qq-authorizations` 查看本人的扫码历史；该列表仅返回名称、尾号与时间，不返回授权 URL 或 token。
 
+上传不会因模拟器抓取时间超前于云端而被拒绝，超前的抓取时间保存为云端接收时间。授权有效期沿用回调的 `auth_time` 和 `expires_in`；缺少 `auth_time` 时从校正后的抓取时间计算，旧授权不会因重新上传而统一续期两个月。
+
 上线前需一起更新网站、执行端和两款 APK。在执行端选定的 Cloudflare KV namespace 配置 `QQ_CAPTURE_API_BASE`，值为可从模拟器访问的 HTTPS 网站根地址（例如 `https://login.example.com`，不含 `/api`）。网站和执行端的 `DATABASE_URL` 必须指向同一个环境数据库。不要依据 Git 分支推断环境；两端仍由 `APP_ENV` 选择 prod/test。网站收到 QQ 申请时会在入队前初始化新表，现有数据库账号需要建表权限；执行端需要对 `naruto_login.qq_capture_requests` 执行插入、查询和更新。
 
 `qq_capture_requests` 按 `(task_id, attempt_id)` 隔离执行尝试，每次刷新更换 `capture_id` 和凭证，刷新不会延长原任务有效期。上传、读取和取消都绑定原用户及当前轮次，旧二维码结果不能作为新轮结果使用。上传需要完整任务凭证，单独提供公开 `userId` 无法写入账号。`captureToken`、数据库连接串与授权 URL 不写入任务日志或网页公开状态。
