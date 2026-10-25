@@ -48,6 +48,10 @@ export const privateTaskMessages = [
   '识别到之前的 QQ 扫码授权页，返回游戏重新选择本次登录通道',
   '已点击本次指定登录通道：android_qq',
   '已点击本次指定登录通道：ios_qq',
+  'relation "naruto_login.qq_authorizations" does not exist',
+  'qq_authorizations 写入失败',
+  '临时授权已收到，正在提交到游戏',
+  '临时授权内容无效',
 ];
 
 export const publicTaskMessages = [

@@ -226,6 +226,14 @@ test('PostgreSQL拒绝跨用户、任务、attempt、刷新轮次和错误凭证
 test('PostgreSQL刷新和新attempt隔离旧回调，消费后同回调重试不会重新发布', async t => {
   const { db, service, input, begin } = await database(t); await begin();
   await service.upload(input);
+  await db.query(`UPDATE naruto_login.qq_capture_requests SET status = 'consumed' WHERE task_id = $1 AND attempt_id = $2`, [taskId, input.attemptId]);
+  const consumed = await db.query<Record<string, unknown>>('SELECT * FROM naruto_login.qq_capture_requests');
+  assert.equal(consumed.rows[0].callback_url, input.authorization.callback_url);
+  assert.deepEqual(await service.upload(input), { captureId });
+  assert.deepEqual((await db.query('SELECT * FROM naruto_login.qq_capture_requests')).rows, consumed.rows);
+  await assert.rejects(service.upload({ ...input, authorization: { ...input.authorization,
+    callback_url: input.authorization.callback_url.replace('access_token=12', 'access_token=56') } }), errorIs(409));
+  assert.deepEqual((await db.query('SELECT * FROM naruto_login.qq_capture_requests')).rows, consumed.rows);
   await db.query(`UPDATE naruto_login.qq_capture_requests SET status = 'consumed', callback_url = NULL WHERE task_id = $1 AND attempt_id = $2`, [taskId, input.attemptId]);
   assert.deepEqual(await service.upload(input), { captureId });
   assert.equal((await db.query<{ status: string; callback_url: string | null }>('SELECT status,callback_url FROM naruto_login.qq_capture_requests')).rows[0].callback_url, null);
