@@ -3,6 +3,7 @@ import { $OpenApiUtil } from '@alicloud/openapi-core';
 import { RuntimeOptions } from '@darabonba/typescript';
 import type { SlsConfig } from './config.js';
 import type { TaskLog } from './task-runs.js';
+import { isPublicTaskLog } from './public-task-logs.js';
 
 // Static imports keep the SDK in Vercel's dependency trace. Native ESM exposes
 // its CommonJS wrapper, while bundlers may already unwrap the default export.
@@ -127,7 +128,9 @@ export class SlsTaskLogArchive implements TaskLogArchive {
       logs.push(log);
     }
     const hasMore = remaining > (tail ? 10 : 100);
-    return { logs: tail ? logs : logs.slice(0, 100), snapshotCursor: upper,
+    // Validate and paginate the raw range before hiding private diagnostics.
+    // A fully hidden page must still advance to its original cursor.
+    return { logs: (tail ? logs : logs.slice(0, 100)).filter(isPublicTaskLog), snapshotCursor: upper,
       nextCursor: hasMore && !tail ? logs[99].id : upper, hasMore,
       truncated: valid.some(value => String(value.truncated) === 'true') };
   }

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { SlsTaskLogArchive, type SlsQuery, type SlsQueryResult } from '../src/server/sls-logs.js';
 import { TaskRunService, type RunRedisDriver } from '../src/server/task-runs.js';
 import { loadConfig } from '../src/server/config.js';
+import { privateTaskMessages, publicTaskMessages } from './private-task-log-fixtures.js';
 
 const taskId = '123e4567-e89b-42d3-a456-426614174000';
 const time = '2027-01-15T08:00:00.000Z';
@@ -77,6 +78,37 @@ test('SLS 分页固定上界，后续新日志不会改变已打开的快照', a
     id(205));
   assert(second); assert.equal(second.logs.at(-1)?.id, id(200));
   assert.equal(second.hasMore, false); assert.equal(second.nextCursor, id(200));
+});
+
+test('SLS 历史和倒序失败日志过滤内部实现，仍验证原始完整性和保留公开文字', async () => {
+  const messages = [...privateTaskMessages, ...publicTaskMessages];
+  const f = fixture(messages.length);
+  f.data = f.data.map((row, i) => ({ ...row, message: messages[i] }));
+  const page = await f.archive.read(taskId, '0-0', undefined, id(messages.length));
+  assert(page);
+  assert.deepEqual(page.logs.map(row => row.message), publicTaskMessages);
+  assert.equal(page.nextCursor, id(messages.length)); assert.equal(page.truncated, false);
+  const tail = fixture(11);
+  tail.data = tail.data.map((row, i) => ({ ...row, message: privateTaskMessages[i] }));
+  const hidden = await tail.archive.read(taskId, '0-0', undefined, id(11), true);
+  assert(hidden); assert.deepEqual(hidden.logs, []);
+  assert.equal(hidden.nextCursor, id(11)); assert.equal(hidden.hasMore, true);
+  assert.equal(hidden.truncated, false);
+  tail.intercept = (result, sql) => sql.includes('GROUP BY') ? { ...result, data: [...result.data as unknown[]].reverse() } : result;
+  assert.equal(await tail.archive.read(taskId, '0-0', undefined, id(11), true), null,
+    'filtering must not let hidden out-of-order rows pass validation');
+});
+
+test('SLS 整页内部日志的游标越过原始100条，固定快照可继续到公开尾部并正常结束', async () => {
+  const f = fixture(101);
+  f.data = f.data.map((row, i) => ({ ...row, message: i < 100 ? privateTaskMessages[0] : '完成组织祈福' }));
+  const first = await f.archive.read(taskId, '0-0', undefined, id(101));
+  assert(first); assert.deepEqual(first.logs, []);
+  assert.equal(first.nextCursor, id(100)); assert.equal(first.snapshotCursor, id(101));
+  assert.equal(first.hasMore, true); assert.equal(first.truncated, false);
+  const second = await f.archive.read(taskId, first.nextCursor, first.snapshotCursor, id(101));
+  assert(second); assert.deepEqual(second.logs.map(row => row.message), ['完成组织祈福']);
+  assert.equal(second.nextCursor, id(101)); assert.equal(second.hasMore, false);
 });
 
 test('SLS 聚合将缺失进度返回为字符串 null 时仍能读取完整日志', async () => {

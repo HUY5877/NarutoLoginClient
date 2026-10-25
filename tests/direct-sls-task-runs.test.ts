@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { TaskRunService, type RunRedisDriver } from '../src/server/task-runs.js';
 import type { TaskLogArchive } from '../src/server/sls-logs.js';
 import type { LoginEvent } from '../src/server/database.js';
+import { privateTaskMessages } from './private-task-log-fixtures.js';
 
 const taskId = '123e4567-e89b-42d3-a456-426614174000', owner = '456e7890-e89b-42d3-a456-426614174000';
 const time = '2026-10-20T08:00:00.000Z';
@@ -59,6 +60,29 @@ test('SLS 实时任务直接返回已验证日志和轻量执行状态，其他�
   assert.equal((live as unknown as Record<string, unknown>).logsPending, false);
   assert.equal(live.nextCursor, '100-2');
   assert.equal(f.calls[0][3], '100-2', 'lightweight run watermark is passed to the archive');
+});
+
+test('归档读取边界再次过滤全部服务出口，包括失败原因和动作名，保持分页元信息', async () => {
+  const f = fixture({ errorCode: 'login_failed' });
+  for (const message of privateTaskMessages) {
+    f.result = { logs: [
+      { id: '100-2', time, level: 'ERROR', message: `具体错误：${message}` },
+      { id: '100-1', time, level: 'INFO', message: `动作 2/38：${message}`, actionIndex: 2, actionTotal: 38 },
+    ], nextCursor: '100-2', snapshotCursor: '100-3', hasMore: true, truncated: false };
+    const live = await f.service.getEvents(taskId, owner);
+    const admin = await f.service.getAdminLogPage(taskId);
+    for (const page of [live, admin]) {
+      assert.deepEqual(page.logs, [], message);
+      assert.equal(page.nextCursor, '100-2'); assert.equal(page.hasMore, true);
+      assert.equal(page.truncated, false); assert.equal(page.logsPending, false);
+    }
+    assert.equal(admin.snapshotCursor, '100-3');
+    const failure = await f.service.getFailureDetails(taskId);
+    assert.deepEqual(failure.logs, []);
+    assert.equal(failure.actionName, undefined);
+    assert.equal(failure.errorMessage, '未能确认游戏登录成功，请重新申请。');
+  }
+  f.service.close();
 });
 
 test('SLS 新任务查询失败或客户端未启用 SLS 时保留读取位置并提示待恢复，不用空 Redis 宣布成功', async () => {

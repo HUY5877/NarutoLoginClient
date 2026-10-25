@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { LoginEvent } from '../src/server/database.js';
 import { TaskRunService, isStreamCursor, type RunRedisDriver } from '../src/server/task-runs.js';
+import { privateTaskMessages, publicTaskMessages } from './private-task-log-fixtures.js';
 
 const id = '123e4567-e89b-42d3-a456-426614174000';
 const owner = '456e7890-e89b-42d3-a456-426614174000';
@@ -118,6 +119,81 @@ function adminLogsFixture(snapshot: unknown = [null, [], '0-0', '', 0, 0, 0]) {
   };
   return { ...f, operations, setSnapshot(value: unknown) { snapshot = value; } };
 }
+
+test('Redis 用户与管理员日志在读取历史时过滤内部实现，保留普通阶段和扫码提示', async () => {
+  const messages = [...privateTaskMessages, ...publicTaskMessages];
+  const entries = messages.map((message, i) => log(i + 1, { time: at, level: 'INFO', message }));
+  const tail = `1800000000000-${messages.length}`;
+  const live = fixture();
+  live.setSnapshot([JSON.stringify(run), entries, '1800000000000-1', entries.length, entries.length]);
+  const admin = adminLogsFixture([JSON.stringify(run), entries, tail, '1800000000000-1', entries.length, entries.length, 1]);
+  for (const page of [await live.service.getEvents(id, owner), await admin.service.getAdminLogPage(id)]) {
+    assert.deepEqual(page.logs.map(row => row.message), publicTaskMessages);
+    assert.equal(page.nextCursor, tail);
+    assert.equal(page.hasMore, false);
+    assert.equal(page.truncated, false);
+  }
+  live.service.close(); admin.service.close();
+});
+
+test('Redis 整页均为内部日志时仍按原始记录推进，随后可读到公开日志和固定快照终点', async () => {
+  const hidden = Array.from({ length: 100 }, (_, i) => log(i + 1, { time: at, level: 'WARNING', message: privateTaskMessages[0] }));
+  const visible = log(101, { time: at, level: 'INFO', message: '完成组织祈福' });
+  const tail = '1800000000000-101';
+  const live = fixture();
+  live.setSnapshot([JSON.stringify(run), [...hidden, visible], '1800000000000-1', 101, 101]);
+  const admin = adminLogsFixture([JSON.stringify(run), [...hidden, visible], tail, '1800000000000-1', 101, 101, 1]);
+  const livePage = await live.service.getEvents(id, owner);
+  const adminPage = await admin.service.getAdminLogPage(id);
+  for (const page of [livePage, adminPage]) {
+    assert.deepEqual(page.logs, []);
+    assert.equal(page.nextCursor, '1800000000000-100');
+    assert.equal(page.hasMore, true); assert.equal(page.truncated, false);
+  }
+  assert.equal(adminPage.snapshotCursor, tail);
+  live.setSnapshot([JSON.stringify(run), [visible], '1800000000000-1', 101, 101]);
+  admin.setSnapshot([JSON.stringify(run), [visible], tail, '1800000000000-1', 101, 101, 1]);
+  for (const page of [await live.service.getEvents(id, owner, livePage.nextCursor),
+    await admin.service.getAdminLogPage(id, adminPage.nextCursor, adminPage.snapshotCursor)]) {
+    assert.deepEqual(page.logs.map(row => row.message), ['完成组织祈福']);
+    assert.equal(page.nextCursor, tail); assert.equal(page.hasMore, false);
+  }
+  live.service.close(); admin.service.close();
+});
+
+test('Redis 失败详情的错误和动作名只能来自公开日志，内部错误回退到安全原因且状态不变', async () => {
+  const f = failureFixture();
+  for (const message of privateTaskMessages) {
+    f.setSnapshot([JSON.stringify({ ...run, status: 'failed', errorCode: 'login_failed' }), [
+      log(3, { time: at, level: 'ERROR', message: `具体错误：${message}` }),
+      log(2, { time: at, level: 'INFO', message: `动作 2/38：${message}`, actionIndex: 2, actionTotal: 38 }),
+      log(1, { time: at, level: 'INFO', message: '扫码授权已完成' }),
+    ]]);
+    const result = await f.service.getFailureDetails(id);
+    assert.equal(result.errorMessage, '未能确认游戏登录成功，请重新申请。', message);
+    assert.equal(result.actionName, undefined);
+    assert.deepEqual(result.logs.map(row => row.message), ['扫码授权已完成']);
+    assert.equal(result.errorCode, 'login_failed'); assert.equal(result.actionIndex, 2);
+    assert.equal(result.truncated, false);
+  }
+  f.service.close();
+});
+
+test('内部运行错误码映射到公开错误码，原始 Redis 执行快照不被改写', async () => {
+  const f = fixture();
+  const raw = JSON.stringify({ ...run, status: 'failed', errorCode: 'qq_capture_failed' });
+  f.setSnapshot([raw, [], '', 0, 0]);
+  const result = await f.service.getEvents(id, owner);
+  assert.equal(result.run?.status, 'failed'); assert.equal(result.run?.errorCode, 'unexpected_error');
+  f.driver.eval = async () => [raw];
+  assert.equal((await f.service.getSummaries([id]))[0]?.errorCode, 'unexpected_error');
+  assert.equal(JSON.parse(raw).errorCode, 'qq_capture_failed');
+  const failure = failureFixture([raw, []]);
+  const details = await failure.service.getFailureDetails(id);
+  assert.equal(details.errorCode, 'unexpected_error');
+  assert.equal(details.errorMessage, '任务执行异常，请稍后重新申请。');
+  f.service.close(); failure.service.close();
+});
 
 test('管理员日志按有限快照分页读取超过2000条，保留所有级别且不消费流或查任务归属', async () => {
   const f = adminLogsFixture();

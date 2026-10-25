@@ -9,6 +9,7 @@ import { DEFAULT_LOGIN_TYPE, type LoginType } from '../shared/login-types.js';
 import type { DailyTaskFailureDetails, DailyTaskLogPage } from '../shared/admin.js';
 import { taskFailureMessage } from '../shared/task-errors.js';
 import { SlsTaskLogArchive, type TaskLogArchive } from './sls-logs.js';
+import { isPublicTaskLog, publicTaskErrorCode } from './public-task-logs.js';
 
 export type RunStatus = 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'waiting_scan' | 'finishing_login'
   | 'running_daily' | 'completed' | 'failed' | 'interrupted' | 'expired';
@@ -117,7 +118,7 @@ function parseRun(raw: unknown, taskId: string): TaskRun | null {
     ...(value.actionTotal !== undefined ? { actionTotal: value.actionTotal as number } : {}),
     ...(value.logSource !== undefined ? { logSource: value.logSource as TaskRun['logSource'] } : {}),
     ...(value.logCursor !== undefined ? { logCursor: value.logCursor as string } : {}),
-    ...(value.errorCode !== undefined ? { errorCode: value.errorCode as string } : {}) };
+    ...(value.errorCode !== undefined ? { errorCode: publicTaskErrorCode(value.errorCode as string) } : {}) };
 }
 function parseLog(id: string, fields: unknown): TaskLog | null {
   if (!Array.isArray(fields) || fields.length > 20 || fields.length % 2 !== 0) return null;
@@ -317,6 +318,7 @@ export class TaskRunService {
     return this.failureDetails(taskId, run, logs, truncated);
   }
   private failureDetails(taskId: string, run: TaskRun | null, logs: TaskLog[], truncated: boolean): DailyTaskFailureDetails {
+    logs = logs.filter(isPublicTaskLog);
     const failure = logs.find(log => log.level === 'ERROR' && /^具体错误：\s*\S/.test(log.message))
       ?? logs.find(log => log.level === 'ERROR' && !isGenericFailure(log.message, run?.errorCode));
     const action = logs.find(log => log.level === 'INFO' && (log.actionIndex ?? 0) > 0 && /^动作\s*\d+\s*\/\s*\d+\s*[：:]/.test(log.message));
@@ -371,7 +373,7 @@ export class TaskRunService {
       if (!log) truncated = true;
       if (index < pageSize) {
         nextCursor = entry[0];
-        if (log) logs.push(log);
+        if (log && isPublicTaskLog(log)) logs.push(log);
       }
     }
     const hasMore = raw[1].length > pageSize;
@@ -396,7 +398,7 @@ export class TaskRunService {
       // Active tasks keep polling: show the indexed prefix now, but require the final watermark before stopping.
       const activeLive = live && run && !['completed', 'failed', 'interrupted', 'expired'].includes(run.status);
       const page = await this.archive.read(taskId, after, snapshot, activeLive ? undefined : run?.logCursor, tail);
-      if (page) return { run, page };
+      if (page) return { run, page: { ...page, logs: page.logs.filter(isPublicTaskLog) } };
     } catch (error) {
       logBackend('warn', 'sls.read_failed', { component: 'task-runs', phase: 'sls.query', error });
     }
@@ -433,7 +435,8 @@ export class TaskRunService {
       // Skip corrupt entries and advance, so one broken message cannot stall polling forever.
       nextCursor = entry[0];
       const log = parseLog(entry[0], entry[1]);
-      if (log) logs.push(log); else truncated = true;
+      if (!log) truncated = true;
+      else if (isPublicTaskLog(log)) logs.push(log);
     }
     return { task: this.publicTask(event), run, logs, nextCursor, hasMore: raw[1].length > pageSize, truncated };
   }
