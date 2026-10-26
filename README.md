@@ -86,6 +86,18 @@ npm run dev
 
 后端通过一次 Lua 原子修改 `${REDIS_QUEUE_KEY}:runs:<任务UUID>` 原始 JSON 的 `status`、`errorCode`、`updatedAt` 和 `finishedAt`，保留 `workerId`、`attemptId`、`sequence`、日志游标、其余字段及原有效期，不改登录会话、队列或账号锁。需要同时使用支持管理员中断回调的 NarutoDailyADB worker，并升级重启该 worker。中断请求提交后，执行端在下一次已有状态回写时发现标记，停止对应子进程并清理模拟器；没有新回写时不会立即停止，已经发出的游戏操作不会撤回。
 
+### QQ 群提醒绑定
+
+登录后点击页头「QQ 群提醒」，生成 5 分钟有效的一次性绑定码，在指定通知群中发送 `@机器人 绑定 CODE`。页面收到群内验证后显示发送者信息，确认本人发送后完成绑定；重新生成会废弃旧码，已绑定身份保留到新绑定确认。用户可在同一窗口解绑，解绑同时取消未完成的挑战。账号切换、退出及关闭窗口会停止轮询。
+
+启用前将 `QQ_BOT_APP_ID`、`QQ_BOT_APP_SECRET`、`QQ_BOT_GROUP_OPENID` 放入当前 `APP_ENV` 的 Cloudflare namespace，并与同环境 NarutoDailyADB 保持一致。全空时窗口显示尚未配置；部分填写会拒绝启动。三项配置仅用于后端，不加 `VITE_` 前缀。测试分支联调须显式选择 `APP_ENV=test`，使用独立测试数据库和测试机器人。
+
+在 QQ 机器人管理后台把回调地址设为 `https://测试网站域名/api/qq/events`，订阅 `GROUP_AT_MESSAGE_CREATE`。地址必须公网 HTTPS 可访问，反向代理需完整保留原始请求体及 `X-Bot-Appid`、`X-Signature-Ed25519`、`X-Signature-Timestamp` 请求头。接口支持 `op=13` 地址校验和 `op=0` 事件，正常事件确认返回 `{ "op": 12 }`。首次地址校验不连接数据库；正常绑定业务才初始化数据库表。
+
+服务对事件原始字节验签，并检查机器人、群、时间戳和候选成员。地址校验的 `plain_token` 仅接受 1–1024 个 base64url 字符，防止公开签名接口被用于签署伪造 JSON 事件。绑定码仅以 SHA-256 哈希保存在 `naruto_login.qq_binding_challenges`，一次性消费；身份保存在 `naruto_login.qq_bindings`，限定网站账号、机器人和群，同一群成员不能同时绑定两个网站账号。用户删除会级联删除相关数据。
+
+配套执行端每次发通知前只读查询绑定，使用 Markdown @ 指定成员；未绑定和查询失败沿用原用户名纯文本消息。解绑取消定向 @，保留原有任务及群内文字通知。群主需另外允许机器人主动发言；网站绑定不代替 QQ 平台权限配置。
+
 ### SLS 日志归档
 
 管理员日志详情、失败详情和普通用户实时日志优先读取阿里云 SLS。NarutoDailyADB 的 logger 在 emit 时生成日志 ID，由进程内发布器通过 Python SDK 异步批量直传 SLS，并附带覆盖范围 checkpoint。新日志不再写 Redis；关闭 SLS 时也不会恢复 Redis 日志写入。执行状态、队列、会话与账号锁仍由 Redis 管理，已有 Redis 历史日志保留兼容读取并按原有 TTL 自然过期。

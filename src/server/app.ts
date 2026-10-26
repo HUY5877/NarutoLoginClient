@@ -14,6 +14,7 @@ import type { AdminService } from './admin.js';
 import { logBackend, requestLogContext } from './logging.js';
 import type { QqCaptureService } from './qq-captures.js';
 import { validateQqJson } from './qq-authorization-data.js';
+import type { QqBindingService } from './qq-binding.js';
 
 export interface Dependencies {
   events: Pick<LoginEventService, 'create' | 'getForUser' | 'getActive' | 'recordStatus'> & Partial<Pick<LoginEventService, 'refresh'>>;
@@ -22,6 +23,7 @@ export interface Dependencies {
   runs?: Pick<TaskRunService, 'getLatest' | 'getEvents'>;
   admin?: Pick<AdminService, 'listUsers' | 'getUser' | 'createUser' | 'updateUser' | 'deleteUser' | 'dailyTasks' | 'dailyTaskFailureDetails' | 'dailyTaskLogs' | 'interruptDailyTask' | 'monthlyStats'>;
   qqCaptures?: Pick<QqCaptureService, 'upload' | 'list'> & Partial<Pick<QqCaptureService, 'initialize'>>;
+  qqBindings?: Pick<QqBindingService, 'getStatus' | 'createChallenge' | 'confirm' | 'unbind' | 'handleWebhook'>;
   now?: () => number;
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -48,7 +50,7 @@ function logPath(req: Request): string {
     ? path : '/api/unknown';
 }
 
-export function createApp(config: Config, { events, auth, storage, runs, admin, qqCaptures, now = Date.now }: Dependencies) {
+export function createApp(config: Config, { events, auth, storage, runs, admin, qqCaptures, qqBindings, now = Date.now }: Dependencies) {
   const app = express();
   const cookieName = config.sessionCookieName ?? 'naruto_session';
   app.disable('x-powered-by');
@@ -60,6 +62,16 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
     res.set('X-Request-Id', requestId);
     requestLogContext.run({ requestId, method: req.method, path: logPath(req), ...(vercelRequestId ? { vercelRequestId } : {}) }, next);
+  });
+  const bindingService = () => {
+    if (!qqBindings) throw new ApiError(503, 'QQ 群提醒绑定尚未配置。', 'QQ_BINDING_DISABLED');
+    return qqBindings;
+  };
+  // QQ signs exact bytes. Register before ordinary JSON parsing and website session/CSRF handling.
+  app.post('/api/qq/events', express.raw({ type: () => true, limit: '64kb', inflate: false }), async (req, res) => {
+    if (!Buffer.isBuffer(req.body)) throw new ApiError(400, 'QQ 机器人回调格式无效。', 'QQ_WEBHOOK_INVALID');
+    res.json(await bindingService().handleWebhook(req.body, { appId: req.get('X-Bot-Appid'),
+      timestamp: req.get('X-Signature-Timestamp'), signature: req.get('X-Signature-Ed25519') }));
   });
   const standardJson = express.json({ limit: '2kb' });
   const captureJson = express.json({ limit: '64kb', verify: (_req, _res, buffer) => validateQqJson(buffer) });
@@ -97,6 +109,17 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     res.clearCookie(cookieName, cookieOptions(req));
     res.status(204).end();
   });
+
+  app.use('/api/qq-binding', async (req, res, next) => {
+    const user = await auth.getUser(sessionToken(req, cookieName));
+    if (!user) throw new ApiError(401, '请先登录账号。', 'AUTH_REQUIRED');
+    res.locals.user = user; next();
+  });
+  app.get('/api/qq-binding', async (_req, res) => res.json(qqBindings
+    ? await qqBindings.getStatus((res.locals.user as User).id) : { enabled: false, binding: null, challenge: null }));
+  app.post('/api/qq-binding/challenge', async (_req, res) => res.status(201).json(await bindingService().createChallenge((res.locals.user as User).id)));
+  app.post('/api/qq-binding/confirm', async (req, res) => res.json(await bindingService().confirm((res.locals.user as User).id, req.body)));
+  app.delete('/api/qq-binding', async (_req, res) => { await bindingService().unbind((res.locals.user as User).id); res.status(204).end(); });
 
   const captureService = () => {
     if (!qqCaptures) throw new ApiError(503, 'QQ 抓号服务尚未配置。', 'QQ_AUTHORIZATION_UNAVAILABLE');
