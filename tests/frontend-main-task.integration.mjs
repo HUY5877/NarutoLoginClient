@@ -324,6 +324,46 @@ test('main task selection preserves task options and session ownership', { skip:
       } finally { await f.close(); }
     });
 
+    for (const status of ['completed', 'failed', 'running_daily']) {
+      await t.test(`restored QQ ${status} history only locks task selection while execution is active`, async () => {
+        const f = await fixture();
+        try {
+          const now = new Date().toISOString();
+          const task = { ...session('expired', { equipmentStamina: true, secretRealmMode: 'all', mainTask: 'daily' }),
+            loginType: 'android_qq', expiresAt: new Date(Date.now() - 60_000).toISOString() };
+          const active = status === 'running_daily';
+          const historyMessage = `QQ 历史任务记录 ${status}`;
+          f.state.latest = () => ({ task });
+          f.state.events = (taskId, url) => {
+            const after = url.searchParams.get('after') || '0-0';
+            return { task, run: { taskId, status, updatedAt: now, startedAt: now,
+              authorizedAt: now, scanCapturedAt: now, finishedAt: active ? null : now,
+              actionIndex: status === 'completed' ? 40 : 20, actionTotal: 40,
+              ...(status === 'failed' ? { errorCode: 'daily_failed' } : {}) },
+            logs: after === '0-0' ? [{ id: '1-0', time: now, level: 'INFO', message: historyMessage }] : [],
+            nextCursor: '1-0', hasMore: false, truncated: false };
+          };
+          await f.open();
+          await f.page.getByRole('button', { name: '展开记录', exact: true }).click();
+          await f.page.getByRole('log', { name: '任务执行日志', exact: true }).getByText(historyMessage, { exact: true }).waitFor();
+          assert.equal(await isSelected(daily(f.page)), true);
+          assert.equal(await weekly(f.page).isEnabled(), !active,
+            'A captured scan in completed or failed history must not lock the next task selection');
+          assert.equal(await daily(f.page).isEnabled(), !active);
+          assert.equal(await f.page.getByText('任务进行中', { exact: true }).count(), active ? 1 : 0);
+          if (!active) {
+            await selectTask(f.page, 'arena_weekly');
+            await weeklyPanel(f.page).waitFor();
+            assert.equal(await f.page.locator('.login-shell').getAttribute('data-main-task'), 'arena_weekly');
+            assert.equal(await f.page.getByRole('log', { name: '任务执行日志', exact: true })
+              .getByText(historyMessage, { exact: true }).isVisible(), true, 'Switching the next task preserves execution history');
+            assert.equal(await f.page.locator('code').getByText(sessionId, { exact: true }).isVisible(), true);
+          }
+          assert.deepEqual(loginCalls(f.state), [], 'Restoring history and switching tasks must not create or recover a login session');
+        } finally { await f.close(); }
+      });
+    }
+
     await t.test('reload preserves an unconfirmed weekly intent and reuses its saved request ID', async () => {
       const f = await fixture();
       const gate = deferred();

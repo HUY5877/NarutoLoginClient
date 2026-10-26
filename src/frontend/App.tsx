@@ -199,7 +199,8 @@ export default function App() {
   const authorizationComplete = phase === 'login_confirmed' || authorizedRun;
   const scanCaptured = hasCapturedScan(progressInput);
   const scanComplete = authorizationComplete || scanCaptured;
-  const restoringAuthorizedRun = !session && (authorizedRun || scanCaptured);
+  const restoringAuthorizedRun = !session && (authorizedRun || scanCaptured)
+    && currentRun?.status !== 'completed' && currentRun?.status !== 'failed';
   const displayedUserOptions = restoringAuthorizedRun
     ? parseUserOptions(visibleRun.task?.userOptions) ?? DEFAULT_USER_OPTIONS : userOptions;
   const mainTask = getMainTask(displayedUserOptions);
