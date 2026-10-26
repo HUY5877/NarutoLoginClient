@@ -36,8 +36,8 @@ function qqBotConfig(env: NodeJS.ProcessEnv): QqBotConfig | undefined {
   const appSecret = env.QQ_BOT_APP_SECRET?.trim() ?? '';
   const groupOpenid = env.QQ_BOT_GROUP_OPENID?.trim() ?? '';
   if (!appId && !appSecret && !groupOpenid) return undefined;
-  if (!appId || !appSecret || !groupOpenid) throw new Error('QQ_BOT_APP_ID、QQ_BOT_APP_SECRET、QQ_BOT_GROUP_OPENID 必须同时配置或全部留空');
-  if (!/^[0-9]{1,32}$/.test(appId) || !/^[A-Za-z0-9_-]{1,256}$/.test(groupOpenid) || Buffer.byteLength(appSecret) > 1024) {
+  if (!appId || !appSecret) throw new Error('QQ_BOT_APP_ID、QQ_BOT_APP_SECRET 必须成对配置，群标识可以在首次接入时留空');
+  if (!/^[0-9]{1,32}$/.test(appId) || groupOpenid && !/^[A-Za-z0-9_-]{1,128}$/.test(groupOpenid) || Buffer.byteLength(appSecret) > 1024) {
     throw new Error('QQ_BOT 机器人配置格式不正确');
   }
   return { appId, appSecret, groupOpenid };

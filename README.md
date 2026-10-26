@@ -29,6 +29,7 @@ npm run dev
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL，保存账号、审批与申请记录 |
 | `JWT_SECRET` | 至少 32 字节的随机签名密钥，同环境保持一致 |
+| `QQ_BOT_APP_ID`、`QQ_BOT_APP_SECRET`、`QQ_BOT_GROUP_OPENID` | 可选的 QQ 群提醒绑定；前两项成对填写，首次接入可留空群标识；正式启用绑定和执行端通知时补齐群标识，与同环境执行端一致 |
 | `REDIS_URL` | 与 ADB 执行端连接同一实例、同一 DB |
 | `STORAGE_DRIVER` | 必填；线上使用 `oss`，本地模拟可用 `local` |
 | `OSS_REGION`、`OSS_BUCKET` | 二维码所在区域与私有 Bucket |
@@ -90,7 +91,9 @@ npm run dev
 
 登录后点击页头「QQ 群提醒」，生成 5 分钟有效的一次性绑定码，在指定通知群中发送 `@机器人 绑定 CODE`。页面收到群内验证后显示发送者信息，确认本人发送后完成绑定；重新生成会废弃旧码，已绑定身份保留到新绑定确认。用户可在同一窗口解绑，解绑同时取消未完成的挑战。账号切换、退出及关闭窗口会停止轮询。
 
-启用前将 `QQ_BOT_APP_ID`、`QQ_BOT_APP_SECRET`、`QQ_BOT_GROUP_OPENID` 放入当前 `APP_ENV` 的 Cloudflare namespace，并与同环境 NarutoDailyADB 保持一致。全空时窗口显示尚未配置；部分填写会拒绝启动。三项配置仅用于后端，不加 `VITE_` 前缀。测试分支联调须显式选择 `APP_ENV=test`，使用独立测试数据库和测试机器人。
+启用前将机器人配置放入当前 `APP_ENV` 的 Cloudflare namespace。`QQ_BOT_APP_ID` 与 `QQ_BOT_APP_SECRET` 必须成对填写；全空时关闭功能。首次接入可暂不填 `QQ_BOT_GROUP_OPENID`，先保存回调地址，并在目标群 @机器人。验签通过的群事件会将群标识短期保存到当前 Redis 的 `${REDIS_QUEUE_KEY}:qq:observed-groups:${APP_ID}`，最多保留 20 个最近群，10 分钟过期；不保存正文、昵称或成员身份，不自动将第一个群设为通知群。
+
+确认目标群标识后，再将其填入 `QQ_BOT_GROUP_OPENID` 并重新部署网站、更新执行端配置。未指定群时只能验证回调和发现群，网页不能生成绑定码或确认绑定，执行端的主动通知仍须三项齐全。配置仅用于后端，不加 `VITE_` 前缀。测试分支联调须显式选择 `APP_ENV=test`，使用测试数据库；如用户明确授权共用机器人凭据，只复制指定 AppID/Secret，不更改正式 namespace。
 
 在 QQ 机器人管理后台把回调地址设为 `https://测试网站域名/api/qq/events`，订阅 `GROUP_AT_MESSAGE_CREATE`。地址必须公网 HTTPS 可访问，反向代理需完整保留原始请求体及 `X-Bot-Appid`、`X-Signature-Ed25519`、`X-Signature-Timestamp` 请求头。接口支持 `op=13` 地址校验和 `op=0` 事件，正常事件确认返回 `{ "op": 12 }`。首次地址校验不连接数据库；正常绑定业务才初始化数据库表。
 

@@ -100,6 +100,41 @@ test('公开挑战不充当事件签名接口，拒绝可伪装为群事件的 p
   });
 });
 
+test('只有机器人凭据时能验证回调并记录已签名群标识，绑定业务保持关闭', async () => {
+  const observed: Array<{ appId: string; groupOpenid: string }> = [];
+  const service = new QqBindingService({ ...config, qqBot: { ...bot, groupOpenid: '' } }, {
+    initializeUsers: async () => assert.fail('group discovery must not initialize PostgreSQL'),
+    now: () => start,
+    observeGroup: async (appId: string, groupOpenid: string) => { observed.push({ appId, groupOpenid }); },
+  });
+  assert.deepEqual(await service.getStatus(userId), { enabled: false, binding: null, challenge: null });
+  await assert.rejects(() => service.createChallenge(userId), unavailable);
+  await assert.rejects(() => service.confirm(userId, { challengeId: '70000000-0000-4000-8000-000000000001' }), unavailable);
+  await assert.rejects(() => service.unbind(userId), unavailable);
+  const validation = await service.handleWebhook(Buffer.from(JSON.stringify({ op: 13,
+    d: { plain_token: 'Arq0D5A61EgUu4OxUvOp', event_ts: '1725442341' } })), { appId: bot.appId });
+  assert.equal(validation.signature, '87befc99c42c651b3aac0278e71ada338433ae26fcb24307bdc5ad38c1adc2d01bcfcadc0842edac85e85205028a1132afe09280305f13aa6909ffc2d652c706');
+  assert.deepEqual(observed, []);
+  const raw = event('irrelevant', 'member-fixture', { group_openid: 'discovered-group', author: undefined, content: undefined });
+  assert.deepEqual(await receive(service, raw), { op: 12 });
+  assert.deepEqual(observed, [{ appId: bot.appId, groupOpenid: 'discovered-group' }]);
+  const validHeaders = signed(raw);
+  await assert.rejects(() => service.handleWebhook(Buffer.from(raw), { appId: bot.appId,
+    timestamp: validHeaders['X-Signature-Timestamp'], signature: '0'.repeat(128) }),
+  (error: unknown) => !!error && typeof error === 'object' && 'status' in error && error.status === 401);
+  await receive(service, event('ignored', 'member', { group_openid: '<unsafe>' }));
+  assert.equal(observed.length, 1, 'invalid signature and malformed identifiers cannot enter discovery');
+});
+
+test('群发现持久化失败不确认事件，已有指定群绑定不依赖发现存储', async t => {
+  const missingGroup = new QqBindingService({ ...config, qqBot: { ...bot, groupOpenid: '' } }, {
+    now: () => start, observeGroup: async () => { throw new Error('fixture-discovery-down'); },
+  });
+  await assert.rejects(() => receive(missingGroup, event('ignored')), /fixture-discovery-down/);
+  const { service } = await fixture(t);
+  assert.deepEqual(await receive(service, event('ignored')), { op: 12 });
+});
+
 test('完成生成码、群消息、网页确认和解绑，浏览器不接收成员标识与哈希', async t => {
   const { service, db } = await fixture(t);
   await withApi(service, async base => {

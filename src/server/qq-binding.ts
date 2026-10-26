@@ -31,25 +31,31 @@ export class QqBindingService {
   private store?: QqBindingStore;
   private readonly now: () => number;
   constructor(private readonly config: QqBindingConfig,
-    private readonly options: { store?: QqBindingStore; now?: () => number; initializeUsers?: () => Promise<void> } = {}) {
+    private readonly options: { store?: QqBindingStore; now?: () => number; initializeUsers?: () => Promise<void>;
+      observeGroup?: (appId: string, groupOpenid: string) => Promise<void> } = {}) {
     this.store = options.store; this.now = options.now ?? Date.now;
   }
   private bot(): QqBotConfig {
     if (!this.config.qqBot) throw new ApiError(503, 'QQ 群提醒绑定尚未配置。', 'QQ_BINDING_DISABLED');
     return this.config.qqBot;
   }
+  private bindingBot(): QqBotConfig {
+    const bot = this.bot();
+    if (!bot.groupOpenid) throw new ApiError(503, '通知群尚未配置，请先完成机器人群标识识别。', 'QQ_GROUP_NOT_CONFIGURED');
+    return bot;
+  }
   private scope(userId: string): QqBindingScope {
-    const bot = this.bot(); return { userId, appId: bot.appId, groupOpenid: bot.groupOpenid };
+    const bot = this.bindingBot(); return { userId, appId: bot.appId, groupOpenid: bot.groupOpenid };
   }
   private async request<T>(run: (store: QqBindingStore) => Promise<T>): Promise<T> {
-    this.bot();
+    this.bindingBot();
     if (!this.store && (!this.config.databaseUrl || !this.options.initializeUsers)) throw unavailable();
     const store = this.store ??= new PgQqBindingStore(this.config, { beforeInitialize: this.options.initializeUsers! });
     try { await store.initialize(); return await run(store); }
     catch (error) { if (error instanceof ApiError) throw error; throw unavailable(); }
   }
   async getStatus(userId: string): Promise<QqBindingStatus> {
-    if (!this.config.qqBot) return disabled();
+    if (!this.config.qqBot?.groupOpenid) return disabled();
     return this.request(store => store.getStatus(this.scope(userId), new Date(this.now())));
   }
   async createChallenge(userId: string): Promise<{ id: string; code: string; expiresAt: string }> {
@@ -61,7 +67,7 @@ export class QqBindingService {
     return { id, code, expiresAt: expiresAt.toISOString() };
   }
   async confirm(userId: string, body: unknown): Promise<{ binding: { boundAt: string } }> {
-    this.bot();
+    this.bindingBot();
     if (!object(body) || typeof body.challengeId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.challengeId)) {
       throw new ApiError(400, '请读取当前绑定验证信息后再确认。', 'QQ_BINDING_INVALID_CHALLENGE');
     }
@@ -90,7 +96,13 @@ export class QqBindingService {
     if (payload.op !== 0) throw invalid();
     if (payload.t !== 'GROUP_AT_MESSAGE_CREATE') return { op: 12 };
     const data = payload.d;
-    if (!object(data) || data.group_openid !== bot.groupOpenid || !object(data.author) || !identifier(data.author.member_openid)
+    if (!object(data) || !identifier(data.group_openid)) return { op: 12 };
+    if (!bot.groupOpenid) {
+      if (!this.options.observeGroup) throw unavailable();
+      await this.options.observeGroup(bot.appId, data.group_openid);
+      return { op: 12 };
+    }
+    if (data.group_openid !== bot.groupOpenid || !object(data.author) || !identifier(data.author.member_openid)
       || typeof data.content !== 'string') return { op: 12 };
     // QQ may retain the robot mention prefix. Require the whole remaining message to be the binding command.
     const content = data.content.replace(/^\s*<@!?[A-Za-z0-9_-]+>\s*/, '').trim();

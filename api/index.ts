@@ -9,18 +9,21 @@ import { createObjectReader } from '../src/server/storage.js';
 import { AdminService } from '../src/server/admin.js';
 import { QqCaptureService } from '../src/server/qq-captures.js';
 import { QqBindingService } from '../src/server/qq-binding.js';
+import { QqGroupDiscoveryService } from '../src/server/qq-group-discovery.js';
 
 const config = await loadRuntimeConfig();
 const store = config.databaseUrl ? new PgAuthStore(config.databaseUrl, config.timeoutMs) : undefined;
 const tasks = new TaskService(config);
 const runs = new TaskRunService(config, { store });
 const auth = new AuthService(config, { store });
+const qqGroups = new QqGroupDiscoveryService(config);
 const app = createApp(config, {
   events: new LoginEventService(config, { store, tasks }),
   runs,
   admin: new AdminService({ store, runs }),
   qqCaptures: new QqCaptureService(config),
-  qqBindings: new QqBindingService(config, { initializeUsers: () => auth.initialize() }),
+  qqBindings: new QqBindingService(config, { initializeUsers: () => auth.initialize(),
+    observeGroup: (appId, groupOpenid) => qqGroups.record(appId, groupOpenid) }),
   auth, storage: createObjectReader(config),
 });
 // Vercel terminates HTTPS before forwarding the request to this function.

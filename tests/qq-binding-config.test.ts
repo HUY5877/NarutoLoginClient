@@ -6,9 +6,13 @@ import { cloudflareTestEnv } from './cloudflare-fixture.js';
 
 const bot = { QQ_BOT_APP_ID: '11111111', QQ_BOT_APP_SECRET: 'fixture-secret', QQ_BOT_GROUP_OPENID: 'group-fixture' };
 
-test('机器人配置必须三项同配，全部留空时关闭绑定功能', () => {
+test('机器人凭据成对配置，可先留空群标识接收验证事件', () => {
   assert.throws(() => loadConfig({ QQ_BOT_APP_ID: bot.QQ_BOT_APP_ID }), /QQ_BOT/);
-  assert.throws(() => loadConfig({ ...bot, QQ_BOT_GROUP_OPENID: ' ' }), /QQ_BOT/);
+  assert.throws(() => loadConfig({ QQ_BOT_APP_SECRET: bot.QQ_BOT_APP_SECRET }), /QQ_BOT/);
+  assert.throws(() => loadConfig({ QQ_BOT_GROUP_OPENID: bot.QQ_BOT_GROUP_OPENID }), /QQ_BOT/);
+  assert.deepEqual(loadConfig({ ...bot, QQ_BOT_GROUP_OPENID: ' ' }).qqBot,
+    { appId: '11111111', appSecret: 'fixture-secret', groupOpenid: '' });
+  assert.throws(() => loadConfig({ ...bot, QQ_BOT_GROUP_OPENID: 'g'.repeat(129) }), /QQ_BOT/);
   assert.deepEqual(loadConfig(bot).qqBot, { appId: '11111111', appSecret: 'fixture-secret', groupOpenid: 'group-fixture' });
   assert.equal(loadConfig({}).qqBot, undefined);
 });
