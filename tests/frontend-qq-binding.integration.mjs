@@ -134,11 +134,14 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
         await f.open();
         await f.page.getByText('已绑定 QQ 群提醒', { exact: true }).waitFor();
         await f.page.getByRole('button', { name: '重新绑定', exact: true }).click();
-        await f.page.getByText('@机器人 绑定 ABCD1234', { exact: true }).waitFor();
+        await f.page.locator('code').waitFor();
         assert.equal(await f.page.getByText('已绑定 QQ 群提醒', { exact: true }).count(), 1);
         assert.equal(await f.page.getByRole('button', { name: '确认绑定', exact: true }).isEnabled(), false);
         await f.page.getByRole('button', { name: '复制命令', exact: true }).click();
-        assert.equal(await f.page.evaluate(() => navigator.clipboard.readText()), '@机器人 绑定 ABCD1234');
+        assert.equal(await f.page.evaluate(() => navigator.clipboard.readText()), '绑定 ABCD1234',
+          'the copied command must not include a literal mention that survives a real QQ @ mention');
+        assert.equal(await f.page.locator('code').innerText(), '绑定 ABCD1234');
+        await f.page.getByText(/从 QQ 成员列表中选择机器人完成 @/).waitFor();
         f.state.status.challenge = challenge(true, '木叶忍者');
         await f.page.clock.fastForward(3_000);
         await f.page.getByText('木叶忍者', { exact: true }).waitFor();
@@ -150,7 +153,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
         }
         await f.page.getByRole('button', { name: '确认绑定', exact: true }).click();
         await f.page.getByText('绑定成功', { exact: true }).waitFor();
-        assert.equal(await f.page.getByText('@机器人 绑定 ABCD1234', { exact: true }).count(), 0);
+        assert.equal(await f.page.getByText('绑定 ABCD1234', { exact: true }).count(), 0);
         await f.page.getByRole('button', { name: '解除绑定', exact: true }).click();
         await f.page.getByText('尚未绑定 QQ 群提醒', { exact: true }).waitFor();
         assert.deepEqual(f.state.calls.filter(call => call.method !== 'GET').map(call => [call.method, call.path]), [
@@ -201,7 +204,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
       try {
         await f.open();
         await f.page.getByRole('button', { name: '生成绑定码', exact: true }).click();
-        await f.page.getByText('@机器人 绑定 ABCD1234', { exact: true }).waitFor();
+        await f.page.getByText('绑定 ABCD1234', { exact: true }).waitFor();
         f.state.status.challenge = challenge(true, '木叶忍者');
         await f.page.clock.fastForward(3_000);
         await f.page.getByText('木叶忍者', { exact: true }).waitFor();
@@ -219,7 +222,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
         assert.equal(await f.page.getByText('绑定成功', { exact: true }).count(), 0);
         await f.page.getByRole('button', { name: '重试', exact: true }).click();
         await f.page.getByText('另一位成员', { exact: true }).waitFor();
-        assert.equal(await f.page.getByText('@机器人 绑定 ABCD1234', { exact: true }).count(), 0,
+        assert.equal(await f.page.getByText('绑定 ABCD1234', { exact: true }).count(), 0,
           'a newer challenge invalidates the old command even when the expiration timestamp is unchanged');
         await f.page.getByRole('button', { name: '确认绑定', exact: true }).click();
         assert.deepEqual(f.state.calls.filter(call => call.path.endsWith('/confirm')).at(-1).body,

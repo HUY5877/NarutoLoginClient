@@ -19,7 +19,7 @@ export function QqBindingDialog({ userId, open, onOpenChange, onUnauthorized }: 
   useEffect(() => { setCopyState('idle'); }, [userId, open, binding.code]);
   const { status, busy, loading, error, message, code, expired, remainingSeconds } = binding;
   const candidate = status?.challenge;
-  const command = code ? `@机器人 绑定 ${code}` : '';
+  const command = code ? `绑定 ${code}` : '';
   const countdown = `${Math.floor(remainingSeconds / 60)}:${String(remainingSeconds % 60).padStart(2, '0')}`;
 
   async function copyCommand() {
@@ -59,11 +59,11 @@ export function QqBindingDialog({ userId, open, onOpenChange, onUnauthorized }: 
           {!expired && <p className="text-sm text-muted-foreground">绑定码剩余有效时间：<span className="tabular-nums">{countdown}</span></p>}
           {expired ? <p className="text-sm leading-6 text-muted-foreground">绑定码已过期，请重新生成。</p> : <>
             {command ? <>
-              <p className="text-sm leading-6 text-muted-foreground">在 QQ 群中选择并 @机器人，然后发送以下命令：</p>
+              <p className="text-sm leading-6 text-muted-foreground">先从 QQ 成员列表中选择机器人完成 @，再粘贴以下命令发送：</p>
               <code className="block break-all rounded-lg border bg-white/70 px-3 py-3 text-sm font-semibold">{command}</code>
               <Button variant="outline" size="sm" disabled={busy} onClick={() => { void copyCommand(); }}><Copy aria-hidden="true" />复制命令</Button>
               {copyState !== 'idle' && <p role="status" className="text-xs leading-5 text-muted-foreground">{copyState === 'copied'
-                ? '命令已复制，请在群内手动选择并 @机器人。' : '复制失败，请长按或选中上方命令复制。'}</p>}
+                ? '命令已复制。请先在 QQ 成员列表中选择机器人完成 @，再粘贴命令发送。' : '复制失败，请长按或选中上方命令复制。'}</p>}
             </> : !candidate.received && <p className="text-sm leading-6 text-muted-foreground">请发送此前保存的命令；如果已丢失绑定码，可重新生成。</p>}
             {candidate.received && <div className="space-y-2 text-sm leading-6">
               {candidate.senderName && <p>收到群成员消息：<strong className="break-all">{candidate.senderName}</strong></p>}
