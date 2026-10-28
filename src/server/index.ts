@@ -15,6 +15,8 @@ import { TaskService } from './queue.js';
 import { TaskRunService } from './task-runs.js';
 import { AdminService } from './admin.js';
 import { QqCaptureService } from './qq-captures.js';
+import { QqBindingService } from './qq-binding.js';
+import { QqGroupDiscoveryService } from './qq-group-discovery.js';
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const serverRoot = existsSync(resolve(moduleDir, 'package.json')) ? moduleDir : resolve(moduleDir, '..');
@@ -35,7 +37,10 @@ const events = new LoginEventService(config, { store, tasks });
 const runs = new TaskRunService(config, { store });
 const admin = new AdminService({ store, runs });
 const qqCaptures = new QqCaptureService(config);
-const app = createApp(config, { events, auth, runs, admin, qqCaptures, storage: createObjectReader(config) });
+const qqGroups = new QqGroupDiscoveryService(config);
+const qqBindings = new QqBindingService(config, { initializeUsers: () => auth.initialize(),
+  observeGroup: (appId, groupOpenid) => qqGroups.record(appId, groupOpenid) });
+const app = createApp(config, { events, auth, runs, admin, qqCaptures, qqBindings, storage: createObjectReader(config) });
 const server = createServer(app);
 let vite: import('vite').ViteDevServer | undefined;
 
@@ -79,6 +84,8 @@ async function shutdown() {
   await vite?.close();
   await auth.close();
   await qqCaptures.close();
+  await qqBindings.close();
+  await qqGroups.close();
 }
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => { void shutdown(); });

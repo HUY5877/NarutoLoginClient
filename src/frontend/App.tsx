@@ -21,6 +21,7 @@ import {
   UserRound,
 } from 'lucide-react';
 import { AuthDialog } from '@/components/auth-dialog';
+import { QqBindingDialog } from '@/components/qq-binding-dialog';
 import { AdminMenu } from '@/components/admin-menu';
 import { VillageParticles } from '@/components/village-particles';
 import { ChakraSeal } from '@/components/chakra-seal';
@@ -151,6 +152,7 @@ function LoginHelp({ mainTask = 'daily' }: { mainTask?: MainTask }) {
 export default function App() {
   const auth = useAuth();
   const [authOpen, setAuthOpen] = useState(false);
+  const [qqBindingOpen, setQqBindingOpen] = useState(false);
   const [mobileDetailsOpen, setMobileDetailsOpen] = useState(false);
   const [submissionRevision, setSubmissionRevision] = useState<number | null>(null);
   const {
@@ -183,6 +185,7 @@ export default function App() {
   } = useLoginSession(auth.user?.id ?? null, auth.handleUnauthorized);
   const taskRun = useTaskRun(auth.user?.id ?? null, session, auth.handleUnauthorized);
   useEffect(() => { setSubmissionRevision(null); setMobileDetailsOpen(false); }, [auth.user?.id]);
+  useEffect(() => { setQqBindingOpen(false); }, [auth.user?.id]);
   const awaitingSubmission = submissionRevision !== null && acceptedRevision === submissionRevision;
 
   function openLogin() {
@@ -240,6 +243,9 @@ export default function App() {
           <div className="village-account flex flex-wrap items-center justify-end gap-1.5 sm:gap-3">
             {auth.loading ? <Spinner aria-label="正在读取账户状态" className="size-4" /> : auth.user ? (
               <>
+                <Button variant="outline" size="sm" disabled={auth.busy} onClick={() => setQqBindingOpen(true)} className="gap-1.5 bg-white/50">
+                  <MessageCircle aria-hidden="true" />QQ 群提醒
+                </Button>
                 {auth.user.isAdmin === true ? <AdminMenu key={auth.user.id} userId={auth.user.id} refreshAuth={auth.refresh}
                   mobileAccount={{ username: auth.user.username, busy: auth.busy, logout: () => { void auth.logout(); } }} /> : (
                   <DropdownMenu modal={false}>
@@ -572,6 +578,8 @@ export default function App() {
       </main>
       <AuthDialog open={authOpen} onOpenChange={setAuthOpen} busy={auth.busy}
         error={auth.error} clearError={auth.clearError} authenticate={auth.authenticate} />
+      {auth.user && <QqBindingDialog key={auth.user.id} userId={auth.user.id} open={qqBindingOpen}
+        onOpenChange={setQqBindingOpen} onUnauthorized={auth.handleUnauthorized} />}
     </div>
   );
 }
