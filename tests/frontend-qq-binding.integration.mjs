@@ -140,8 +140,8 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
         await f.page.getByRole('button', { name: '复制命令', exact: true }).click();
         assert.equal(await f.page.evaluate(() => navigator.clipboard.readText()), '绑定 ABCD1234',
           'the copied command must not include a literal mention that survives a real QQ @ mention');
-        assert.equal(await f.page.locator('code').innerText(), '绑定 ABCD1234');
-        await f.page.getByText(/从 QQ 成员列表中选择机器人完成 @/).waitFor();
+        assert.equal(await f.page.locator('code').innerText(), '@机器人 绑定 ABCD1234');
+        await f.page.getByText('在 QQ 群输入 @，从列表中选择机器人。', { exact: true }).waitFor();
         f.state.status.challenge = challenge(true, '木叶忍者');
         await f.page.clock.fastForward(3_000);
         await f.page.getByText('木叶忍者', { exact: true }).waitFor();

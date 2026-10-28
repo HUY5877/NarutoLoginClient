@@ -59,11 +59,16 @@ export function QqBindingDialog({ userId, open, onOpenChange, onUnauthorized }: 
           {!expired && <p className="text-sm text-muted-foreground">绑定码剩余有效时间：<span className="tabular-nums">{countdown}</span></p>}
           {expired ? <p className="text-sm leading-6 text-muted-foreground">绑定码已过期，请重新生成。</p> : <>
             {command ? <>
-              <p className="text-sm leading-6 text-muted-foreground">先从 QQ 成员列表中选择机器人完成 @，再粘贴以下命令发送：</p>
-              <code className="block break-all rounded-lg border bg-white/70 px-3 py-3 text-sm font-semibold">{command}</code>
+              <p className="text-sm leading-6 text-muted-foreground">在 QQ 群里发送这样的完整消息：</p>
+              <code className="block break-all rounded-lg border bg-white/70 px-3 py-3 text-sm font-semibold"><span className="text-primary">@机器人 </span><span>{command}</span></code>
+              <ol className="list-decimal space-y-1 pl-5 text-sm leading-6 text-muted-foreground">
+                <li>在 QQ 群输入 @，从列表中选择机器人。</li>
+                <li>点击「复制命令」，粘贴到 @ 后面并发送。</li>
+              </ol>
               <Button variant="outline" size="sm" disabled={busy} onClick={() => { void copyCommand(); }}><Copy aria-hidden="true" />复制命令</Button>
               {copyState !== 'idle' && <p role="status" className="text-xs leading-5 text-muted-foreground">{copyState === 'copied'
-                ? '命令已复制。请先在 QQ 成员列表中选择机器人完成 @，再粘贴命令发送。' : '复制失败，请长按或选中上方命令复制。'}</p>}
+                ? `已复制「${command}」。请先在 QQ 群输入 @ 并选中机器人，再粘贴发送。`
+                : `复制失败，请手动输入「${command}」；@ 仍需在 QQ 中选择机器人。`}</p>}
             </> : !candidate.received && <p className="text-sm leading-6 text-muted-foreground">请发送此前保存的命令；如果已丢失绑定码，可重新生成。</p>}
             {candidate.received && <div className="space-y-2 text-sm leading-6">
               {candidate.senderName && <p>收到群成员消息：<strong className="break-all">{candidate.senderName}</strong></p>}
