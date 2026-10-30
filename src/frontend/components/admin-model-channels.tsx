@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, CircleAlert, Cpu, FlaskConical, Plus, RefreshCw, Save, Trash2 } from 'lucide-react';
+import { Check, CircleAlert, CircleCheck, CircleX, Clock3, Cpu, FlaskConical, Plus, RefreshCw, Save, Trash2 } from 'lucide-react';
 import type { ModelChannel, ModelChannelKeyInput, ModelChannelTestResult } from '../../shared/model-channels';
 import { useAdminData } from '@/hooks/use-admin';
 import { adminRequest, AdminRequestError } from '@/lib/admin';
 import { isModelChannel, isModelChannelsResponse, isModelChannelTestResult } from '@/lib/model-channels';
 import { AdminError, AdminLoading } from '@/components/admin-common';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -16,6 +16,24 @@ import { Spinner } from '@/components/ui/spinner';
 interface KeyDraft { rowId: number; id?: string; masked?: string; value: string }
 interface ChannelActivity { busy: boolean; dirty: boolean }
 const savedKeys = (channel: ModelChannel): KeyDraft[] => channel.keys.map((key, rowId) => ({ ...key, rowId, value: '' }));
+
+function KeyTestResult({ result, label }: { result: ModelChannelTestResult; label: string }) {
+  const Icon = result.ok ? CircleCheck : CircleX;
+  return <Alert role={result.ok ? 'status' : 'alert'} aria-label={label} aria-atomic="true"
+    className={`min-w-0 gap-y-1.5 px-3 py-3 has-[>svg]:grid-cols-[auto_minmax(0,1fr)] ${result.ok
+      ? 'border-emerald-300 bg-emerald-50 text-emerald-950 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-100'
+      : 'border-rose-300 bg-rose-50 text-rose-950 dark:border-rose-800 dark:bg-rose-950/60 dark:text-rose-100'}`}>
+    <Icon aria-hidden="true" className="size-4.5" />
+    <AlertTitle className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 font-semibold">
+      <span>{result.ok ? '测试成功' : '测试失败'}</span>
+      <Badge variant="outline" className="ml-auto h-6 gap-1 border-current/15 bg-white/60 font-mono font-normal text-inherit dark:bg-white/5">
+        <Clock3 aria-hidden="true" />{Math.round(result.latencyMs)} ms
+      </Badge>
+    </AlertTitle>
+    <AlertDescription className={`col-start-2 min-w-0 text-xs leading-5 [overflow-wrap:anywhere] ${result.ok
+      ? 'text-emerald-800 dark:text-emerald-200' : 'text-rose-800 dark:text-rose-200'}`}>{result.message}</AlertDescription>
+  </Alert>;
+}
 
 function ChannelEditor({ channel, loading, onAccessLost, onActivity }: {
   channel: ModelChannel; loading: boolean; onAccessLost: () => void;
@@ -72,6 +90,7 @@ function ChannelEditor({ channel, loading, onAccessLost, onActivity }: {
     }
     if (kind === 'save' && enabled && keys.length === 0) { setError('启用渠道前至少需要一个密钥。'); return; }
     const controller = new AbortController(); request.current = controller;
+    const started = performance.now();
     onActivity(channel.id, { busy: true, dirty });
     setBusy(kind === 'save' ? 'save' : `test-${selected!.rowId}`); setError(''); setNotice('');
     if (selected) setResults(current => { const next = { ...current }; delete next[selected.rowId]; return next; });
@@ -98,13 +117,19 @@ function ChannelEditor({ channel, loading, onAccessLost, onActivity }: {
     } catch (caught) {
       if (request.current !== controller) return;
       if (caught instanceof AdminRequestError && [401, 403].includes(caught.status)) { onAccessLost(); return; }
+      let message: string;
       if (caught instanceof AdminRequestError && caught.status === 409) {
         setStale(true);
-        setError('配置已被修改，当前配置版本已失效。草稿仍保留，请重新读取配置后再编辑；重新读取会丢弃未保存修改。');
+        const conflictMessage = '配置已被修改，当前配置版本已失效。草稿仍保留，请重新读取配置后再编辑；重新读取会丢弃未保存修改。';
+        setError(conflictMessage);
+        message = kind === 'test' ? '当前配置已变更，请重新读取配置后再测试。' : conflictMessage;
       } else if (caught instanceof Error && ['AbortError', 'TimeoutError'].includes(caught.name)) {
         if (kind === 'save') setStale(true);
-        setError(kind === 'save' ? '保存超时，结果尚未确认。请重新读取配置后再操作。' : '测试超时，请重试。');
-      } else setError(caught instanceof Error ? caught.message : '请求失败，请重试。');
+        message = kind === 'save' ? '保存超时，结果尚未确认。请重新读取配置后再操作。' : '测试超时，请重试。';
+      } else message = caught instanceof Error ? caught.message : '请求失败，请重试。';
+      if (kind === 'test' && selected) {
+        setResults(current => ({ ...current, [selected.rowId]: { ok: false, latencyMs: performance.now() - started, message } }));
+      } else setError(message);
     } finally {
       if (request.current === controller) { request.current = null; setBusy(null); }
     }
@@ -150,10 +175,7 @@ function ChannelEditor({ channel, loading, onAccessLost, onActivity }: {
               if (remaining.length === 0) { setEnabled(false); setNotice('最后一条密钥已删除，渠道已关闭，保存后生效。'); }
             }}><Trash2 aria-hidden="true" />删除</Button>
         </div>
-        {results[key.rowId] && <p role={results[key.rowId].ok ? 'status' : 'alert'}
-          className={`break-words text-xs leading-5 ${results[key.rowId].ok ? 'text-muted-foreground' : 'text-destructive'}`}>
-          {results[key.rowId].ok ? '测试成功' : '测试失败'} · {Math.round(results[key.rowId].latencyMs)} ms · {results[key.rowId].message}
-        </p>}
+        {results[key.rowId] && <KeyTestResult result={results[key.rowId]} label={`密钥 ${index + 1} 测试结果`} />}
       </div>)}
       <Button type="button" size="sm" variant="outline" className="min-h-11 sm:min-h-0" disabled={disabled || keys.length >= 20}
         onClick={() => { const rowId = nextRowId.current++; setKeys(current => [...current, { rowId, value: '' }]); edited(); }}><Plus aria-hidden="true" />新增密钥</Button>

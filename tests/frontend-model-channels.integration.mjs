@@ -32,6 +32,43 @@ function deferred() {
   return { promise, resolve };
 }
 
+async function assertHighlightedResult(result, ok, message, expectedLatency = 88) {
+  const title = ok ? '测试成功' : '测试失败';
+  assert.equal(await result.getAttribute('data-slot'), 'alert', 'The result uses the shared shadcn Alert');
+  assert.equal(await result.getAttribute('role'), ok ? 'status' : 'alert');
+  assert.equal(await result.locator('[data-slot="alert-title"]').getByText(title, { exact: true }).count(), 1);
+  const description = result.locator('[data-slot="alert-description"]');
+  assert.equal(await description.innerText(), message);
+  const badge = result.locator('[data-slot="badge"]');
+  assert.equal(await badge.count(), 1, 'Latency has its own badge');
+  const latency = (await badge.innerText()).match(/^(\d+(?:\.\d+)?)\s*ms$/);
+  assert.ok(latency, 'The latency badge contains only the elapsed time');
+  assert.ok(Number(latency[1]) > 0, 'The result reports a positive measured latency');
+  if (expectedLatency !== null) assert.equal(Number(latency[1]), expectedLatency);
+  const icon = result.locator(ok ? 'svg.lucide-circle-check, svg.lucide-check' : 'svg.lucide-circle-x, svg.lucide-x');
+  assert.equal(await icon.count(), 1, `${title} has a matching visible icon`);
+  assert.equal(await icon.isVisible(), true);
+  const colors = await result.evaluate(element => {
+    const style = getComputedStyle(element);
+    const canvas = document.createElement('canvas'); canvas.width = 1; canvas.height = 1;
+    const context = canvas.getContext('2d');
+    const rgba = color => {
+      context.clearRect(0, 0, 1, 1); context.fillStyle = color; context.fillRect(0, 0, 1, 1);
+      return Array.from(context.getImageData(0, 0, 1, 1).data);
+    };
+    return { background: rgba(style.backgroundColor), border: rgba(style.borderTopColor), borderWidth: parseFloat(style.borderTopWidth) };
+  });
+  assert.ok(colors.borderWidth > 0, 'The result has a visible border');
+  for (const part of ['background', 'border']) {
+    const [red, green, blue, alpha] = colors[part];
+    assert.ok(alpha > 0, `${part} is not transparent`);
+    assert.ok(ok ? green > red + 3 && green > blue + 3 : red > green + 3 && red > blue + 3,
+      `${title} ${part} should be ${ok ? 'green' : 'red'}, received rgba(${colors[part].join(',')})`);
+  }
+  assert.equal(await description.evaluate(element => element.scrollWidth <= element.clientWidth), true, 'Long result messages wrap inside the description');
+  assert.equal(await result.evaluate(element => element.scrollWidth <= element.clientWidth), true, 'The result does not overflow horizontally');
+}
+
 test('管理员大模型渠道编辑与逐个密钥测试', { skip: unavailable || false, timeout: 120_000 }, async t => {
   const { createServer } = await import(pathToFileURL(require.resolve('vite')).href);
   const { default: react } = await import(pathToFileURL(require.resolve('@vitejs/plugin-react')).href);
@@ -51,7 +88,7 @@ test('管理员大模型渠道编辑与逐个密钥测试', { skip: unavailable 
       const page = await context.newPage();
       page.setDefaultTimeout(5_000);
       const state = { channels: structuredClone(channels), reads: 0, writes: [], tests: [], errors: [], readStatus,
-        writeStatus: 200, testStatus: 200, testOk: true, gate: null, wrongChannel: false };
+        writeStatus: 200, testStatus: 200, testOk: true, testMessage: null, gate: null, wrongChannel: false };
       if (brokenChannel) state.channels[0] = { ...state.channels[0], model: '', enabled: false,
         keys: brokenChannel === 'model' ? state.channels[0].keys : [], configurationError: '该渠道配置格式有误，请重新填写并保存。' };
       if (missingChannel) state.channels[0] = { id: 'openai', name: 'OpenAI', version: 'openai-snapshot-missing', model: '', enabled: false, keys: [] };
@@ -74,8 +111,8 @@ test('管理员大模型渠道编辑与逐个密钥测试', { skip: unavailable 
           if (match[2]) {
             state.tests.push({ id: match[1], body });
             if (state.gate) await state.gate.promise;
-            return state.testStatus !== 200 ? reply({ error: '密钥已变更，请重新读取。' }, state.testStatus)
-              : reply({ ok: state.testOk, latencyMs: 88, message: state.testOk ? '连接成功。' : '密钥不可用。' });
+            return state.testStatus !== 200 ? reply({ error: state.testStatus >= 500 ? '测试服务暂时不可用，请稍后重试。' : '密钥已变更，请重新读取。' }, state.testStatus)
+              : reply({ ok: state.testOk, latencyMs: 88, message: state.testMessage ?? (state.testOk ? '连接成功。' : '密钥不可用。') });
           }
           state.writes.push({ id: match[1], body });
           if (state.gate) await state.gate.promise;
@@ -102,6 +139,82 @@ test('管理员大模型渠道编辑与逐个密钥测试', { skip: unavailable 
         card: name => dialog.getByRole('group', { name: `${name}渠道`, exact: true }),
         async close() { state.gate?.resolve(); await context.close(); assert.deepEqual(state.errors, []); } };
     }
+
+    for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+      const screen = viewport.width < 768 ? 'mobile' : 'desktop';
+      await t.test(`${screen}连通性结果以绿红Alert区分，图标标题耗时清晰且长消息不溢出`, async () => {
+        const f = await fixture({ viewport });
+        try {
+          const card = f.card('OpenAI');
+          for (const ok of [true, false]) {
+            f.state.testOk = ok;
+            f.state.testMessage = `${ok ? '模型连接正常，可以继续使用。' : '模型连接失败，请检查密钥和模型名称后重试。'} ${'long_connection_detail_without_spaces_'.repeat(5)}`;
+            await card.getByRole('button', { name: '测试密钥 1', exact: true }).click();
+            const result = card.getByRole(ok ? 'status' : 'alert').filter({ hasText: ok ? '测试成功' : '测试失败' });
+            await result.waitFor();
+            await assertHighlightedResult(result, ok, f.state.testMessage);
+            assert.equal(await f.dialog.evaluate(element => element.scrollWidth <= element.clientWidth), true);
+            if (screen === 'mobile') {
+              assert.equal(await result.locator('[data-slot="alert-description"]').evaluate(element =>
+                element.getBoundingClientRect().height > parseFloat(getComputedStyle(element).lineHeight) * 1.5), true, 'The mobile message spans multiple lines');
+            }
+            if (previewDir) {
+              await result.scrollIntoViewIfNeeded();
+              await f.page.screenshot({ path: path.join(previewDir, `model-channel-result-${screen}-${ok ? 'success' : 'failure'}.png`), animations: 'disabled' });
+            }
+          }
+          assert.equal(f.state.tests.length, 2);
+          assert.deepEqual(f.state.writes, [], 'Displaying results never saves channel settings');
+        } finally { await f.close(); }
+      });
+    }
+
+    await t.test('测试接口503只把当前密钥标红，保留其他密钥的成功结果并显示实测耗时', async () => {
+      const f = await fixture();
+      try {
+        const card = f.card('OpenAI');
+        const firstKey = card.getByLabel('密钥 1', { exact: true }).locator('..');
+        const secondKey = card.getByLabel('密钥 2', { exact: true }).locator('..');
+        await card.getByRole('button', { name: '测试密钥 1', exact: true }).click();
+        const successful = firstKey.getByRole('status').filter({ hasText: '测试成功' });
+        await successful.waitFor();
+        if (previewDir) await successful.screenshot({ path: path.join(previewDir, 'model-channel-result-preview.png'), animations: 'disabled' });
+        f.state.testStatus = 503;
+        await card.getByRole('button', { name: '测试密钥 2', exact: true }).click();
+        const failed = secondKey.getByRole('alert').filter({ hasText: '测试失败' });
+        await failed.waitFor();
+        await assertHighlightedResult(failed, false, '测试服务暂时不可用，请稍后重试。', null);
+        await assertHighlightedResult(firstKey.getByRole('status'), true, '连接成功。');
+        assert.equal(await firstKey.getByRole('alert').count(), 0);
+        assert.equal(await card.getByRole('alert').count(), 1);
+        assert.equal(await card.getByRole('button', { name: '测试密钥 2', exact: true }).isDisabled(), false);
+        assert.equal(f.state.tests.length, 2);
+        assert.deepEqual(f.state.writes, []);
+      } finally { await f.close(); }
+    });
+
+    await t.test('测试409显示当前密钥红块，编辑后清除结果但保留刷新指引和禁用状态', async () => {
+      const f = await fixture();
+      try {
+        const card = f.card('OpenAI');
+        f.state.testStatus = 409;
+        await card.getByRole('button', { name: '测试密钥 1', exact: true }).click();
+        const failed = card.getByRole('alert').filter({ hasText: '测试失败' });
+        await failed.waitFor();
+        await assertHighlightedResult(failed, false, '当前配置已变更，请重新读取配置后再测试。', null);
+        assert.equal(await card.getByRole('button', { name: '测试密钥 2', exact: true }).isDisabled(), true);
+        await card.getByLabel('模型名称').fill('updated-draft-model');
+        assert.equal(await card.getByRole('alert').filter({ hasText: '测试失败' }).count(), 0);
+        const guidance = card.getByRole('alert');
+        assert.equal(await guidance.count(), 1);
+        assert.match(await guidance.innerText(), /重新读取.*丢弃未保存修改/);
+        assert.equal(await card.getByRole('button', { name: '测试密钥 1', exact: true }).isDisabled(), true);
+        assert.equal(await card.getByRole('button', { name: '保存渠道', exact: true }).isDisabled(), true);
+        assert.equal(await f.dialog.getByRole('button', { name: /重新读取/ }).isDisabled(), false);
+        assert.equal(f.state.tests.length, 1);
+        assert.deepEqual(f.state.writes, []);
+      } finally { await f.close(); }
+    });
 
     await t.test('渠道KV全部缺失时可从默认空配置首次填写、启用并保存', async () => {
       const f = await fixture({ missingChannel: true });
