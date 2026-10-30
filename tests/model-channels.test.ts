@@ -17,14 +17,15 @@ const errorIs = (status: number, code?: string) => (error: unknown) => {
 };
 function fixture(values: Record<string, string | null> = {}) {
   const state = { values: { DEEPSEEK_API_KEY: secret, DEEPSEEK_MODEL: 'deepseek-chat', ...values } as Record<string, string | null>,
-    calls: [] as Array<{ url: URL; init: RequestInit }>, failWrite: false,
+    calls: [] as Array<{ url: URL; init: RequestInit }>, failWrite: false, omitMissing: false,
     upstream: async (): Promise<Response> => Response.json({ choices: [{ message: { role: 'assistant', content: 'OK' } }] }) };
   const fetcher: typeof fetch = async (input, init = {}) => {
     const url = new URL(String(input)); state.calls.push({ url, init });
     if (url.hostname !== 'api.cloudflare.com') return state.upstream();
     if (url.pathname.endsWith('/bulk/get')) {
       const body = JSON.parse(String(init.body));
-      return Response.json({ success: true, result: { values: Object.fromEntries(body.keys.map((key: string) => [key, state.values[key as keyof typeof state.values] ?? null])) } });
+      return Response.json({ success: true, result: { values: Object.fromEntries(body.keys.flatMap((key: string) =>
+        state.omitMissing && !(key in state.values) ? [] : [[key, state.values[key] ?? null]])) } });
     }
     if (state.failWrite) return Response.json({ success: false, errors: [{ message: 'private-provider-error' }] }, { status: 403 });
     assert.equal(url.pathname.endsWith('/bulk'), true);
@@ -47,6 +48,107 @@ test('渠道列表只读取当前 namespace 并脱敏旧单 key 和列表', asyn
   assert.equal(result.channels.find(channel => channel.id === 'openai')!.enabled, false);
   assert.doesNotMatch(JSON.stringify(result), /private-|cloudflare-fixture/);
   assert(f.state.calls.every(call => call.url.pathname.includes('/namespaces/test-space/')));
+});
+
+test('全部渠道未配置时兼容 KV 返回 null 或省略字段，读取不创建空配置', async () => {
+  for (const omitMissing of [false, true]) {
+    const f = fixture(); f.state.values = {}; f.state.omitMissing = omitMissing;
+    const result = await f.service.list(admin);
+    assert.equal(result.environment, 'test');
+    assert.deepEqual(result.channels.map(channel => channel.id), ['openai', 'deepseek', 'yuwan']);
+    for (const channel of result.channels) {
+      assert.equal(channel.model, ''); assert.equal(channel.enabled, false); assert.deepEqual(channel.keys, []);
+      assert.equal(channel.configurationError, undefined); assert.match(channel.version, /^[A-Za-z0-9_-]{43}$/);
+    }
+    assert.deepEqual(f.state.values, {});
+    assert.equal(f.state.calls.some(call => call.init.method === 'PUT'), false);
+  }
+});
+
+test('首次保存缺失渠道时一次 upsert 创建三个完整字段，不预写空值或修改其他渠道', async () => {
+  for (const [id, prefix] of [['openai', 'OPENAI'], ['deepseek', 'DEEPSEEK'], ['yuwan', 'YUWAN']] as const) {
+    const f = fixture(); f.state.values = { JEV_MODEL: 'unchanged-judge', REDIS_QUEUE_KEY: 'unchanged-queue' };
+    f.state.omitMissing = true;
+    const channel = await readChannel(f.service, id);
+    const saved = await f.service.update(admin, id, { version: channel.version, model: 'created-model', enabled: true,
+      keys: [{ value: 'private-created-one' }, { value: 'private-created-two' }] });
+    const expected = { [`${prefix}_API_KEY`]: '["private-created-one","private-created-two"]',
+      [`${prefix}_MODEL`]: 'created-model', [`${prefix}_ENABLED`]: 'true' };
+    assert.deepEqual(f.state.values, { JEV_MODEL: 'unchanged-judge', REDIS_QUEUE_KEY: 'unchanged-queue', ...expected });
+    const writes = f.state.calls.filter(call => call.init.method === 'PUT');
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].url.pathname, '/client/v4/accounts/account/storage/kv/namespaces/test-space/bulk');
+    assert.deepEqual(JSON.parse(String(writes[0].init.body)), Object.entries(expected).map(([key, value]) => ({ key, value })));
+    assert.equal(saved.keys.length, 2); assert.equal(saved.enabled, true); assert.notEqual(saved.version, channel.version);
+    assert.deepEqual(await readChannel(f.service, id), saved);
+    assert.doesNotMatch(JSON.stringify(saved), /private-/);
+  }
+});
+
+test('部分字段缺失时保存补齐字段并保留旧 key，重复保存不丢失或替换 key', async () => {
+  const profiles: Array<{ values: Record<string, string>; model: string; oldKeys: string[] }> = [
+    { values: { DEEPSEEK_MODEL: 'existing-model', DEEPSEEK_ENABLED: 'true' }, model: 'existing-model', oldKeys: [] },
+    { values: { DEEPSEEK_API_KEY: 'private-existing', DEEPSEEK_ENABLED: 'true' }, model: '', oldKeys: ['private-existing'] },
+    { values: { DEEPSEEK_API_KEY: '["private-one","private-two"]', DEEPSEEK_MODEL: 'existing-model' }, model: 'existing-model', oldKeys: ['private-one', 'private-two'] },
+  ];
+  for (const profile of profiles) {
+    const f = fixture(); f.state.values = { ...profile.values }; f.state.omitMissing = true;
+    const channel = await readChannel(f.service);
+    assert.equal(channel.model, profile.model); assert.equal(channel.keys.length, profile.oldKeys.length);
+    const saved = await f.service.update(admin, 'deepseek', { version: channel.version, model: channel.model || 'created-model', enabled: true,
+      keys: channel.keys.length ? channel.keys.map(({ id }) => ({ id })) : [{ value: 'private-new' }] });
+    const expected = { DEEPSEEK_API_KEY: JSON.stringify(profile.oldKeys.length ? profile.oldKeys : ['private-new']),
+      DEEPSEEK_MODEL: profile.model || 'created-model', DEEPSEEK_ENABLED: 'true' };
+    assert.deepEqual(f.state.values, expected);
+    assert.equal(f.state.calls.filter(call => call.init.method === 'PUT').length, 1);
+    const repeated = await f.service.update(admin, 'deepseek', { version: saved.version, model: saved.model, enabled: saved.enabled,
+      keys: saved.keys.map(({ id }) => ({ id })) });
+    assert.deepEqual(f.state.values, expected); assert.deepEqual(repeated, saved);
+    assert.equal(f.state.calls.filter(call => call.init.method === 'PUT').length, 2);
+  }
+});
+
+test('缺失渠道保存前的读取失败不能当作空配置并继续写入', async () => {
+  for (const failure of [
+    async (): Promise<Response> => { throw new Error('private-read-network'); },
+    async () => Response.json({ success: false }, { status: 403 }),
+    async () => Response.json({ success: false, errors: [{ message: 'private-read-error' }] }),
+    async () => Response.json({ success: true, result: {} }),
+  ]) {
+    const f = fixture(); f.state.values = {};
+    const channel = await readChannel(f.service, 'openai');
+    let writes = 0;
+    const service = new ModelChannelService({ env, fetch: async (_input, init) => {
+      if (init?.method === 'PUT') writes++;
+      return failure();
+    } });
+    await assert.rejects(service.update(admin, 'openai', { version: channel.version, model: 'new-model', enabled: true,
+      keys: [{ value: 'private-created' }] }), errorIs(503, 'MODEL_CHANNEL_READ_FAILED'));
+    assert.equal(writes, 0); assert.deepEqual(f.state.values, {});
+  }
+});
+
+test('首次创建遇到写入错误或部分成功时不能返回保存成功，也不能预写空字段', async () => {
+  for (const failure of [
+    async (): Promise<Response> => { throw new Error('private-write-network'); },
+    async () => Response.json({ success: false }, { status: 403 }),
+    async () => Response.json({ success: false, errors: [{ message: 'private-write-error' }] }),
+    async () => Response.json({ success: true, result: { successful_key_count: 2 } }),
+  ]) {
+    const f = fixture(); f.state.values = {};
+    const channel = await readChannel(f.service, 'openai');
+    const writes: unknown[] = [];
+    const service = new ModelChannelService({ env, fetch: async (input, init) => {
+      if (init?.method !== 'PUT') return f.fetcher(input, init);
+      writes.push(JSON.parse(String(init.body)));
+      return failure();
+    } });
+    await assert.rejects(service.update(admin, 'openai', { version: channel.version, model: 'new-model', enabled: true,
+      keys: [{ value: 'private-created' }] }), errorIs(503, 'MODEL_CHANNEL_SAVE_FAILED'));
+    assert.deepEqual(writes, [[{ key: 'OPENAI_API_KEY', value: '["private-created"]' },
+      { key: 'OPENAI_MODEL', value: 'new-model' }, { key: 'OPENAI_ENABLED', value: 'true' }]]);
+    assert.deepEqual(f.state.values, {});
+  }
 });
 
 test('保存保留原 key、添加新 key 和删除未选 key，返回更新的脱敏 ID', async () => {

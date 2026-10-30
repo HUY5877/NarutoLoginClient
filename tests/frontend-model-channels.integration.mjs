@@ -46,7 +46,7 @@ test('管理员大模型渠道编辑与逐个密钥测试', { skip: unavailable 
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
     browser = await chromium.launch({ headless: true,
       ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
-    async function fixture({ viewport = { width: 1280, height: 900 }, isAdmin = true, readStatus = 200, environment = 'test', brokenChannel = false } = {}) {
+    async function fixture({ viewport = { width: 1280, height: 900 }, isAdmin = true, readStatus = 200, environment = 'test', brokenChannel = false, missingChannel = false } = {}) {
       const context = await browser.newContext({ viewport, hasTouch: viewport.width < 768, timezoneId: 'Asia/Shanghai' });
       const page = await context.newPage();
       page.setDefaultTimeout(5_000);
@@ -54,6 +54,7 @@ test('管理员大模型渠道编辑与逐个密钥测试', { skip: unavailable 
         writeStatus: 200, testStatus: 200, testOk: true, gate: null, wrongChannel: false };
       if (brokenChannel) state.channels[0] = { ...state.channels[0], model: '', enabled: false,
         keys: brokenChannel === 'model' ? state.channels[0].keys : [], configurationError: '该渠道配置格式有误，请重新填写并保存。' };
+      if (missingChannel) state.channels[0] = { id: 'openai', name: 'OpenAI', version: 'openai-snapshot-missing', model: '', enabled: false, keys: [] };
       page.on('pageerror', error => state.errors.push(error.message));
       await context.route('**/*', async route => {
         const url = new URL(route.request().url());
@@ -101,6 +102,36 @@ test('管理员大模型渠道编辑与逐个密钥测试', { skip: unavailable 
         card: name => dialog.getByRole('group', { name: `${name}渠道`, exact: true }),
         async close() { state.gate?.resolve(); await context.close(); assert.deepEqual(state.errors, []); } };
     }
+
+    await t.test('渠道KV全部缺失时可从默认空配置首次填写、启用并保存', async () => {
+      const f = await fixture({ missingChannel: true });
+      try {
+        const card = f.card('OpenAI');
+        await card.getByLabel('模型名称').waitFor();
+        assert.equal(await card.getByLabel('模型名称').inputValue(), '');
+        assert.equal(await card.getByRole('switch').getAttribute('aria-checked'), 'false');
+        assert.equal(await card.locator('input[type="password"]').count(), 0);
+        assert.equal(await f.dialog.getByRole('alert').count(), 0);
+        await card.getByLabel('模型名称').fill('created-model');
+        await card.getByRole('button', { name: '新增密钥', exact: true }).click();
+        await card.getByLabel('密钥 1', { exact: true }).fill('sk-created-fixture-9999');
+        await card.getByRole('switch').click();
+        const saving = f.page.waitForRequest(request => new URL(request.url()).pathname === '/api/admin/model-channels/openai');
+        await card.getByRole('button', { name: '保存渠道', exact: true }).click();
+        const request = await saving;
+        assert.equal(request.method(), 'PUT');
+        assert.deepEqual(request.postDataJSON(), { version: 'openai-snapshot-missing', model: 'created-model', enabled: true,
+          keys: [{ value: 'sk-created-fixture-9999' }] });
+        await card.getByRole('status').filter({ hasText: '已保存' }).waitFor();
+        await card.getByText('sk-••••9999', { exact: true }).waitFor();
+        assert.equal(await card.getByLabel('密钥 1', { exact: true }).inputValue(), '');
+        assert.equal(await card.getByLabel('模型名称').inputValue(), 'created-model');
+        assert.equal(await card.getByRole('switch').getAttribute('aria-checked'), 'true');
+        assert.equal(await card.getByRole('alert').count(), 0);
+        assert.equal(f.state.writes.length, 1);
+        assert.deepEqual(f.state.tests, []);
+      } finally { await f.close(); }
+    });
 
     await t.test('修复坏模型时保留已有密钥，保存前仅允许测试新填密钥', async () => {
       const f = await fixture({ brokenChannel: 'model' });
