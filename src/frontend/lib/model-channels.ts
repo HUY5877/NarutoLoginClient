@@ -3,7 +3,7 @@ import type { ModelChannel, ModelChannelsResponse, ModelChannelTestResult } from
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 
 export function isModelChannel(value: unknown): value is ModelChannel {
-  return object(value) && ['openai', 'deepseek', 'yuwan'].includes(String(value.id))
+  return object(value) && ['openai', 'deepseek'].includes(String(value.id))
     && typeof value.version === 'string' && value.version.length > 0
     && (value.configurationError === undefined || typeof value.configurationError === 'string')
     && typeof value.name === 'string' && typeof value.model === 'string' && [...value.model].length <= 200
@@ -14,8 +14,8 @@ export function isModelChannel(value: unknown): value is ModelChannel {
 
 export function isModelChannelsResponse(value: unknown): value is ModelChannelsResponse {
   return object(value) && ['prod', 'test'].includes(String(value.environment)) && Array.isArray(value.channels)
-    && value.channels.length === 3 && value.channels.every(isModelChannel)
-    && new Set(value.channels.map(channel => channel.id)).size === 3;
+    && value.channels.length === 2 && value.channels.every(isModelChannel)
+    && new Set(value.channels.map(channel => channel.id)).size === 2;
 }
 
 export function isModelChannelTestResult(value: unknown): value is ModelChannelTestResult {

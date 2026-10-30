@@ -39,15 +39,40 @@ async function readChannel(service: ModelChannelService, id = 'deepseek') {
 }
 
 test('渠道列表只读取当前 namespace 并脱敏旧单 key 和列表', async () => {
-  const f = fixture({ YUWAN_API_KEY: '["private-one","private-two"]', YUWAN_MODEL: 'vision', YUWAN_ENABLED: 'false' });
+  const f = fixture({ OPENAI_API_KEY: '["private-one","private-two"]', OPENAI_MODEL: 'vision', OPENAI_ENABLED: 'false' });
   const result = await f.service.list(admin);
-  assert.equal(result.environment, 'test'); assert.equal(result.channels.length, 3);
+  assert.equal(result.environment, 'test'); assert.equal(result.channels.length, 2);
   const deepseek = result.channels.find(channel => channel.id === 'deepseek')!;
   assert.equal(deepseek.enabled, true); assert.equal(deepseek.model, 'deepseek-chat'); assert.equal(deepseek.keys.length, 1);
-  assert.equal(result.channels.find(channel => channel.id === 'yuwan')!.enabled, false);
   assert.equal(result.channels.find(channel => channel.id === 'openai')!.enabled, false);
+  assert.equal(result.channels.find(channel => channel.id === 'openai')!.keys.length, 2);
   assert.doesNotMatch(JSON.stringify(result), /private-|cloudflare-fixture/);
   assert(f.state.calls.every(call => call.url.pathname.includes('/namespaces/test-space/')));
+});
+
+test('Cloudflare 残留鱼玩配置不会被读取、显示或随其他渠道保存修改', async () => {
+  const leftover = { YUWAN_API_KEY: '["private-legacy-broken"', YUWAN_MODEL: 'private-yuwan-model', YUWAN_ENABLED: 'true' };
+  const f = fixture(leftover);
+  const result = await f.service.list(admin);
+  assert.deepEqual(result.channels.map(channel => channel.id), ['openai', 'deepseek']);
+  assert.doesNotMatch(JSON.stringify(result), /yuwan|鱼玩|private-legacy/);
+  assert.deepEqual(JSON.parse(String(f.state.calls[0].init.body)).keys,
+    ['OPENAI_API_KEY', 'OPENAI_MODEL', 'OPENAI_ENABLED', 'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL', 'DEEPSEEK_ENABLED']);
+  const channel = result.channels.find(channel => channel.id === 'deepseek')!;
+  await f.service.update(admin, 'deepseek', { version: channel.version, model: channel.model, enabled: channel.enabled,
+    keys: channel.keys.map(({ id }) => ({ id })) });
+  assert.deepEqual({ YUWAN_API_KEY: f.state.values.YUWAN_API_KEY, YUWAN_MODEL: f.state.values.YUWAN_MODEL,
+    YUWAN_ENABLED: f.state.values.YUWAN_ENABLED }, leftover);
+  for (const call of f.state.calls) assert.doesNotMatch(String(call.init.body), /YUWAN_/);
+});
+
+test('管理员直接调用鱼玩保存或测试接口时在访问任何远端服务前拒绝', async () => {
+  const f = fixture();
+  await assert.rejects(f.service.update(admin, 'yuwan', { version: 'a'.repeat(43), model: 'local-only-model', enabled: true,
+    keys: [{ value: 'private-local-only' }] }), errorIs(400, 'MODEL_CHANNEL_INVALID'));
+  assert.equal(f.state.calls.length, 0);
+  await assert.rejects(f.service.test(admin, 'yuwan', { model: 'local-only-model', key: { value: 'private-local-only' } }), errorIs(400, 'MODEL_CHANNEL_INVALID'));
+  assert.equal(f.state.calls.length, 0);
 });
 
 test('全部渠道未配置时兼容 KV 返回 null 或省略字段，读取不创建空配置', async () => {
@@ -55,7 +80,7 @@ test('全部渠道未配置时兼容 KV 返回 null 或省略字段，读取不�
     const f = fixture(); f.state.values = {}; f.state.omitMissing = omitMissing;
     const result = await f.service.list(admin);
     assert.equal(result.environment, 'test');
-    assert.deepEqual(result.channels.map(channel => channel.id), ['openai', 'deepseek', 'yuwan']);
+    assert.deepEqual(result.channels.map(channel => channel.id), ['openai', 'deepseek']);
     for (const channel of result.channels) {
       assert.equal(channel.model, ''); assert.equal(channel.enabled, false); assert.deepEqual(channel.keys, []);
       assert.equal(channel.configurationError, undefined); assert.match(channel.version, /^[A-Za-z0-9_-]{43}$/);
@@ -66,7 +91,7 @@ test('全部渠道未配置时兼容 KV 返回 null 或省略字段，读取不�
 });
 
 test('首次保存缺失渠道时一次 upsert 创建三个完整字段，不预写空值或修改其他渠道', async () => {
-  for (const [id, prefix] of [['openai', 'OPENAI'], ['deepseek', 'DEEPSEEK'], ['yuwan', 'YUWAN']] as const) {
+  for (const [id, prefix] of [['openai', 'OPENAI'], ['deepseek', 'DEEPSEEK']] as const) {
     const f = fixture(); f.state.values = { JEV_MODEL: 'unchanged-judge', REDIS_QUEUE_KEY: 'unchanged-queue' };
     f.state.omitMissing = true;
     const channel = await readChannel(f.service, id);
@@ -161,7 +186,7 @@ test('保存保留原 key、添加新 key 和删除未选 key，返回更新的�
   assert.doesNotMatch(JSON.stringify(result), /private-/);
   assert.notEqual(result.keys[0].id, old.keys[1].id);
   await assert.rejects(f.service.update(admin, 'deepseek', { version: old.version, model: 'old', enabled: true, keys: [{ id: old.keys[1].id }] }), errorIs(409, 'MODEL_CHANNEL_CHANGED'));
-  await assert.rejects(f.service.update(admin, 'yuwan', { version: (await readChannel(f.service, 'yuwan')).version, model: 'vision', enabled: true, keys: [{ id: result.keys[0].id }] }), errorIs(409));
+  await assert.rejects(f.service.update(admin, 'openai', { version: (await readChannel(f.service, 'openai')).version, model: 'vision', enabled: true, keys: [{ id: result.keys[0].id }] }), errorIs(409));
 });
 
 test('key JSON 损坏时标记本渠道错误，不能把 JSON 当作单 key 或阻断其他渠道', async () => {
@@ -361,6 +386,14 @@ test('模型路由保护所有方法，拒绝跨站请求，支持受限的多 k
     }
     assert.equal(f.state.calls.length, 0);
     const headers = { Cookie: 'naruto_session=header.admin.signature', 'Content-Type': 'application/json' };
+    for (const [method, path, body] of [
+      ['PUT', '/yuwan', { version: 'a'.repeat(43), model: 'local-only-model', enabled: true, keys: [{ value: 'private-local-only' }] }],
+      ['POST', '/yuwan/test', { model: 'local-only-model', key: { value: 'private-local-only' } }],
+    ] as const) {
+      const response = await fetch(`${base}/api/admin/model-channels${path}`, { method, headers, body: JSON.stringify(body) });
+      assert.equal(response.status, 400); assert.equal((await response.json()).code, 'MODEL_CHANNEL_INVALID');
+      assert.equal(f.state.calls.length, 0);
+    }
     const blocked = await fetch(`${base}/api/admin/model-channels/deepseek`, { method: 'PUT', headers: { ...headers, Origin: 'https://attacker.invalid' }, body: '{}' });
     assert.equal(blocked.status, 403);
     const body = { version: (await readChannel(f.service)).version, model: 'x', enabled: true, keys: Array.from({ length: 20 }, (_, i) => ({ value: `key-${i}-${'x'.repeat(400)}` })) };

@@ -23,7 +23,6 @@ const admin = { id: '10000000-0000-4000-8000-000000000001', username: '管理员
 const channels = [
   { id: 'openai', name: 'OpenAI', version: 'openai-snapshot-1', model: 'gpt-4.1-mini', enabled: true, keys: [{ id: 'openai-v1-0', masked: 'sk-••••1111' }, { id: 'openai-v1-1', masked: 'sk-••••2222' }] },
   { id: 'deepseek', name: 'DeepSeek', version: 'deepseek-snapshot-1', model: 'deepseek-chat', enabled: false, keys: [] },
-  { id: 'yuwan', name: '鱼玩', version: 'yuwan-snapshot-1', model: 'gpt-4.1-mini', enabled: true, keys: [{ id: 'yuwan-v1-0', masked: 'sk-••••3333' }] },
 ];
 
 function deferred() {
@@ -105,7 +104,7 @@ test('管理员大模型渠道编辑与逐个密钥测试', { skip: unavailable 
           state.reads += 1;
           return state.readStatus !== 200 ? reply({ error: '渠道读取失败，请重试。' }, state.readStatus) : reply({ environment, channels: state.channels });
         }
-        const match = url.pathname.match(/^\/api\/admin\/model-channels\/(openai|deepseek|yuwan)(\/test)?$/);
+        const match = url.pathname.match(/^\/api\/admin\/model-channels\/(openai|deepseek)(\/test)?$/);
         if (match) {
           const body = route.request().postDataJSON();
           if (match[2]) {
@@ -138,6 +137,24 @@ test('管理员大模型渠道编辑与逐个密钥测试', { skip: unavailable 
       return { page, context, dialog, state, open,
         card: name => dialog.getByRole('group', { name: `${name}渠道`, exact: true }),
         async close() { state.gate?.resolve(); await context.close(); assert.deepEqual(state.errors, []); } };
+    }
+
+    for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 932 }]) {
+      const screen = viewport.width < 768 ? 'mobile' : 'desktop';
+      await t.test(`${screen}只提供OpenAI和DeepSeek两个管理渠道，不显示鱼玩卡片或操作入口`, async () => {
+        const f = await fixture({ viewport, missingChannel: true });
+        try {
+          await f.card('OpenAI').getByLabel('模型名称').waitFor();
+          await f.card('DeepSeek').getByLabel('模型名称').waitFor();
+          assert.equal(await f.dialog.getByRole('group').count(), 2);
+          assert.equal(await f.dialog.getByRole('group', { name: /鱼玩|yuwan/i }).count(), 0);
+          assert.equal(await f.dialog.getByRole('button', { name: /鱼玩|yuwan/i }).count(), 0);
+          assert.equal(await f.dialog.getByRole('switch', { name: /鱼玩|yuwan/i }).count(), 0);
+          assert.doesNotMatch(await f.dialog.innerText(), /鱼玩|yuwan/i);
+          assert.equal(await f.dialog.evaluate(element => element.scrollWidth <= element.clientWidth), true);
+          if (previewDir) await f.page.screenshot({ path: path.join(previewDir, `model-channels-two-${screen}.png`), animations: 'disabled' });
+        } finally { await f.close(); }
+      });
     }
 
     for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
@@ -381,12 +398,13 @@ test('管理员大模型渠道编辑与逐个密钥测试', { skip: unavailable 
     await t.test('删除最后一条密钥会关闭渠道；空模型和空新密钥不能提交', async () => {
       const f = await fixture();
       try {
-        const card = f.card('鱼玩');
+        const card = f.card('OpenAI');
+        await card.getByRole('button', { name: '删除密钥 2', exact: true }).click();
         await card.getByRole('button', { name: '删除密钥 1', exact: true }).click();
         assert.equal(await card.getByRole('switch').getAttribute('aria-checked'), 'false');
         await card.getByRole('button', { name: '保存渠道', exact: true }).click();
         await card.getByRole('status').filter({ hasText: '已保存' }).waitFor();
-        assert.deepEqual(f.state.writes.at(-1), { id: 'yuwan', body: { version: 'yuwan-snapshot-1', model: 'gpt-4.1-mini', enabled: false, keys: [] } });
+        assert.deepEqual(f.state.writes.at(-1), { id: 'openai', body: { version: 'openai-snapshot-1', model: 'gpt-4.1-mini', enabled: false, keys: [] } });
         await card.getByRole('button', { name: '新增密钥', exact: true }).click();
         await card.getByRole('button', { name: '保存渠道', exact: true }).click();
         await card.getByRole('alert').waitFor();

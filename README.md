@@ -30,7 +30,7 @@
 
 ## 大模型渠道（管理员）
 
-在管理员菜单打开「大模型渠道」，可启停 OpenAI、DeepSeek、鱼玩，修改模型名及多个 API key。已保存的 key 仅显示脱敏摘要，可以保留、替换或删除；每个 key 都可用当前填写的模型单独测试。测试不会保存配置或推进 worker 的轮询计数，会产生一次上游模型请求；成功表示基本文本请求可达，不代表图片识别和工具调用已验收。
+在管理员菜单打开「大模型渠道」，可启停 OpenAI、DeepSeek，修改模型名及多个 API key。已保存的 key 仅显示脱敏摘要，可以保留、替换或删除；每个 key 都可用当前填写的模型单独测试。测试不会保存配置或推进 worker 的轮询计数，会产生一次上游模型请求；成功表示基本文本请求可达，不代表图片识别和工具调用已验收。
 
 保存只修改网站当前 `APP_ENV` 对应的 Cloudflare namespace，页面显示正式或测试环境，不能从浏览器切换到另一个 namespace。正式读取 `CLOUDFLARE_KV_NAMESPACE_ID_PROD`（兼容旧 ID），测试必须配置独立的 `CLOUDFLARE_KV_NAMESPACE_ID_TEST`。后端的 `CLOUDFLARE_API_TOKEN` 需要 KV 读写权限，凭据不得放入 `VITE_` 变量或提交仓库。
 
@@ -38,10 +38,11 @@
 | --- | --- | --- | --- |
 | OpenAI | `OPENAI_MODEL` | `OPENAI_API_KEY` | `OPENAI_ENABLED` |
 | DeepSeek | `DEEPSEEK_MODEL` | `DEEPSEEK_API_KEY` | `DEEPSEEK_ENABLED` |
-| 鱼玩 | `YUWAN_MODEL` | `YUWAN_API_KEY` | `YUWAN_ENABLED` |
 
 每项 key 列表以 JSON 字符串数组写入 KV，例如 `["key-1","key-2"]`，兼容读取原有单 key。每个渠道最多 20 个 key，每个最长 512 个字符；模型名最长 200 个字符。启停写入 `true` / `false`，旧配置缺省时有 key 即启用。OpenAI 固定使用官方 `https://api.openai.com/v1`，模型需支持 worker 使用的 Chat Completions、图片输入和工具调用。
 
 Cloudflare 中尚未配置的渠道也会显示在页面，首次保存时会自动创建对应的 API key、模型和启停字段。只缺部分字段时，也可以保留页面已有的密钥并补齐配置，无需事先手工创建 KV key。
 
-先部署支持列表的新 worker，再保存渠道配置。Cloudflare 同步可能有短暂延迟，保存后需要重启常驻 worker；已运行的任务仍使用启动时配置。鱼玩在 worker 本地 `.env` 有配置时，本地值仍可能覆盖云端。JEV 是独立的选择判断渠道，不在此页面管理。
+先部署支持列表的新 worker，再保存渠道配置。Cloudflare 同步可能有短暂延迟，保存后需要重启常驻 worker；已运行的任务仍使用启动时配置。
+
+鱼玩仅由每台 worker 的本地 `.env` 管理：填写 `YUWAN_API_KEY` 和 `YUWAN_MODEL` 后启用，未配置 key 就关闭，不需要单独的启停变量。客户端管理页面和接口不显示、读写或测试鱼玩配置，Cloudflare 中的鱼玩字段也不会启用或关闭某台机器的鱼玩渠道。JEV 是独立的选择判断渠道，不在此页面管理。

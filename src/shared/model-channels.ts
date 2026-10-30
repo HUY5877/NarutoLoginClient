@@ -1,4 +1,4 @@
-export type ModelChannelId = 'openai' | 'deepseek' | 'yuwan';
+export type ModelChannelId = 'openai' | 'deepseek';
 export interface ModelChannel {
   id: ModelChannelId;
   name: string;

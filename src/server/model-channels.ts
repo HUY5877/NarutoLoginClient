@@ -7,7 +7,6 @@ import type { ModelChannel, ModelChannelId, ModelChannelsResponse, ModelChannelT
 const definitions = [
   { id: 'openai', name: 'OpenAI', prefix: 'OPENAI', url: 'https://api.openai.com/v1/chat/completions' },
   { id: 'deepseek', name: 'DeepSeek', prefix: 'DEEPSEEK', url: 'https://api.deepseek.com/chat/completions' },
-  { id: 'yuwan', name: '鱼玩', prefix: 'YUWAN', url: 'https://llm-proxy.yuwan-game.com/v1/chat/completions' },
 ] as const;
 type Definition = typeof definitions[number];
 interface Options { env?: NodeJS.ProcessEnv; fetch?: typeof globalThis.fetch; timeoutMs?: number }

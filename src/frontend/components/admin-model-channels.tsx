@@ -180,7 +180,6 @@ function ChannelEditor({ channel, loading, onAccessLost, onActivity }: {
       <Button type="button" size="sm" variant="outline" className="min-h-11 sm:min-h-0" disabled={disabled || keys.length >= 20}
         onClick={() => { const rowId = nextRowId.current++; setKeys(current => [...current, { rowId, value: '' }]); edited(); }}><Plus aria-hidden="true" />新增密钥</Button>
     </div>
-    {channel.id === 'yuwan' && <p className="text-xs leading-5 text-muted-foreground">鱼玩存在本地配置时，以 worker 本地配置为准。</p>}
     <AdminError message={error} />
     {notice && <Alert role="status" className="border-primary/20 bg-white/40"><Check aria-hidden="true" /><AlertDescription>{notice}</AlertDescription></Alert>}
     <div className="flex flex-wrap items-center justify-between gap-3 border-t border-foreground/10 pt-3">
