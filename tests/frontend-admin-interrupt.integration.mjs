@@ -113,7 +113,7 @@ test('管理员单条任务中断入口', { skip: unavailable || false, timeout:
           await f.list.getByRole('button', { name: `${task.username}的中断任务`, exact: true }).waitFor({ state: 'hidden' });
           assert.deepEqual(f.state.posts, [{ path: `/api/admin/daily-tasks/${task.id}/interrupt`, body: {} }]);
           assert.ok(f.state.reads > reads);
-          await f.list.getByRole('status').filter({ hasText: '中断请求' }).waitFor();
+          await f.list.getByRole('status').filter({ hasText: `已提交「${task.username}」的中断请求。` }).waitFor();
           assert.equal(await f.list.evaluate(element => element.scrollWidth <= element.clientWidth), true);
         } finally { await f.close(); }
       });

@@ -436,6 +436,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
           const ranking = f.page.getByRole('dialog', { name: '月度排行榜', exact: true });
           const rankedNote = ranking.getByText(note, { exact: true });
           await rankedNote.waitFor();
+          await ranking.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished.catch(() => {}))));
           const rankedUsername = ranking.getByText(user.username, { exact: true });
           assert.equal(await rankedUsername.count(), 1);
           const nameBox = await rankedUsername.boundingBox();

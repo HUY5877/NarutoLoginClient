@@ -10,6 +10,7 @@ import { AdminService } from '../src/server/admin.js';
 import { QqCaptureService } from '../src/server/qq-captures.js';
 import { QqBindingService } from '../src/server/qq-binding.js';
 import { QqGroupDiscoveryService } from '../src/server/qq-group-discovery.js';
+import { ModelChannelService } from '../src/server/model-channels.js';
 
 const config = await loadRuntimeConfig();
 const store = config.databaseUrl ? new PgAuthStore(config.databaseUrl, config.timeoutMs) : undefined;
@@ -20,6 +21,7 @@ const qqGroups = new QqGroupDiscoveryService(config);
 const app = createApp(config, {
   events: new LoginEventService(config, { store, tasks }),
   runs,
+  modelChannels: new ModelChannelService(),
   admin: new AdminService({ store, runs }),
   qqCaptures: new QqCaptureService(config),
   qqBindings: new QqBindingService(config, { initializeUsers: () => auth.initialize(),

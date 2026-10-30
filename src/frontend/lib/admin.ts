@@ -76,9 +76,9 @@ export function isDailyTaskFailureDetails(value: unknown): value is DailyTaskFai
 export class AdminRequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
-export async function adminRequest(path: string, signal: AbortSignal, method = 'GET', body?: unknown): Promise<unknown> {
+export async function adminRequest(path: string, signal: AbortSignal, method = 'GET', body?: unknown, timeoutMs = 15_000): Promise<unknown> {
   const response = await fetch(path, { method, credentials: 'same-origin', cache: 'no-store',
-    signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
     ...(method !== 'GET' ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) } : {}) });
   if (response.status === 204) return null;
   const result: unknown = await response.json();

@@ -10,7 +10,7 @@
 - 自动刷日常或刷周胜；刷日常时可选择装备栏体力刷取和秘境刷取方式。
 - 查看任务进度和执行记录，二维码失效后可刷新。
 - 绑定 QQ 群身份，在二维码就绪、刷新和任务结束时接收 @ 提醒。
-- 管理员可审核注册、管理账号、查看扫码记录和月度排行榜。
+- 管理员可审核注册、管理账号、查看扫码记录和月度排行榜，以及管理大模型渠道、测试连通性。
 
 ## 快速使用
 
@@ -27,3 +27,19 @@
 3. 回到网页，确认群消息由你本人发送，再点击「确认绑定」。
 
 复制按钮只复制 `绑定 ABCD1234` 这部分，`@机器人` 需要在 QQ 中选择生成。绑定码 5 分钟内有效，过期后重新生成；需要解绑时，在同一窗口点击「解除绑定」。
+
+## 大模型渠道（管理员）
+
+在管理员菜单打开「大模型渠道」，可启停 OpenAI、DeepSeek、鱼玩，修改模型名及多个 API key。已保存的 key 仅显示脱敏摘要，可以保留、替换或删除；每个 key 都可用当前填写的模型单独测试。测试不会保存配置或推进 worker 的轮询计数，会产生一次上游模型请求；成功表示基本文本请求可达，不代表图片识别和工具调用已验收。
+
+保存只修改网站当前 `APP_ENV` 对应的 Cloudflare namespace，页面显示正式或测试环境，不能从浏览器切换到另一个 namespace。正式读取 `CLOUDFLARE_KV_NAMESPACE_ID_PROD`（兼容旧 ID），测试必须配置独立的 `CLOUDFLARE_KV_NAMESPACE_ID_TEST`。后端的 `CLOUDFLARE_API_TOKEN` 需要 KV 读写权限，凭据不得放入 `VITE_` 变量或提交仓库。
+
+| 渠道 | 模型 | API key 列表 | 启停 |
+| --- | --- | --- | --- |
+| OpenAI | `OPENAI_MODEL` | `OPENAI_API_KEY` | `OPENAI_ENABLED` |
+| DeepSeek | `DEEPSEEK_MODEL` | `DEEPSEEK_API_KEY` | `DEEPSEEK_ENABLED` |
+| 鱼玩 | `YUWAN_MODEL` | `YUWAN_API_KEY` | `YUWAN_ENABLED` |
+
+每项 key 列表以 JSON 字符串数组写入 KV，例如 `["key-1","key-2"]`，兼容读取原有单 key。每个渠道最多 20 个 key，每个最长 512 个字符；模型名最长 200 个字符。启停写入 `true` / `false`，旧配置缺省时有 key 即启用。OpenAI 固定使用官方 `https://api.openai.com/v1`，模型需支持 worker 使用的 Chat Completions、图片输入和工具调用。
+
+先部署支持列表的新 worker，再保存渠道配置。Cloudflare 同步可能有短暂延迟，保存后需要重启常驻 worker；已运行的任务仍使用启动时配置。鱼玩在 worker 本地 `.env` 有配置时，本地值仍可能覆盖云端。JEV 是独立的选择判断渠道，不在此页面管理。

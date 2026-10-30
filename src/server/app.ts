@@ -15,6 +15,7 @@ import { logBackend, requestLogContext } from './logging.js';
 import type { QqCaptureService } from './qq-captures.js';
 import { validateQqJson } from './qq-authorization-data.js';
 import type { QqBindingService } from './qq-binding.js';
+import type { ModelChannelService } from './model-channels.js';
 
 export interface Dependencies {
   events: Pick<LoginEventService, 'create' | 'getForUser' | 'getActive' | 'recordStatus'> & Partial<Pick<LoginEventService, 'refresh'>>;
@@ -24,6 +25,7 @@ export interface Dependencies {
   admin?: Pick<AdminService, 'listUsers' | 'getUser' | 'createUser' | 'updateUser' | 'deleteUser' | 'dailyTasks' | 'dailyTaskFailureDetails' | 'dailyTaskLogs' | 'interruptDailyTask' | 'monthlyStats'>;
   qqCaptures?: Pick<QqCaptureService, 'upload' | 'list'> & Partial<Pick<QqCaptureService, 'initialize'>>;
   qqBindings?: Pick<QqBindingService, 'getStatus' | 'createChallenge' | 'confirm' | 'unbind' | 'handleWebhook'>;
+  modelChannels?: Pick<ModelChannelService, 'list' | 'update' | 'test'>;
   now?: () => number;
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -50,7 +52,7 @@ function logPath(req: Request): string {
     ? path : '/api/unknown';
 }
 
-export function createApp(config: Config, { events, auth, storage, runs, admin, qqCaptures, qqBindings, now = Date.now }: Dependencies) {
+export function createApp(config: Config, { events, auth, storage, runs, admin, qqCaptures, qqBindings, modelChannels, now = Date.now }: Dependencies) {
   const app = express();
   const cookieName = config.sessionCookieName ?? 'naruto_session';
   app.disable('x-powered-by');
@@ -74,10 +76,12 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
       timestamp: req.get('X-Signature-Timestamp'), signature: req.get('X-Signature-Ed25519') }));
   });
   const standardJson = express.json({ limit: '2kb' });
+  const modelChannelJson = express.json({ limit: '24kb' });
   const captureJson = express.json({ limit: '64kb', verify: (_req, _res, buffer) => validateQqJson(buffer) });
   app.use((req, res, next) => {
     const captureUpload = req.method === 'POST' && /^\/api\/qq-captures\/?$/i.test(req.path);
-    (captureUpload ? captureJson : standardJson)(req, res, next);
+    const modelChannelWrite = ['PUT', 'POST'].includes(req.method) && /^\/api\/admin\/model-channels\/[^/]+(?:\/test)?\/?$/i.test(req.path);
+    (captureUpload ? captureJson : modelChannelWrite ? modelChannelJson : standardJson)(req, res, next);
   });
   app.get('/api/health', (_req, res) => res.json({
     ok: true, storage: config.storageDriver, simulation: true, environment: config.appEnv ?? 'prod',
@@ -143,6 +147,13 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
   app.get('/api/admin/registration-applications', async (req, res) => {
     res.json(await auth.listApplications(res.locals.user as User, req.query.status));
   });
+  const modelChannelService = () => {
+    if (!modelChannels) throw new ApiError(503, '模型渠道管理尚未配置。', 'MODEL_CHANNEL_UNAVAILABLE');
+    return modelChannels;
+  };
+  app.get('/api/admin/model-channels', async (_req, res) => res.json(await modelChannelService().list(res.locals.user as User)));
+  app.put('/api/admin/model-channels/:id', async (req, res) => res.json(await modelChannelService().update(res.locals.user as User, req.params.id as string, req.body)));
+  app.post('/api/admin/model-channels/:id/test', async (req, res) => res.json(await modelChannelService().test(res.locals.user as User, req.params.id as string, req.body)));
   app.post('/api/admin/registration-applications/:id/review', async (req, res) => {
     const id = sessionId(req);
     res.json(await auth.reviewApplication(res.locals.user as User, id, req.body));
