@@ -1,26 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, CircleAlert, CircleCheck, CircleX, Clock3, Cpu, FlaskConical, Plus, RefreshCw, Save, Trash2 } from 'lucide-react';
+import { Check, CircleAlert, CircleCheck, CircleX, Clock3, FlaskConical, Info, KeyRound, Pencil, Plus, RefreshCw, Save, Sparkles, Trash2, Waves, X } from 'lucide-react';
 import type { ModelChannel, ModelChannelKeyInput, ModelChannelTestResult } from '../../shared/model-channels';
 import { useAdminData } from '@/hooks/use-admin';
 import { adminRequest, AdminRequestError } from '@/lib/admin';
 import { isModelChannel, isModelChannelsResponse, isModelChannelTestResult } from '@/lib/model-channels';
 import { AdminError, AdminLoading } from '@/components/admin-common';
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
+import { Switch } from '@/components/ui/switch';
+import './admin-model-channels.css';
 
-interface KeyDraft { rowId: number; id?: string; masked?: string; value: string }
+interface KeyDraft { rowId: number; id?: string; masked?: string; value: string; editing?: boolean }
 interface ChannelActivity { busy: boolean; dirty: boolean }
 const savedKeys = (channel: ModelChannel): KeyDraft[] => channel.keys.map((key, rowId) => ({ ...key, rowId, value: '' }));
+const draftSignature = (model: string, enabled: boolean, keys: KeyDraft[]) => JSON.stringify({ model: model.trim(), enabled,
+  keys: keys.map(key => key.value.trim() ? { value: key.value.trim() } : key.id ? { id: key.id } : { value: '' }) });
 
 function KeyTestResult({ result, label }: { result: ModelChannelTestResult; label: string }) {
   const Icon = result.ok ? CircleCheck : CircleX;
   return <Alert role={result.ok ? 'status' : 'alert'} aria-label={label} aria-atomic="true"
-    className={`min-w-0 gap-y-1.5 px-3 py-3 has-[>svg]:grid-cols-[auto_minmax(0,1fr)] ${result.ok
+    className={`model-key-result min-w-0 gap-y-1 px-3 py-2.5 has-[>svg]:grid-cols-[auto_minmax(0,1fr)] ${result.ok
       ? 'border-emerald-300 bg-emerald-50 text-emerald-950 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-100'
       : 'border-rose-300 bg-rose-50 text-rose-950 dark:border-rose-800 dark:bg-rose-950/60 dark:text-rose-100'}`}>
     <Icon aria-hidden="true" className="size-4.5" />
@@ -35,16 +41,17 @@ function KeyTestResult({ result, label }: { result: ModelChannelTestResult; labe
   </Alert>;
 }
 
-function ChannelEditor({ channel, loading, onAccessLost, onActivity }: {
-  channel: ModelChannel; loading: boolean; onAccessLost: () => void;
+function ChannelEditor({ channel, expanded, loading, onAccessLost, onActivity, onExpand }: {
+  channel: ModelChannel; expanded: boolean; loading: boolean; onAccessLost: () => void;
   onActivity: (id: string, activity: ChannelActivity) => void;
+  onExpand: (id: string) => void;
 }) {
   const [version, setVersion] = useState(channel.version);
   const [configurationError, setConfigurationError] = useState(channel.configurationError ?? '');
   const [model, setModel] = useState(channel.model);
   const [enabled, setEnabled] = useState(channel.enabled);
   const [keys, setKeys] = useState(() => savedKeys(channel));
-  const [dirty, setDirty] = useState(false);
+  const [baseline, setBaseline] = useState(() => draftSignature(channel.model, channel.enabled, savedKeys(channel)));
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -53,19 +60,35 @@ function ChannelEditor({ channel, loading, onAccessLost, onActivity }: {
   const request = useRef<AbortController | null>(null);
   const nextRowId = useRef(channel.keys.length);
   const disabled = loading || busy !== null;
+  const dirty = draftSignature(model, enabled, keys) !== baseline;
+  const ProviderIcon = channel.id === 'openai' ? Sparkles : Waves;
 
   useEffect(() => {
     setVersion(channel.version); setConfigurationError(channel.configurationError ?? '');
     setModel(channel.model); setEnabled(channel.enabled); setKeys(savedKeys(channel));
     nextRowId.current = channel.keys.length;
-    setDirty(false); setStale(false); setError(''); setNotice(''); setResults({});
+    setBaseline(draftSignature(channel.model, channel.enabled, savedKeys(channel)));
+    setStale(false); setError(''); setNotice(''); setResults({});
   }, [channel]);
   useEffect(() => { onActivity(channel.id, { busy: busy !== null, dirty }); }, [channel.id, busy, dirty, onActivity]);
   useEffect(() => () => { request.current?.abort(); request.current = null; }, []);
 
   function edited() {
-    setDirty(true); setNotice(''); setResults({});
+    setNotice(''); setResults({});
     if (!stale) setError('');
+  }
+  function removeKey(key: KeyDraft) {
+    const remaining = keys.filter(item => item.rowId !== key.rowId);
+    setKeys(remaining); edited();
+    if (remaining.length === 0) {
+      setEnabled(false);
+      if (key.id) setNotice('最后一条密钥已删除，渠道已关闭，保存后生效。');
+    }
+  }
+  function cancelKeyEdit(key: KeyDraft) {
+    if (!key.id) { removeKey(key); return; }
+    setKeys(current => current.map(item => item.rowId === key.rowId ? { ...item, value: '', editing: false } : item));
+    edited();
   }
   function keyInput(key: KeyDraft): ModelChannelKeyInput | null {
     const value = key.value.trim();
@@ -111,8 +134,8 @@ function ChannelEditor({ channel, loading, onAccessLost, onActivity }: {
         setVersion(result.version); setConfigurationError(result.configurationError ?? '');
         setModel(result.model); setEnabled(result.enabled); setKeys(savedKeys(result));
         nextRowId.current = result.keys.length;
-        setDirty(false); setResults({});
-        setNotice('已保存到 Cloudflare KV。请重启 worker 生效；KV 同步可能有短暂延迟。');
+        setBaseline(draftSignature(result.model, result.enabled, savedKeys(result))); setResults({});
+        setNotice('更改已保存。重启 Worker 后生效。');
       }
     } catch (caught) {
       if (request.current !== controller) return;
@@ -135,60 +158,77 @@ function ChannelEditor({ channel, loading, onAccessLost, onActivity }: {
     }
   }
 
-  return <section role="group" aria-label={`${channel.name}渠道`} aria-busy={busy !== null}
-    className="min-w-0 space-y-4 rounded-xl border border-foreground/10 bg-white/35 p-4">
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <div className="flex items-center gap-2"><h3 className="font-semibold">{channel.name}</h3>{dirty && <Badge variant="secondary">未保存</Badge>}</div>
-      <Button type="button" role="switch" aria-checked={enabled} aria-label={`启用${channel.name}渠道`}
-        variant={enabled ? 'default' : 'outline'} size="sm" className="min-h-11 sm:min-h-0" disabled={disabled}
-        onClick={() => { setEnabled(value => !value); edited(); }}>{enabled ? '已启用' : '已关闭'}</Button>
+  return <AccordionItem value={channel.id} role="group" aria-label={`${channel.name}渠道`} aria-busy={busy !== null}
+    className="model-provider">
+    <div className="model-provider-summary">
+      <AccordionTrigger aria-label={`${channel.name}设置`} className="model-provider-trigger" disabled={loading}>
+        <span className={`model-provider-icon model-provider-icon-${channel.id}`}><ProviderIcon aria-hidden="true" /></span>
+        <span className="model-provider-identity">
+          <span className="model-provider-name">{channel.name}{dirty && <span className="model-draft-dot" title="有未保存的修改"><span className="sr-only">未保存</span></span>}</span>
+          <span className="model-provider-model">{model.trim() || '尚未配置模型'}</span>
+        </span>
+        <span className="model-provider-key-count">{keys.length} 个密钥</span>
+      </AccordionTrigger>
+      <label className="model-provider-toggle" htmlFor={`channel-${channel.id}-enabled`}>
+        <span>{enabled ? '已启用' : '已关闭'}</span>
+        <Switch id={`channel-${channel.id}-enabled`} aria-label={`启用${channel.name}渠道`} checked={enabled} disabled={disabled}
+          onCheckedChange={value => { setEnabled(value); edited(); onExpand(channel.id); }} />
+      </label>
     </div>
-    {configurationError && <Alert role="alert" className="border-amber-600/30 bg-amber-50/50">
-      <CircleAlert aria-hidden="true" />
-      <AlertDescription>{configurationError} 可重新填写模型和密钥，或关闭渠道并清空后保存修复；其他渠道不受影响。已有密钥需修复保存后再测试，新填密钥可直接测试。</AlertDescription>
-    </Alert>}
-    <div className="space-y-2">
-      <Label htmlFor={`channel-${channel.id}-model`}>模型名称</Label>
-      <Input id={`channel-${channel.id}-model`} value={model} maxLength={400} autoComplete="off" disabled={disabled}
-        className="h-11 bg-white/40" onChange={event => { setModel([...event.target.value].slice(0, 200).join('')); edited(); }} />
-    </div>
-    <div className="space-y-3">
-      <p className="text-xs leading-5 text-muted-foreground">密钥 {keys.length}/20。已有密钥仅显示脱敏值；留空保留，填写新值可替换。每个密钥最多 512 个字符。</p>
-      {keys.length === 0 && <p className="text-sm text-muted-foreground">尚未配置密钥。启用前请先新增密钥。</p>}
-      {keys.map((key, index) => <div key={key.rowId} className="space-y-2 rounded-lg border border-foreground/10 p-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <Label htmlFor={`channel-${channel.id}-key-${key.rowId}`}>密钥 {index + 1}</Label>
-          {key.masked && <span className="break-all font-mono text-xs text-muted-foreground">{key.masked}</span>}
-        </div>
-        <Input id={`channel-${channel.id}-key-${key.rowId}`} type="password" value={key.value} maxLength={1024}
-          autoComplete="new-password" spellCheck={false} disabled={disabled} className="h-11 bg-white/40"
-          placeholder={key.id ? '留空保留已有密钥' : '输入新密钥'}
-          onChange={event => { const value = [...event.target.value].slice(0, 512).join(''); setKeys(current => current.map(item => item.rowId === key.rowId ? { ...item, value } : item)); edited(); }} />
-        <div className="flex flex-wrap gap-2">
-          <Button type="button" size="sm" variant="outline" className="min-h-11 sm:min-h-0" aria-label={`测试密钥 ${index + 1}`}
-            disabled={disabled || stale || Boolean(configurationError && key.id && !key.value.trim())} onClick={() => { void run('test', key); }}>
-            {busy === `test-${key.rowId}` ? <Spinner aria-hidden="true" /> : <FlaskConical aria-hidden="true" />}测试
-          </Button>
-          <Button type="button" size="sm" variant="ghost" className="min-h-11 sm:min-h-0" aria-label={`删除密钥 ${index + 1}`}
-            disabled={disabled} onClick={() => {
-              const remaining = keys.filter(item => item.rowId !== key.rowId); setKeys(remaining); edited();
-              if (remaining.length === 0) { setEnabled(false); setNotice('最后一条密钥已删除，渠道已关闭，保存后生效。'); }
-            }}><Trash2 aria-hidden="true" />删除</Button>
-        </div>
-        {results[key.rowId] && <KeyTestResult result={results[key.rowId]} label={`密钥 ${index + 1} 测试结果`} />}
-      </div>)}
-      <Button type="button" size="sm" variant="outline" className="min-h-11 sm:min-h-0" disabled={disabled || keys.length >= 20}
-        onClick={() => { const rowId = nextRowId.current++; setKeys(current => [...current, { rowId, value: '' }]); edited(); }}><Plus aria-hidden="true" />新增密钥</Button>
-    </div>
-    <AdminError message={error} />
-    {notice && <Alert role="status" className="border-primary/20 bg-white/40"><Check aria-hidden="true" /><AlertDescription>{notice}</AlertDescription></Alert>}
-    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-foreground/10 pt-3">
-      <p className="text-xs leading-5 text-muted-foreground">测试使用当前模型和所选密钥，不保存修改。</p>
-      <Button type="button" size="sm" className="min-h-11 sm:min-h-0" disabled={disabled || stale} onClick={() => { void run('save'); }}>
-        {busy === 'save' ? <Spinner aria-hidden="true" /> : <Save aria-hidden="true" />}保存渠道
-      </Button>
-    </div>
-  </section>;
+    <AccordionContent forceMount hidden={!expanded} className="model-channel-body">
+      {configurationError && <Alert role="alert" className="model-config-warning border-amber-600/30 bg-amber-50">
+        <CircleAlert aria-hidden="true" />
+        <AlertDescription>{configurationError} 请重新填写模型或密钥后保存。已有密钥需修复保存后再测试，新填密钥可直接测试。</AlertDescription>
+      </Alert>}
+      <div className="model-field-row">
+        <div><Label htmlFor={`channel-${channel.id}-model`}>模型名称</Label><p>用于该服务商的所有密钥</p></div>
+        <Input id={`channel-${channel.id}-model`} value={model} maxLength={400} autoComplete="off" disabled={disabled}
+          className="model-id-input" placeholder="输入模型 ID" onChange={event => { setModel([...event.target.value].slice(0, 200).join('')); edited(); }} />
+      </div>
+      <div className="model-keys-heading">
+        <div><h4>API 密钥 <span>{keys.length} / 20</span></h4><p>密钥按顺序轮询，可单独测试连接。</p></div>
+        <Button type="button" size="sm" variant="outline" disabled={disabled || keys.length >= 20}
+          onClick={() => { const rowId = nextRowId.current++; setKeys(current => [...current, { rowId, value: '', editing: true }]); edited(); }}><Plus aria-hidden="true" />新增密钥</Button>
+      </div>
+      <div className="model-key-list">
+        {keys.length === 0 && <div className="model-keys-empty"><KeyRound aria-hidden="true" /><p>尚未添加 API 密钥</p><span>添加密钥后即可测试连接</span></div>}
+        {keys.map((key, index) => <div key={key.rowId} role="group" aria-label={`密钥 ${index + 1} 配置`} className="model-key-row">
+          <div className={`model-key-row-main ${key.editing || !key.id ? 'is-editing' : ''}`}>
+            <KeyRound aria-hidden="true" className="model-key-icon" />
+            <div className="model-key-value">
+              <Label className="sr-only" htmlFor={`channel-${channel.id}-key-${key.rowId}`}>密钥 {index + 1}</Label>
+              {key.editing || !key.id ? <Input id={`channel-${channel.id}-key-${key.rowId}`} type="password" value={key.value} maxLength={1024}
+                autoComplete="new-password" spellCheck={false} autoFocus disabled={disabled} placeholder={key.id ? '输入替换密钥，留空保留原值' : '输入新的 API 密钥'}
+                onChange={event => { const value = [...event.target.value].slice(0, 512).join(''); setKeys(current => current.map(item => item.rowId === key.rowId ? { ...item, value } : item)); edited(); }} />
+                : <code>{key.masked}</code>}
+              <span className="model-key-caption">密钥 {index + 1}{key.value.trim() ? ' · 待保存' : key.id ? ' · 已保存' : ' · 新增'}</span>
+            </div>
+            <div className="model-key-actions">
+              <Button type="button" size="icon-sm" variant="ghost" title="测试连接" aria-label={`测试密钥 ${index + 1}`}
+                disabled={disabled || stale || Boolean(configurationError && key.id && !key.value.trim())} onClick={() => { void run('test', key); }}>
+                {busy === `test-${key.rowId}` ? <Spinner aria-hidden="true" /> : <FlaskConical aria-hidden="true" />}
+              </Button>
+              {key.editing || !key.id ? <Button type="button" size="icon-sm" variant="ghost" title="取消编辑" aria-label={`取消编辑密钥 ${index + 1}`}
+                disabled={disabled} onClick={() => cancelKeyEdit(key)}><X aria-hidden="true" /></Button>
+                : <Button type="button" size="icon-sm" variant="ghost" title="替换密钥" aria-label={`替换密钥 ${index + 1}`}
+                  disabled={disabled} onClick={() => setKeys(current => current.map(item => item.rowId === key.rowId ? { ...item, editing: true } : item))}><Pencil aria-hidden="true" /></Button>}
+              <Button type="button" size="icon-sm" variant="ghost" className="model-key-delete" title="删除密钥" aria-label={`删除密钥 ${index + 1}`}
+                disabled={disabled} onClick={() => removeKey(key)}><Trash2 aria-hidden="true" /></Button>
+            </div>
+          </div>
+          {results[key.rowId] && <KeyTestResult result={results[key.rowId]} label={`密钥 ${index + 1} 测试结果`} />}
+        </div>)}
+      </div>
+      <AdminError message={error} />
+      {notice && <Alert role="status" className="model-save-notice"><Check aria-hidden="true" /><AlertDescription>{notice}</AlertDescription></Alert>}
+      <div className="model-channel-footer">
+        <span>{dirty ? '有未保存的更改' : '测试连接不会保存配置'}</span>
+        <Button type="button" size="sm" disabled={disabled || stale} onClick={() => { void run('save'); }}>
+          {busy === 'save' ? <Spinner aria-hidden="true" /> : <Save aria-hidden="true" />}保存更改
+        </Button>
+      </div>
+    </AccordionContent>
+  </AccordionItem>;
 }
 
 export function AdminModelChannels({ open, onOpenChange, onAccessLost, returnFocus }: {
@@ -196,28 +236,50 @@ export function AdminModelChannels({ open, onOpenChange, onAccessLost, returnFoc
 }) {
   const { data, loading, error, reload } = useAdminData(open ? '/api/admin/model-channels' : null, isModelChannelsResponse, onAccessLost);
   const [activity, setActivity] = useState<Record<string, ChannelActivity>>({});
+  const [expanded, setExpanded] = useState('');
+  const [confirmReload, setConfirmReload] = useState(false);
+  const reloadButton = useRef<HTMLButtonElement>(null);
+  const dialogContent = useRef<HTMLDivElement>(null);
   const onActivity = useCallback((id: string, value: ChannelActivity) => setActivity(current => ({ ...current, [id]: value })), []);
   const busy = Object.values(activity).some(value => value.busy);
   const dirty = Object.values(activity).some(value => value.dirty);
-  return <Dialog open={open} onOpenChange={onOpenChange}>
-    <DialogContent className="auth-dialog flex max-h-[88svh] flex-col gap-4 p-5 sm:max-w-3xl sm:p-6"
+  useEffect(() => { if (!open) { setExpanded(''); setActivity({}); setConfirmReload(false); } }, [open]);
+  return <><Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent ref={dialogContent} className="model-settings-dialog"
       onCloseAutoFocus={event => { event.preventDefault(); returnFocus(); }}>
-      <DialogHeader className="shrink-0 gap-2 pr-7">
-        <DialogTitle className="flex items-center gap-2 text-lg font-semibold"><Cpu aria-hidden="true" />大模型渠道</DialogTitle>
-        <DialogDescription className="leading-6">管理模型、渠道开关和密钥。保存到 Cloudflare KV 后，请重启 worker 生效；KV 同步可能有短暂延迟。</DialogDescription>
+      <DialogHeader className="model-settings-header">
+        <div className="model-settings-title-row"><DialogTitle>大模型渠道</DialogTitle>
+          {data && <Badge variant="outline" className="model-environment-badge">{data.environment === 'prod' ? '正式环境' : '测试环境'}</Badge>}
+        </div>
+        <DialogDescription>配置服务商、模型与 API 密钥</DialogDescription>
       </DialogHeader>
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-        {data && <Badge variant="secondary">当前环境：{data.environment}</Badge>}
-        <Button type="button" size="sm" variant="ghost" className="min-h-11 sm:min-h-0" disabled={loading || busy} onClick={() => { void reload(); }}>
-          {loading ? <Spinner aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}{dirty ? '重新读取（丢弃未保存修改）' : '重新读取'}
+      <div className="model-settings-toolbar">
+        <span>服务商 <span className="model-provider-total">{data?.channels.length ?? '—'}</span></span>
+        <Button ref={reloadButton} type="button" size="sm" variant="ghost" disabled={loading || busy} onClick={() => { if (dirty) setConfirmReload(true); else void reload(); }}>
+          {loading ? <Spinner aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}重新读取
         </Button>
       </div>
-      <div className="min-h-0 space-y-4 overflow-y-auto px-1 -mx-1" aria-busy={loading}>
+      <div className="model-settings-scroll" aria-busy={loading}>
         <AdminError message={error} />
         {loading && !data && <AdminLoading label="正在读取大模型渠道…" />}
-        {data?.channels.map(channel => <ChannelEditor key={channel.id} channel={channel} loading={loading}
-          onAccessLost={onAccessLost} onActivity={onActivity} />)}
+        <Accordion type="single" collapsible value={expanded} onValueChange={setExpanded}>
+          {data?.channels.map(channel => <ChannelEditor key={channel.id} channel={channel} expanded={expanded === channel.id} loading={loading}
+            onAccessLost={onAccessLost} onActivity={onActivity} onExpand={setExpanded} />)}
+        </Accordion>
       </div>
+      <div className="model-settings-note"><Info aria-hidden="true" /><span>保存后需重启 Worker 生效。</span></div>
     </DialogContent>
-  </Dialog>;
+  </Dialog>
+    <AlertDialog open={confirmReload} onOpenChange={setConfirmReload}>
+      <AlertDialogContent className="model-settings-confirm" onCloseAutoFocus={event => {
+        event.preventDefault();
+        if (open) (reloadButton.current?.disabled ? dialogContent.current : reloadButton.current)?.focus();
+      }}>
+        <AlertDialogHeader><AlertDialogTitle>重新读取配置？</AlertDialogTitle>
+          <AlertDialogDescription>这会丢弃所有服务商未保存的修改。已保存的配置不受影响。</AlertDialogDescription></AlertDialogHeader>
+        <AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel>
+          <AlertDialogAction onClick={() => { void reload(); }}>重新读取</AlertDialogAction></AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  </>;
 }
