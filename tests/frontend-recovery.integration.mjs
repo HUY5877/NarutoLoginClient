@@ -42,8 +42,11 @@ test('刷新优先恢复统一任务状态', { skip: unavailable || false, timeo
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
     browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
       ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
-    async function fixture(status = 'running_daily', mainTask = 'arena_weekly') {
-      const context = await browser.newContext();
+    async function fixture(status = 'running_daily', mainTask = 'arena_weekly', unavailableAbortApis = null) {
+      const context = await browser.newContext(unavailableAbortApis ? { viewport: { width: 390, height: 844 } } : {});
+      if (unavailableAbortApis?.length) await context.addInitScript(names => {
+        for (const name of names) Object.defineProperty(AbortSignal, name, { value: undefined, configurable: true });
+      }, unavailableAbortApis);
       const state = { status, calls: [], errors: [], latestGate: null, eventsGate: null, fail: false, partial: false,
         expiredHeader: false, missingRun: false, captured: false, noTask: false };
       const task = () => ({ id, status: state.status === 'queued' ? 'queued' : 'qr_ready',
@@ -79,6 +82,23 @@ test('刷新优先恢复统一任务状态', { skip: unavailable || false, timeo
       page.on('pageerror', error => state.errors.push(error.message));
       return { page, state, async open() { await page.goto(origin, { waitUntil: 'domcontentloaded' }); await generate(page).waitFor(); },
         async close() { state.latestGate?.resolve(); state.eventsGate?.resolve(); await context.close(); assert.deepEqual(state.errors, []); } };
+    }
+
+    for (const absent of [[], ['any'], ['any', 'timeout']]) {
+      const label = absent.length ? `missing-${absent.join('-')}` : 'normal';
+      await t.test(`AbortSignal ${label} 均可恢复任务`, async () => {
+        const f = await fixture('running_daily', 'arena_weekly', absent);
+        try {
+          await f.open();
+          await until(async () => /执行中/.test(await f.page.getByLabel('任务整体状态', { exact: true }).innerText()));
+          assert.equal(f.state.calls.filter(call => call.endsWith('/api/task-runs/latest')).length, 1);
+          assert.equal(await f.page.getByText('任务状态暂时无法确认，请重试查询任务。', { exact: true }).count(), 0);
+          assert.equal(await generate(f.page).isDisabled(), true);
+          assert.equal(f.state.calls.includes('GET /api/auth/me'), true);
+          assert.equal(f.state.calls.includes('GET /api/health'), true);
+          assert.equal(f.state.calls.some(call => call.startsWith('POST ')), false);
+        } finally { await f.close(); }
+      });
     }
 
     for (const mainTask of ['daily', 'arena_weekly']) for (const pending of ['latestGate', 'eventsGate']) {

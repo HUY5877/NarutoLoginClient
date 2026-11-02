@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import { appendRunLogs, emptyTaskRun, parseRunEvents, RunRequestError, TaskRunTracker,
   type RunEvents, type RunLog, type RunTask, type TaskRunView } from '../src/frontend/lib/task-run';
 
@@ -20,6 +20,88 @@ function deferred<T>() {
 }
 async function settle() { for (let i = 0; i < 8; i += 1) await new Promise<void>(resolve => setImmediate(resolve)); }
 const blockedPause = () => new Promise<void>(() => {});
+
+function readerClock(t: TestContext) {
+  const timers = new Map<number, () => void>();
+  const delays: number[] = [];
+  const cleared: unknown[] = [];
+  let next = 0;
+  t.mock.method(globalThis, 'setTimeout', ((callback: () => void, delay: number) => {
+    delays.push(delay); timers.set(++next, callback); return next;
+  }) as unknown as typeof setTimeout);
+  t.mock.method(globalThis, 'clearTimeout', (timer: Parameters<typeof clearTimeout>[0]) => { cleared.push(timer); timers.delete(Number(timer)); });
+  const removed = t.mock.method(AbortSignal.prototype, 'removeEventListener');
+  return { timers, delays, cleared, removed };
+}
+
+test('默认读取开始前父任务已取消时不发送请求或建立时限', async t => {
+  const clock = readerClock(t);
+  const fetch = t.mock.method(globalThis, 'fetch', async () => { throw new Error('No request should be sent'); });
+  const updates: TaskRunView[] = [];
+  let tracker: TaskRunTracker;
+  tracker = new TaskRunTracker(view => {
+    updates.push(view);
+    if (view.loading) tracker.dispose();
+  }, () => assert.fail('unexpected unauthorized'), undefined, blockedPause);
+  await tracker.restore();
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.deepEqual(clock.delays, []);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].error, '');
+});
+
+for (const outcome of ['timeout', 'cancel'] as const) {
+  test(`默认读取在响应正文等待期间${outcome}会中止请求并清理资源`, async t => {
+    const clock = readerClock(t);
+    let view = emptyTaskRun();
+    let signal: AbortSignal | undefined;
+    let readingBody = false;
+    t.mock.method(globalThis, 'fetch', async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      signal = init?.signal as AbortSignal;
+      return { ok: true, json: () => {
+        readingBody = true;
+        return new Promise((_resolve, reject) => signal!.addEventListener('abort',
+          () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+      } } as Response;
+    });
+    const tracker = new TaskRunTracker(next => { view = next; }, () => assert.fail('unexpected unauthorized'), undefined, blockedPause);
+    const restoring = tracker.restore();
+    try {
+      await settle();
+      assert.equal(readingBody, true, 'The headers have arrived but JSON body reading is still pending');
+      assert.deepEqual(clock.delays, [10000]);
+      assert.equal(clock.timers.size, 1, 'The deadline must cover the complete response body');
+      if (outcome === 'timeout') clock.timers.values().next().value!();
+      else tracker.dispose();
+      await restoring;
+      assert.equal(signal?.aborted, true);
+      assert.equal(clock.timers.size, 0);
+      assert.equal(clock.cleared.length, 1);
+      assert.ok(clock.removed.mock.calls.some(call => call.arguments[0] === 'abort'));
+      if (outcome === 'timeout') assert.match(view.error, /重试/);
+      else assert.equal(view.error, '', 'Disposing the tracker must not display a late failure');
+    } finally { tracker.dispose(); await restoring; }
+  });
+}
+
+for (const status of [200, 503]) {
+  test(`默认读取HTTP ${status}完成后清理时限和父取消监听`, async t => {
+    const clock = readerClock(t);
+    let view = emptyTaskRun();
+    t.mock.method(globalThis, 'fetch', async () => ({ ok: status === 200, status,
+      json: async () => ({ task: null, run: null }) }) as Response);
+    const tracker = new TaskRunTracker(next => { view = next; }, () => assert.fail('unexpected unauthorized'), undefined, blockedPause);
+    try {
+      await tracker.restore();
+      assert.deepEqual(clock.delays, [10000]);
+      assert.equal(clock.timers.size, 0);
+      assert.equal(clock.cleared.length, 1);
+      assert.ok(clock.removed.mock.calls.some(call => call.arguments[0] === 'abort'));
+      if (status === 200) assert.equal(view.restored, true);
+      else assert.match(view.error, /重试/);
+    } finally { tracker.dispose(); }
+  });
+}
 
 test('首次恢复直接采用完整运行状态，不等待日志响应', async () => {
   let view = emptyTaskRun();

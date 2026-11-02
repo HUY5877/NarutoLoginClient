@@ -90,10 +90,19 @@ export class RunRequestError extends Error {
 type Read = (path: string, signal: AbortSignal) => Promise<unknown>;
 type Wait = (ms: number, signal: AbortSignal) => Promise<void>;
 async function read(path: string, signal: AbortSignal): Promise<unknown> {
-  const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store',
-    signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]) });
-  if (!response.ok) throw new RunRequestError(response.status);
-  return response.json();
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  signal.addEventListener('abort', onAbort, { once: true });
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
+    if (!response.ok) throw new RunRequestError(response.status);
+    return await response.json();
+  } finally {
+    clearTimeout(timeout);
+    signal.removeEventListener('abort', onAbort);
+  }
 }
 const wait: Wait = (ms, signal) => new Promise((resolve, reject) => {
   if (signal.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
