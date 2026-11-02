@@ -182,8 +182,15 @@ export default function App() {
     setSecretRealmMode,
     loginType,
     setLoginType,
+    restoreTask,
+    failTaskRestore,
   } = useLoginSession(auth.user?.id ?? null, auth.handleUnauthorized);
   const taskRun = useTaskRun(auth.user?.id ?? null, session, auth.handleUnauthorized);
+  useEffect(() => {
+    if (!auth.user) return;
+    if (taskRun.restored) restoreTask(taskRun.task, taskRun.run);
+    else if (taskRun.error) failTaskRestore();
+  }, [auth.user?.id, taskRun.restored, taskRun.task, taskRun.run, taskRun.error, restoreTask, failTaskRestore]);
   useEffect(() => { setSubmissionRevision(null); setMobileDetailsOpen(false); }, [auth.user?.id]);
   useEffect(() => { setQqBindingOpen(false); }, [auth.user?.id]);
   const awaitingSubmission = submissionRevision !== null && acceptedRevision === submissionRevision;
@@ -481,7 +488,7 @@ export default function App() {
                 size="lg"
                 className="login-action mt-6 h-12 w-full max-w-sm gap-2 text-sm font-semibold"
                 onClick={() => { if (auth.user) { setSubmissionRevision(acceptedRevision); void startLogin(); } else openLogin(); }}
-                disabled={auth.busy || pending || Boolean(auth.user && (!showGetButton || authorizationComplete && !(currentRun && isRunTerminal(currentRun.status))))}
+                disabled={auth.busy || pending || Boolean(auth.user && (!taskRun.restored || !showGetButton || authorizationComplete && !(currentRun && isRunTerminal(currentRun.status))))}
               >
                 {!auth.user ? <LogIn aria-hidden="true" /> : phase === 'idle' ? <QrCode aria-hidden="true" />
                     : <RefreshCw aria-hidden="true" />}
@@ -496,8 +503,8 @@ export default function App() {
               </Button>}
               {!scanComplete && canRetryQuery && auth.user && (
                 <Button type="button" variant="outline" size="lg" className="mt-6 h-12 w-full max-w-sm gap-2 bg-white/40"
-                  disabled={auth.busy || pending} onClick={() => { void retryQuery(); }}>
-                  <RefreshCw aria-hidden="true" />{canResumePending ? '继续本次申请' : '重试查询'}
+                  disabled={auth.busy || pending} onClick={() => { if (!taskRun.restored) taskRun.retry(); else void retryQuery(); }}>
+                  <RefreshCw aria-hidden="true" />{!taskRun.restored ? '重试查询任务' : canResumePending ? '继续本次申请' : '重试查询'}
                 </Button>
               )}
               {auth.user && ready && <p className="qr-ready-note mt-5 text-sm font-medium text-primary">请用手机{scanApp}扫码，二维码失效可刷新</p>}
@@ -531,7 +538,7 @@ export default function App() {
                 </div>
                 <MobileTaskSheet open={mobileDetailsOpen} onOpenChange={setMobileDetailsOpen} mainTask={progress.mainTask}>
                   <div className="task-sheet-progress space-y-4"><TaskProgressCards progress={progress} /></div>
-                  <TaskRunPanel view={visibleRun} retry={taskRun.retry} />
+                  {(visibleRun.task || visibleRun.error) && <TaskRunPanel view={visibleRun} retry={taskRun.retry} />}
                   {session && <p className="task-sheet-session">申请编号 <code>{session.id}</code></p>}
                 </MobileTaskSheet>
               </>}
@@ -572,7 +579,7 @@ export default function App() {
           </div>
         </div>
         <div id="task-run-details" className="task-run-details">
-          {auth.user && <TaskRunPanel view={visibleRun} retry={taskRun.retry} />}
+          {auth.user && (visibleRun.task || visibleRun.error) && <TaskRunPanel view={visibleRun} retry={taskRun.retry} />}
         </div>
         </MainTaskSwitch>
       </main>

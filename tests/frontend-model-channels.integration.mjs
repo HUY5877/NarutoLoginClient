@@ -105,7 +105,7 @@ test('管理员大模型渠道编辑与逐个密钥测试', { skip: unavailable 
         const reply = (json, status = 200) => route.fulfill({ status, json });
         if (url.pathname === '/api/health') return reply({ ok: true, environment });
         if (url.pathname === '/api/auth/me') return reply({ user: { ...admin, isAdmin } });
-        if (url.pathname === '/api/task-runs/latest') return reply({ task: null });
+        if (url.pathname === '/api/task-runs/latest') return reply({ task: null, run: null });
         if (url.pathname === '/api/admin/model-channels') {
           state.reads += 1;
           return state.readStatus !== 200 ? reply({ error: '渠道读取失败，请重试。' }, state.readStatus) : reply({ environment, channels: state.channels });

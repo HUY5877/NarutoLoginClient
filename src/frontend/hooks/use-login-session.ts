@@ -3,6 +3,7 @@ import { loginFailure } from '../../shared/task-errors';
 import { DEFAULT_USER_OPTIONS, mainTasks, parseUserOptions, secretRealmModes, type MainTask, type SecretRealmMode, type UserOptions } from '../../shared/user-options';
 import { DEFAULT_LOGIN_TYPE, parseLoginType, type LoginType } from '../../shared/login-types';
 import { expireLoginSession } from '../lib/login-expiry';
+import { isRunTerminal, type RunStatus, type RunTask, type TaskRun } from '../lib/task-run';
 
 export type SessionStatus = 'queued' | 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'qr_ready' | 'failed' | 'expired';
 export type Phase = 'idle' | 'restoring' | 'submitting' | 'query_failed' | 'login_confirmed' | SessionStatus;
@@ -24,6 +25,7 @@ export interface Session {
   refreshSupported?: boolean;
   refreshRequestId?: string;
   qrRevision?: string;
+  runStatus?: RunStatus;
 }
 interface ActiveResponse { session: Session | null; showGetButton: boolean }
 interface PendingIntent { requestId: string; createdAt: number; expiresAt: number; userOptions: UserOptions; loginType: LoginType }
@@ -109,6 +111,7 @@ function validSession(value: Session): boolean {
     Number.isFinite(Date.parse(value.expiresAt)) && parseUserOptions(value.userOptions) !== null && parseLoginType(value.loginType) !== null;
 }
 function isLive(value: Session | null): boolean {
+  if (value?.runStatus && ['finishing_login', 'running_daily'].includes(value.runStatus)) return true;
   return Boolean(value && !['failed', 'expired'].includes(value.status) && Date.parse(value.expiresAt) > Date.now());
 }
 
@@ -135,6 +138,7 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
   const runningRef = useRef(false);
   const canCreateRef = useRef(false);
   const expiryCheckedRef = useRef<number | null>(null);
+  const restoredRef = useRef(false);
   const unauthorizedRef = useRef(onUnauthorized);
   unauthorizedRef.current = onUnauthorized;
 
@@ -148,7 +152,7 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     setShowGetButton(available);
   }, []);
 
-  const run = useCallback(async (mode: 'recover' | 'query' | 'refresh') => {
+  const run = useCallback(async (mode: 'recover' | 'query' | 'refresh' | 'resume', restoredTask?: RunTask) => {
     if (!userId || runningRef.current) return;
     const requestedTaskId = mode === 'refresh' ? sessionRef.current?.id : null;
     runningRef.current = true;
@@ -211,7 +215,13 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     };
 
     try {
-      let result = await readActive();
+      let result: ActiveResponse;
+      if (mode === 'resume' && restoredTask) {
+        const response = await retryRead(`/api/login-sessions/${encodeURIComponent(restoredTask.id)}`, controller.signal, onRetry);
+        const existing = await response.json() as Session;
+        if (!validSession(existing) || existing.id !== restoredTask.id) throw new RequestError('任务状态返回异常，请重试查询。');
+        result = { session: existing, showGetButton: false };
+      } else result = await readActive();
       if (!active()) return;
       let current = result.session;
       if (current) current = accept(current);
@@ -363,7 +373,7 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     setSession(null);
     sessionRef.current = null;
     setOwnerId(userId);
-    setPhase('idle');
+    setPhase(userId ? 'restoring' : 'idle');
     setError('');
     setRetrying(false);
     const savedIntent = userId ? readPending(userId) : null;
@@ -375,9 +385,9 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
     setAcceptedRevision(0);
     confirmedTaskRef.current = null;
     setConfirmedTaskId(null);
-    // Opening a page only resets its local view. The button initiates the
-    // authoritative server check, including recovery of a saved request ID.
-    updateAvailability(Boolean(userId));
+    restoredRef.current = false;
+    // Only a complete task snapshot can establish whether another task may start.
+    updateAvailability(false);
     const clock = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => {
       generationRef.current += 1;
@@ -388,6 +398,37 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
       clearInterval(clock);
     };
   }, [userId, replaceQr, updateAvailability]);
+
+  const restoreTask = useCallback((task: RunTask | null, snapshot: TaskRun | null) => {
+    if (!userId || restoredRef.current) return;
+    restoredRef.current = true;
+    if (!task) { setPhase('idle'); setError(''); setRetrying(false); updateAvailability(true); return; }
+    setUserOptions(parseUserOptions(task.userOptions) ?? { ...DEFAULT_USER_OPTIONS });
+    setLoginType(parseLoginType(task.loginType) ?? DEFAULT_LOGIN_TYPE);
+    const status = snapshot!.status;
+    if (!isRunTerminal(status) && !['finishing_login', 'running_daily'].includes(status)) {
+      void run('resume', task);
+      return;
+    }
+    const authorized = Boolean(snapshot?.authorizedAt || snapshot?.startedAt || ['finishing_login', 'running_daily'].includes(status));
+    const value: Session = { ...task, simulation: true, runStatus: status,
+      status: isRunTerminal(status) ? status === 'expired' || status === 'completed' ? 'expired' : 'failed' : 'qr_ready',
+      ...(authorized ? { loginAuthorized: true } : {}), ...(snapshot?.scanCapturedAt ? { scanCaptured: true } : {}),
+      ...(snapshot?.errorCode ? loginFailure(snapshot.errorCode) : {}) };
+    sessionRef.current = value;
+    setSession(value);
+    setPhase(authorized ? 'login_confirmed' : value.status);
+    if (authorized) { confirmedTaskRef.current = value.id; setConfirmedTaskId(value.id); }
+    setError(isRunTerminal(status) && snapshot?.errorCode ? loginFailure(snapshot.errorCode).error : '');
+    updateAvailability(isRunTerminal(status));
+  }, [userId, run, updateAvailability]);
+
+  const failTaskRestore = useCallback(() => {
+    if (restoredRef.current) return;
+    setPhase('query_failed');
+    setError('任务状态暂时无法确认，请重试查询任务。');
+    updateAvailability(false);
+  }, [updateAvailability]);
 
   const expiry = session && session.id === confirmedTaskId ? null
     : pendingUntil ?? (session && !['failed', 'expired'].includes(session.status) ? Date.parse(session.expiresAt) : null);
@@ -493,6 +534,7 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
   const canEditUserOptions = currentOwner && showGetButton && !pending && !canResumePending;
   return {
     acceptedRevision: currentOwner ? acceptedRevision : 0,
+    restoreTask, failTaskRestore,
     phase: visiblePhase, session: visibleSession, qrUrl: currentOwner ? qrUrl : null,
     error: currentOwner ? error : '', retrying: currentOwner && retrying, pending,
     showGetButton: currentOwner && showGetButton, canRetryQuery: currentOwner && visiblePhase === 'query_failed', canResumePending,

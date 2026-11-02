@@ -24,9 +24,10 @@ export function hasGameAuthorization(run: TaskRun | null): boolean {
   return Boolean(run && (run.authorizedAt || run.startedAt || ['finishing_login', 'running_daily'].includes(run.status)));
 }
 export function isUnclaimedQueueTimeout(session: Session | null, run: TaskRun | null): boolean {
-  // A run snapshot proves the worker started, even if session polling missed it.
+  // A claimed snapshot overrides a stale queue timeout; an authoritative queued
+  // run may itself expire before a worker ever starts it.
   return session?.status === 'expired' && session.errorCode === 'queue_timeout'
-    && (!run || run.taskId !== session.id);
+    && (!run || run.taskId !== session.id || run.status === 'expired' && run.errorCode === 'queue_timeout');
 }
 export function selectProgressRun({ phase, session, view, awaitingSubmission }: ProgressInput): TaskRunView {
   // A previous task may still be polling while the user submits another request.
@@ -155,7 +156,7 @@ export function deriveTaskProgress(input: ProgressInput) {
     summary = '等待扫码'; hint = '扫码登录成功后，第三阶段会显示脚本执行进度。';
   } else {
     qr.state = 'active';
-    qr.description = task.status === 'queued' && !run ? '申请正在排队，等待执行服务器领取'
+    qr.description = task.status === 'queued' && (!run || run.status === 'queued') ? '申请正在排队，等待执行服务器领取'
       : run?.status === 'opening_game' || task.status === 'opening_game' ? '正在打开游戏并准备登录'
         : run?.status === 'preparing_qr' || task.status === 'preparing_qr' ? '正在获取登录二维码'
           : '正在准备游戏环境并获取二维码';

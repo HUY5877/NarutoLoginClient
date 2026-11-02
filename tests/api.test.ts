@@ -52,6 +52,23 @@ test('四个渠道透传创建服务，旧请求默认安卓 QQ，非法渠道�
   });
 });
 
+test('刷新遇到未投递意图时恢复原申请并重读完整 run，不创建新申请', async () => {
+  let reads = 0, resumes = 0;
+  const task = { ...baseTask, status: 'queued' as const,
+    userOptions: { equipmentStamina: true, secretRealmMode: 'all' as const } };
+  const run = { taskId: id, status: 'queued' as const, updatedAt: task.createdAt, startedAt: null, finishedAt: null };
+  await withApi({ events: events({ create: async () => assert.fail('must not create another request'),
+    getActive: async () => { resumes++; return task; } }), runs: {
+    getLatest: async () => ({ task, run: ++reads === 1 ? null : run }),
+    getEvents: async () => assert.fail('no log polling in the restoration endpoint'),
+  } }, async base => {
+    const response = await fetch(`${base}/api/task-runs/latest`, { headers });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { task, run });
+    assert.equal(reads, 2); assert.equal(resumes, 1);
+  });
+});
+
 function events(overrides: Partial<Dependencies['events']> = {}): Dependencies['events'] {
   return { create: async () => ({ ...baseTask, status: 'queued' }), getForUser: async () => ({ ...baseTask }),
     getActive: async () => null, recordStatus: async () => {}, ...overrides };
@@ -622,10 +639,11 @@ test('任务日志接口使用 Cookie 身份，独立于二维码过期且不调
   const calls: unknown[][] = [];
   const task = { id, status: 'expired' as const, createdAt: baseTask.createdAt, expiresAt: baseTask.createdAt,
     userOptions: { equipmentStamina: false, secretRealmMode: 'once' as const } };
-  const result = { task, run: null, logs: [], nextCursor: '123-4', hasMore: false, truncated: false };
+  const run = { taskId: id, status: 'running_daily' as const, updatedAt: task.createdAt, startedAt: task.createdAt, finishedAt: null };
+  const result = { task, run, logs: [], nextCursor: '123-4', hasMore: false, truncated: false };
   await withApi({ events: events({ create: unexpected, getForUser: unexpected, getActive: unexpected, recordStatus: unexpected }),
     storage: { exists: unexpected, read: unexpected }, runs: {
-      async getLatest(userId) { calls.push(['latest', userId]); return { task }; },
+      async getLatest(userId) { calls.push(['latest', userId]); return { task, run }; },
       async getEvents(taskId, userId, after) { calls.push(['events', taskId, userId, after]); return result; },
     } }, async base => {
     for (const route of ['/api/task-runs/latest', `/api/task-runs/${id}/events`]) {
@@ -635,7 +653,7 @@ test('任务日志接口使用 Cookie 身份，独立于二维码过期且不调
     }
     const latest = await fetch(`${base}/api/task-runs/latest`, { headers });
     assert.equal(latest.status, 200);
-    assert.deepEqual(await latest.json(), { task });
+    assert.deepEqual(await latest.json(), { task, run });
     const response = await fetch(`${base}/api/task-runs/${id}/events?after=123-4&userId=forged`, { headers });
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('cache-control'), 'no-store');

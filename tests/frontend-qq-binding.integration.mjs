@@ -73,7 +73,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
         if (url.pathname === '/api/auth/me') return reply({ user: state.user });
         if (url.pathname === '/api/auth/logout') { state.user = null; return reply({ ok: true }); }
         if (url.pathname === '/api/health') return reply({ ok: true, environment: 'test' });
-        if (url.pathname === '/api/task-runs/latest') return reply({ task: null });
+        if (url.pathname === '/api/task-runs/latest') return reply({ task: null, run: null });
         if (url.pathname.startsWith('/api/qq-binding')) {
           state.calls.push({ method, path: url.pathname, user: state.user?.id,
             body: route.request().postData() ? route.request().postDataJSON() : null });

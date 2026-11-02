@@ -82,6 +82,7 @@ export interface LoginEventStore {
   getActive(userId: string, now: Date): Promise<LoginEvent | null>;
   getEvent(id: string, userId: string): Promise<LoginEvent | null>;
   getLatestForUser(userId: string): Promise<LoginEvent | null>;
+  getRecentForUser?(userId: string, since: Date): Promise<LoginEvent[]>;
   markDispatched(id: string, userId: string, now: Date): Promise<void>;
   updateStatus(id: string, userId: string, status: Status, now: Date, expiresAt?: string): Promise<void>;
 }
@@ -546,6 +547,15 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
       [userId],
     );
     return result.rows[0] ? loginEvent(result.rows[0]) : null;
+  }
+
+  async getRecentForUser(userId: string, since: Date): Promise<LoginEvent[]> {
+    await this.initialize();
+    const result = await this.pool.query<LoginEventRow>(
+      `SELECT ${eventColumns} FROM naruto_login.login_events WHERE user_id = $1 AND created_at >= $2
+       ORDER BY created_at DESC, id DESC LIMIT 101`, [userId, since],
+    );
+    return result.rows.map(loginEvent);
   }
 
   async updateStatus(id: string, userId: string, status: Status, now: Date, expiresAt?: string): Promise<void> {

@@ -118,7 +118,7 @@ test('main task selection preserves task options and session ownership', { skip:
         submit: request => session('queued', request.postDataJSON().userOptions),
         detail: () => session('qr_ready', weeklyOptions),
         refresh: () => ({ ...session('qr_ready', weeklyOptions), qrRevision: revisionId }),
-        latest: () => ({ task: null }),
+        latest: () => ({ task: null, run: null }),
         events: (taskId, url) => ({ task: { ...session('qr_ready', weeklyOptions), id: taskId },
           run: { taskId, status: 'waiting_scan', updatedAt: new Date().toISOString(), startedAt: null, finishedAt: null },
           logs: [], nextCursor: url.searchParams.get('after') || '0-0', hasMore: false, truncated: false }) };
@@ -142,7 +142,10 @@ test('main task selection preserves task options and session ownership', { skip:
         else if (url.pathname === `/api/login-sessions/${sessionId}`) body = await state.detail(request);
         else if (url.pathname === `/api/login-sessions/${sessionId}/qr`) {
           return route.fulfill({ status: 200, contentType: 'image/png', body: png }).catch(() => {});
-        } else if (url.pathname === '/api/task-runs/latest') body = await state.latest();
+        } else if (url.pathname === '/api/task-runs/latest') {
+          body = await state.latest();
+          if (!('run' in body)) body.run = body.task ? (await state.events(body.task.id, new URL(`${origin}/events?after=0-0`))).run : null;
+        }
         else if (/^\/api\/task-runs\/[^/]+\/events$/.test(url.pathname)) body = await state.events(url.pathname.split('/')[3], url);
         else {
           state.errors.push(`Unexpected mocked API: ${request.method()} ${url.pathname}`);
@@ -174,12 +177,12 @@ test('main task selection preserves task options and session ownership', { skip:
 
           await daily(f.page).focus();
           await f.page.keyboard.press('ArrowRight');
-          assert.equal(await weekly(f.page).evaluate(tab => tab === document.activeElement), true);
+          await waitFor(() => weekly(f.page).evaluate(tab => tab === document.activeElement), 'Arrow navigation focuses the weekly tab');
           assert.equal(await isSelected(daily(f.page)), true, 'Arrow navigation changes focus without activating a task');
           await f.page.keyboard.press('Enter');
           assert.equal(await isSelected(weekly(f.page)), true, 'Enter activates the focused task');
           await f.page.keyboard.press('ArrowLeft');
-          assert.equal(await daily(f.page).evaluate(tab => tab === document.activeElement), true);
+          await waitFor(() => daily(f.page).evaluate(tab => tab === document.activeElement), 'Arrow navigation focuses the daily tab');
           assert.equal(await isSelected(weekly(f.page)), true);
           await f.page.keyboard.press('Space');
           assert.equal(await isSelected(daily(f.page)), true, 'Space also activates the focused task');
@@ -257,7 +260,7 @@ test('main task selection preserves task options and session ownership', { skip:
       } finally { await f.close(); }
     });
 
-    await t.test('weekly choice locks during submission and scanning, then survives lazy recovery and QR refresh', async () => {
+    await t.test('weekly choice locks during submission and scanning, then survives automatic recovery and QR refresh', async () => {
       const f = await fixture();
       const gate = deferred();
       try {
@@ -274,11 +277,11 @@ test('main task selection preserves task options and session ownership', { skip:
         assert.equal(await daily(f.page).isDisabled(), true);
         assert.equal(await weekly(f.page).isDisabled(), true);
         f.state.active = () => ({ session: session('qr_ready', weeklyOptions), showGetButton: false });
-        const beforeReload = loginCalls(f.state).length;
+        f.state.latest = () => ({ task: session('qr_ready', weeklyOptions) });
+        const beforeReload = posts(f.state).length;
         await f.page.reload({ waitUntil: 'networkidle' });
         await generate(f.page).waitFor();
-        assert.equal(loginCalls(f.state).length, beforeReload, 'Reload remains lazy and does not read the QR session');
-        await generate(f.page).click();
+        assert.equal(posts(f.state).length, beforeReload, 'Reload restores the QR without creating another task');
         await f.page.locator('img[src^="blob:"]').waitFor();
         assert.equal(await isSelected(weekly(f.page)), true);
         assert.equal(await daily(f.page).isDisabled(), true);
@@ -344,6 +347,12 @@ test('main task selection preserves task options and session ownership', { skip:
             nextCursor: '1-0', hasMore: false, truncated: false };
           };
           await f.open();
+          if (status === 'completed') {
+            await waitFor(() => generate(f.page).isEnabled(), 'A previous success should allow the next task');
+            assert.equal(await f.page.getByText('任务执行记录', { exact: true }).count(), 0);
+            assert.equal(await f.page.getByLabel('任务整体状态', { exact: true }).innerText(), '待开始');
+            return;
+          }
           await f.page.getByRole('button', { name: '展开记录', exact: true }).click();
           await f.page.getByRole('log', { name: '任务执行日志', exact: true }).getByText(historyMessage, { exact: true }).waitFor();
           assert.equal(await isSelected(daily(f.page)), true);
@@ -379,12 +388,12 @@ test('main task selection preserves task options and session ownership', { skip:
         await waitFor(() => posts(f.state).length === 1, 'The first submitted request should remain unconfirmed');
         const intent = await f.page.evaluate(userId => JSON.parse(localStorage.getItem(`naruto-login:pending:${userId}`)), user.id);
         assert.equal(intent.userOptions.mainTask, 'arena_weekly');
-        const beforeReload = loginCalls(f.state).length;
+        const beforeReload = posts(f.state).length;
         await f.page.reload({ waitUntil: 'networkidle' });
         await generate(f.page).waitFor();
         assert.equal(await isSelected(weekly(f.page)), true);
         assert.equal(await weekly(f.page).isDisabled(), true, 'An unconfirmed saved intent cannot change task type');
-        assert.equal(loginCalls(f.state).length, beforeReload, 'Reload waits for an explicit recovery click');
+        assert.equal(posts(f.state).length, beforeReload, 'Restoration must not resubmit an unconfirmed intent');
         await generate(f.page).click();
         await f.page.locator('img[src^="blob:"]').waitFor();
         assert.equal(posts(f.state).length, 2);

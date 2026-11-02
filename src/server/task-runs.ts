@@ -10,9 +10,10 @@ import type { DailyTaskFailureDetails, DailyTaskLogPage } from '../shared/admin.
 import { taskFailureMessage } from '../shared/task-errors.js';
 import { SlsTaskLogArchive, type TaskLogArchive } from './sls-logs.js';
 import { isPublicTaskLog, publicTaskErrorCode } from './public-task-logs.js';
+import { effectiveRunStatus, RUN_RETENTION_MS, runStatuses, terminalRun, type RunStatus } from './task-state.js';
+import { recentTaskEvents } from './recent-task-events.js';
 
-export type RunStatus = 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'waiting_scan' | 'finishing_login'
-  | 'running_daily' | 'completed' | 'failed' | 'interrupted' | 'expired';
+export type { RunStatus } from './task-state.js';
 export interface TaskRun {
   taskId: string;
   status: RunStatus;
@@ -48,7 +49,7 @@ export interface TaskRunEvents {
 }
 
 type RunConfig = Pick<Config, 'redisUrl' | 'redisQueueKey' | 'timeoutMs' | 'appEnv' | 'sls'>;
-type EventReader = Pick<LoginEventStore, 'initialize' | 'getEvent' | 'getLatestForUser'>;
+type EventReader = Pick<LoginEventStore, 'initialize' | 'getEvent' | 'getLatestForUser' | 'getRecentForUser'>;
 export interface RunRedisDriver {
   readonly isReady: boolean;
   connect(): Promise<void>;
@@ -56,8 +57,6 @@ export interface RunRedisDriver {
   destroy(): void;
 }
 interface Options { store?: EventReader; createDriver?: () => RunRedisDriver; now?: () => number; archive?: TaskLogArchive }
-const runStatuses = new Set<RunStatus>(['starting_emulator', 'opening_game', 'preparing_qr', 'waiting_scan', 'finishing_login',
-  'running_daily', 'completed', 'failed', 'interrupted', 'expired']);
 const taskIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const streamIdPattern = /^(0|[1-9][0-9]{0,19})-(0|[1-9][0-9]{0,19})$/;
 const maxStreamPart = 18446744073709551615n;
@@ -95,7 +94,7 @@ function parseObject(raw: unknown): Record<string, unknown> | null {
   try { const value: unknown = JSON.parse(raw); return record(value) ? value : null; } catch { return null; }
 }
 const invalidData = () => new ApiError(502, '任务日志格式异常，请稍后重试。', 'TASK_RUN_DATA_INVALID');
-function parseRun(raw: unknown, taskId: string): TaskRun | null {
+function parseRun(raw: unknown, taskId: string, now?: number): TaskRun | null {
   if (raw === null) return null;
   const value = parseObject(raw);
   if (!value || value.taskId !== taskId || !runStatuses.has(value.status as RunStatus) || !timestamp(value.updatedAt)
@@ -109,7 +108,9 @@ function parseRun(raw: unknown, taskId: string): TaskRun | null {
     || value.errorCode !== undefined && (typeof value.errorCode !== 'string' || !/^[a-z0-9_]{1,64}$/.test(value.errorCode))) {
     throw invalidData();
   }
-  return { taskId, status: value.status as RunStatus, updatedAt: value.updatedAt, startedAt: value.startedAt as string | null,
+  const status = now === undefined ? value.status as RunStatus
+    : effectiveRunStatus(value as unknown as Parameters<typeof effectiveRunStatus>[0], now);
+  return { taskId, status, updatedAt: value.updatedAt, startedAt: value.startedAt as string | null,
     finishedAt: value.finishedAt as string | null,
     ...(value.authorizedAt !== undefined ? { authorizedAt: value.authorizedAt as string } : {}),
     ...(value.scanCapturedAt !== undefined ? { scanCapturedAt: value.scanCapturedAt as string } : {}),
@@ -191,7 +192,7 @@ local ok, run = pcall(cjson.decode, raw)
 if not ok or type(run) ~= 'table' or run.taskId ~= ARGV[1] then return -1 end
 if run.status == 'interrupted' then return 2 end
 if run.status == 'completed' or run.status == 'failed' or run.status == 'expired' then return 3 end
-if run.status ~= 'starting_emulator' and run.status ~= 'opening_game'
+if run.status ~= 'queued' and run.status ~= 'starting_emulator' and run.status ~= 'opening_game'
   and run.status ~= 'preparing_qr' and run.status ~= 'waiting_scan'
   and run.status ~= 'finishing_login' and run.status ~= 'running_daily' then return -1 end
 run.status = 'interrupted'
@@ -244,10 +245,29 @@ export class TaskRunService {
       userOptions: { ...event.userOptions }, loginType: event.loginType ?? DEFAULT_LOGIN_TYPE,
       status: event.status === 'failed' ? 'failed' : Date.parse(event.expiresAt) <= this.now() ? 'expired' : event.status };
   }
-  async getLatest(userId: string): Promise<{ task: RunTask | null }> {
+  async getLatest(userId: string): Promise<{ task: RunTask | null; run: TaskRun | null }> {
     // Deliberately bypass LoginEventService.resume: reading logs must never dispatch a job.
-    const event = await this.database(store => store.getLatestForUser(userId));
-    return { task: event ? this.publicTask(event) : null };
+    const events = await this.database(store => recentTaskEvents(store, userId, this.now()));
+    if (!events.length) return { task: null, run: null };
+    const summaries = await this.getSummaries(events.map(event => event.id));
+    // A newer failed request must not hide an older task which is still running.
+    const active = summaries.findIndex(run => run !== null && !terminalRun(run.status));
+    if (active < 0 && events.some((event, index) => summaries[index] === null && event.dispatchedAt
+      && event.status !== 'failed' && Date.parse(event.createdAt) >= this.now() - RUN_RETENTION_MS)) {
+      throw new ApiError(503, '暂时无法确认上次任务是否结束，请重试查询。', 'TASK_STATE_UNAVAILABLE');
+    }
+    const index = active < 0 ? 0 : active;
+    if (summaries[index] === null && Date.parse(events[index].createdAt) < this.now() - RUN_RETENTION_MS) {
+      return { task: null, run: null };
+    }
+    return { task: this.publicTask(events[index]), run: this.knownFailure(events[index], summaries[index]) };
+  }
+  private knownFailure(event: LoginEvent, run: TaskRun | null): TaskRun | null {
+    if (run || event.status !== 'failed') return run;
+    // Older failed reservations may never have reached Redis. They are a
+    // confirmed failure, unlike time-expired rows which may still be executing.
+    const finishedAt = event.finishedAt ?? event.createdAt;
+    return { taskId: event.id, status: 'failed', updatedAt: finishedAt, startedAt: null, finishedAt };
   }
   private async callRedis(script: string, keys: string[], args: string[]): Promise<unknown> {
     if (!this.config.redisUrl) throw new ApiError(503, 'Redis 未配置，请先配置 REDIS_URL。', 'REDIS_NOT_CONFIGURED');
@@ -291,7 +311,7 @@ export class TaskRunService {
       for i, key in ipairs(KEYS) do results[i] = redis.call('GET', key) or false end
       return results`, taskIds.map(id => `${this.config.redisQueueKey}:runs:${id}`), []);
     if (!Array.isArray(raw) || raw.length !== taskIds.length) throw invalidData();
-    return raw.map((value, index) => parseRun(value, taskIds[index]));
+    return raw.map((value, index) => parseRun(value, taskIds[index], this.now()));
   }
   async getFailureDetails(taskId: string): Promise<DailyTaskFailureDetails> {
     if (taskId !== taskId.trim() || !taskIdPattern.test(taskId)) throw new ApiError(400, '无效的任务编号。');
@@ -302,7 +322,7 @@ export class TaskRunService {
     const raw = await this.callRedis(failureSnapshotScript,
       [`${this.config.redisQueueKey}:runs:${taskId}`, `${this.config.redisQueueKey}:logs:${taskId}`], [String(failureLogLimit + 1)]);
     if (!Array.isArray(raw) || raw.length !== 2 || !Array.isArray(raw[1]) || raw[1].length > failureLogLimit + 1) throw invalidData();
-    const run = parseRun(raw[0], taskId);
+    const run = parseRun(raw[0], taskId, this.now());
     if (run?.logSource) return this.waitingFailure(taskId, run);
     const newestLogs: TaskLog[] = [];
     let previous: string | undefined;
@@ -356,7 +376,7 @@ export class TaskRunService {
       || typeof raw[3] !== 'string' || raw[3] !== '' && !isStreamCursor(raw[3])
       || !Number.isSafeInteger(raw[4]) || raw[4] < 0 || !Number.isSafeInteger(raw[5]) || raw[5] < 0 || raw[4] < raw[5]
       || raw[6] !== 0 && raw[6] !== 1) throw invalidData();
-    const run = parseRun(raw[0], taskId);
+    const run = parseRun(raw[0], taskId, this.now());
     if (run?.logSource) return this.waitingPage(taskId, run, after, snapshot);
     const snapshotCursor = raw[2];
     if (compareIds(after, snapshotCursor) > 0) throw new ApiError(400, '无效的日志读取位置。');
@@ -390,7 +410,7 @@ export class TaskRunService {
     let redisFailure: unknown;
     try {
       const raw = await this.callRedis(archiveStateScript, [`${this.config.redisQueueKey}:runs:${taskId}`], []);
-      run = parseRun(raw, taskId);
+      run = parseRun(raw, taskId, this.now());
     } catch (error) { redisFailure = error; }
     // A rejection can publish its source before its first emit has a cursor. That gap is not completion.
     if (run?.logSource === 'disabled' || run?.logSource === 'sls' && (!run.logCursor || run.logCursor === '0-0')) return { run, page: null };
@@ -415,7 +435,7 @@ export class TaskRunService {
     const archived = await this.readArchive(taskId, after, undefined, false, true);
     if (archived?.page) {
       const { logs, nextCursor, hasMore, truncated } = archived.page;
-      return { task: this.publicTask(event), run: archived.run, logs, nextCursor, hasMore, truncated, logsPending: false };
+      return { task: this.publicTask(event), run: this.knownFailure(event, archived.run), logs, nextCursor, hasMore, truncated, logsPending: false };
     }
     if (archived?.run?.logSource) return { task: this.publicTask(event), run: archived.run, logs: [], nextCursor: after,
       hasMore: false, truncated: false, logsPending: archived.run.logSource === 'sls' };
@@ -424,7 +444,7 @@ export class TaskRunService {
     if (!Array.isArray(raw) || raw.length !== 5 || !Array.isArray(raw[1]) || raw[1].length > pageSize + 1
       || typeof raw[2] !== 'string' || raw[2] !== '' && !isStreamCursor(raw[2])
       || !Number.isSafeInteger(raw[3]) || !Number.isSafeInteger(raw[4])) throw invalidData();
-    const run = parseRun(raw[0], event.id);
+    const run = this.knownFailure(event, parseRun(raw[0], event.id, this.now()));
     if (run?.logSource) return { task: this.publicTask(event), run, logs: [], nextCursor: after,
       hasMore: false, truncated: false, logsPending: run.logSource === 'sls' };
     const logs: TaskLog[] = [];

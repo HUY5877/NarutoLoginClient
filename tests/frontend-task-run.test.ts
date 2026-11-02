@@ -21,6 +21,51 @@ function deferred<T>() {
 async function settle() { for (let i = 0; i < 8; i += 1) await new Promise<void>(resolve => setImmediate(resolve)); }
 const blockedPause = () => new Promise<void>(() => {});
 
+test('首次恢复直接采用完整运行状态，不等待日志响应', async () => {
+  let view = emptyTaskRun();
+  const pendingLogs = deferred<unknown>();
+  const snapshot = events({ task: expiredTask });
+  const tracker = new TaskRunTracker(next => { view = next; }, () => {}, async path =>
+    path.endsWith('/latest') ? { task: expiredTask, run: snapshot.run } : pendingLogs.promise, blockedPause);
+  await tracker.restore();
+  assert.equal(view.run?.status, 'running_daily');
+  assert.equal(view.loading, false);
+  assert.equal(view.restored, true);
+  tracker.dispose();
+  pendingLogs.resolve(snapshot);
+});
+
+test('首次恢复已完成任务回到待开始，不读取旧日志', async () => {
+  let view = emptyTaskRun();
+  const paths: string[] = [];
+  const tracker = new TaskRunTracker(next => { view = next; }, () => {}, async path => {
+    paths.push(path);
+    return { task, run: { ...events().run!, status: 'completed', finishedAt: task.createdAt } };
+  }, blockedPause);
+  await tracker.restore();
+  await settle();
+  assert.deepEqual(paths, ['/api/task-runs/latest']);
+  assert.equal(view.restored, true);
+  assert.equal(view.task, null);
+  assert.equal(view.run, null);
+  assert.deepEqual(view.logs, []);
+  tracker.dispose();
+});
+
+test('首次恢复缺少运行状态不能视为没有任务', async () => {
+  let view = emptyTaskRun();
+  const tracker = new TaskRunTracker(next => { view = next; }, () => {}, async () => ({ task, run: null }), blockedPause);
+  await tracker.restore();
+  assert.equal(view.restored, false);
+  assert.match(view.error, /重试/);
+  tracker.dispose();
+});
+
+test('排队任务也具有完整运行状态', () => {
+  const queued = events({ run: { ...events().run!, status: 'queued', startedAt: null } });
+  assert.equal(parseRunEvents(queued, task.id, '0-0').run?.status, 'queued');
+});
+
 test('扫码接收时间独立于游戏授权，接受有效时间并拒绝畸形值', () => {
   const value = events();
   Object.assign(value.run!, { status: 'waiting_scan', startedAt: null, scanCapturedAt: task.createdAt });
@@ -37,7 +82,7 @@ test('run records restore after the QR session expired and keep polling daily wo
   const waits: number[] = [];
   const tracker = new TaskRunTracker(next => { view = next; }, () => assert.fail('unexpected unauthorized'), async path => {
     paths.push(path);
-    return path.endsWith('/latest') ? { task: expiredTask } : events({ task: expiredTask, logs: [log('1-0')], nextCursor: '1-0' });
+    return path.endsWith('/latest') ? { task: expiredTask, run: events().run } : events({ task: expiredTask, logs: [log('1-0')], nextCursor: '1-0' });
   }, async ms => { waits.push(ms); await blockedPause(); });
   await tracker.restore();
   await settle();
@@ -181,7 +226,7 @@ test('latest without a task stays idle and repeated same-task observations do no
   let requests = 0;
   const tracker = new TaskRunTracker(next => { view = next; }, () => {}, async path => {
     requests += 1;
-    return path.endsWith('/latest') ? { task: null } : events();
+    return path.endsWith('/latest') ? { task: null, run: null } : events();
   }, blockedPause);
   await tracker.restore();
   assert.equal(view.loading, false);
@@ -275,7 +320,7 @@ test('刷新恢复和日志分页裁剪保留首次秘境完成，新任务清�
   const paths: string[] = [];
   const tracker = new TaskRunTracker(next => { view = next; }, () => assert.fail('unexpected unauthorized'), async path => {
     paths.push(path);
-    if (path.endsWith('/latest')) return { task: expiredTask };
+    if (path.endsWith('/latest')) return { task: expiredTask, run: { ...events().run!, secretRealmCompletedAt } };
     if (path.includes(newTask.id)) return newResponse.promise;
     page++;
     const first = (page - 1) * 100 + 1;

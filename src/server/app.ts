@@ -197,7 +197,15 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
   });
   app.get('/api/task-runs/latest', async (_req, res) => {
     if (!runs) throw new ApiError(503, '任务日志服务尚未配置。', 'TASK_RUNS_UNAVAILABLE');
-    res.json(await runs.getLatest((res.locals.user as User).id));
+    const userId = (res.locals.user as User).id;
+    let latest = await runs.getLatest(userId);
+    if (latest.task && !latest.run) {
+      // A durable, unacknowledged submission can be safely delivered again
+      // with the same ID. Never turn an unknown dispatched run into a new job.
+      await events.getActive(userId);
+      latest = await runs.getLatest(userId);
+    }
+    res.json(latest);
   });
   app.get('/api/task-runs/:id/events', async (req, res) => {
     const id = sessionId(req);
@@ -206,7 +214,10 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     if (!runs) throw new ApiError(503, '任务日志服务尚未配置。', 'TASK_RUNS_UNAVAILABLE');
     res.json(await runs.getEvents(id, (res.locals.user as User).id, after));
   });
-  const publicTask = (task: Task) => ({ ...task, showGetButton: task.status === 'failed' || task.status === 'expired' || now() >= Date.parse(task.expiresAt) });
+  const loginEnded = (task: Task) => task.runStatus
+    ? ['completed', 'failed', 'interrupted', 'expired'].includes(task.runStatus)
+    : task.status === 'failed' || task.status === 'expired' || !task.loginAuthorized && now() >= Date.parse(task.expiresAt);
+  const publicTask = (task: Task) => ({ ...task, showGetButton: loginEnded(task) });
   app.post('/api/login-sessions', async (req, res) => {
     const user = res.locals.user as User;
     const requestId: unknown = req.body?.requestId === undefined ? randomUUID() : req.body.requestId;
@@ -236,6 +247,7 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     const userId = (res.locals.user as User).id;
     const task = await events.getForUser(id, userId);
     if (task.status === 'failed') return res.json(publicTask(task));
+    if (task.loginAuthorized) return res.json(publicTask(task));
     if (now() >= Date.parse(task.expiresAt) || task.status === 'expired') return res.json(publicTask({ ...task, status: 'expired' }));
     if (task.refreshRequestId || task.loginAuthorized || task.scanCaptured) return res.json(publicTask(task));
     // 对象是否存在决定二维码就绪；队列状态只用于显示当前步骤。

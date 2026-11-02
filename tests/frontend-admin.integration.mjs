@@ -61,7 +61,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
         const reply = (json, status = 200) => route.fulfill({ status, json });
         if (url.pathname === '/api/health') return reply({ ok: true, environment: 'test' });
         if (url.pathname === '/api/auth/me') return reply({ user: { ...admin, isAdmin: state.access } });
-        if (url.pathname === '/api/task-runs/latest') return reply({ task: null });
+        if (url.pathname === '/api/task-runs/latest') return reply({ task: null, run: null });
         if (url.pathname.startsWith('/api/admin/')) {
           if (!state.access) return reply({ error: '需要管理员权限。' }, 403);
           if (method === 'GET') state.adminReads.push(url.pathname + url.search);

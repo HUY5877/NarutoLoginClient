@@ -11,6 +11,7 @@ import { mainTaskFailureMessage } from '@/lib/main-task';
 import { getMainTask } from '../../shared/user-options';
 
 const labels: Record<RunStatus, string> = {
+  queued: '等待执行服务器领取',
   starting_emulator: '准备游戏环境', opening_game: '打开游戏', preparing_qr: '获取二维码',
   waiting_scan: '等待扫码登录', finishing_login: '授权完成，正在进入游戏', running_daily: '正在刷日常', completed: '任务已完成',
   failed: '执行失败', interrupted: '执行已中断', expired: '等待登录超时',

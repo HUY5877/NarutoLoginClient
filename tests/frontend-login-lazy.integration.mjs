@@ -100,7 +100,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       const context = await browser.newContext(options);
       const state = { user: firstUser, calls: [], errors: [], active: () => ({ session: null, showGetButton: true }),
         submit: () => session('queued'), submitStatus: 200, detail: () => session(), afterQr: null, qrResponse: null,
-        latest: () => ({ task: { ...session('expired', Date.now() - 60_000), id: latestId } }),
+        latest: () => ({ task: null, run: null }),
         events: (taskId, url) => {
           const now = new Date().toISOString();
           return { task: { ...session('expired', Date.now() - 60_000), id: taskId },
@@ -128,6 +128,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           return route.fulfill({ status: 200, contentType: 'image/png', body: png }).catch(() => {});
         } else if (url.pathname === '/api/task-runs/latest') {
           body = await state.latest();
+          if (!('run' in body)) body.run = body.task ? (await state.events(body.task.id, new URL(`${origin}/events?after=0-0`))).run : null;
         } else if (/^\/api\/task-runs\/[^/]+\/events$/.test(url.pathname)) {
           const taskId = url.pathname.split('/')[3];
           body = await state.events(taskId, url);
@@ -182,10 +183,13 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           assert.equal(await selector.evaluate(element => document.activeElement === element), true);
           await selector.press('ArrowDown');
           await f.page.getByRole('menu').waitFor();
+          await f.page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitemradio');
           await f.page.keyboard.press('ArrowDown');
-          await f.page.keyboard.press('Enter');
+          await waitFor(() => f.page.getByRole('menuitemradio', { name: 'iOS QQ 区', exact: true })
+            .evaluate(element => document.activeElement === element), 'Keyboard navigation focuses the next login channel');
+          await f.page.getByRole('menuitemradio', { name: 'iOS QQ 区', exact: true }).press('Enter');
           await f.page.getByRole('menu').waitFor({ state: 'hidden' });
-          assert.equal(await selector.locator('strong').innerText(), 'iOS QQ 区');
+          await waitFor(async () => (await selector.locator('strong').innerText()) === 'iOS QQ 区', 'Keyboard selection updates the login channel');
           assert.deepEqual(await readLayout(), before);
           const realm = secretRealmTrigger(f.page);
           await realm.scrollIntoViewIfNeeded();
@@ -247,7 +251,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       });
     }
 
-    await t.test('initial visit, reload, new tab, focus and storage do not request QR sessions; logs keep polling', async () => {
+    await t.test('without a task, initial visit, reload, new tab, focus and storage do not request QR sessions', async () => {
       const f = await fixture();
       try {
         await f.open();
@@ -266,8 +270,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           window.dispatchEvent(new StorageEvent('storage', { key: `naruto-login:pending:${userId}`, newValue: value }));
           window.dispatchEvent(new StorageEvent('storage', { key: 'naruto-login:session-changed', newValue: `${userId}:${now}` }));
         }, { userId: firstUser.id, pendingId });
-        const logsBefore = f.state.calls.filter(call => call.path.endsWith('/events')).length;
-        await waitFor(() => f.state.calls.filter(call => call.path.endsWith('/events')).length > logsBefore, 'Execution logs should continue polling');
+        assert.equal(f.state.calls.filter(call => call.path.endsWith('/events')).length, 0);
         assert.deepEqual(callsToLogin(f.state.calls), []);
         assert.equal(await generate(f.page).isEnabled(), true);
         assert.ok(f.state.calls.some(call => call.path === '/api/auth/me'));

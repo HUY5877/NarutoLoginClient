@@ -1,7 +1,7 @@
 import { parseUserOptions, type UserOptions } from '../../shared/user-options';
 import { parseLoginType, type LoginType } from '../../shared/login-types';
 
-export type RunStatus = 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'waiting_scan' | 'finishing_login'
+export type RunStatus = 'queued' | 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'waiting_scan' | 'finishing_login'
   | 'running_daily' | 'completed' | 'failed' | 'interrupted' | 'expired';
 export interface RunTask { id: string; createdAt: string; expiresAt: string; status: string; userOptions?: UserOptions; loginType?: LoginType }
 export interface TaskRun {
@@ -26,12 +26,13 @@ export interface TaskRunView {
   task: RunTask | null; run: TaskRun | null; logs: RunLog[];
   loading: boolean; polling: boolean; unavailable: boolean; truncated: boolean; error: string;
   logsPending?: boolean;
+  restored?: boolean;
 }
 export const emptyTaskRun = (): TaskRunView => ({
   task: null, run: null, logs: [], loading: false, polling: false,
-  unavailable: false, truncated: false, error: '',
+  unavailable: false, truncated: false, error: '', restored: false,
 });
-const statuses: RunStatus[] = ['starting_emulator', 'opening_game', 'preparing_qr', 'waiting_scan', 'finishing_login',
+const statuses: RunStatus[] = ['queued', 'starting_emulator', 'opening_game', 'preparing_qr', 'waiting_scan', 'finishing_login',
   'running_daily', 'completed', 'failed', 'interrupted', 'expired'];
 export const isRunTerminal = (status: RunStatus) => ['completed', 'failed', 'interrupted', 'expired'].includes(status);
 const cursorPattern = /^\d+-\d+$/;
@@ -137,21 +138,30 @@ export class TaskRunTracker {
   async restore() {
     if (this.disposed) return;
     const controller = this.begin();
-    this.emit({ loading: true, error: '' });
+    this.emit({ ...emptyTaskRun(), loading: true });
     try {
       const body = await this.request('/api/task-runs/latest', controller.signal);
       if (!this.active(controller)) return;
       if (!object(body) || (body.task !== null && !isRunTask(body.task))) throw new Error('invalid latest task');
-      if (body.task === null) { this.emit({ loading: false }); return; }
-      this.follow(body.task as RunTask);
+      if (body.task === null) {
+        if (body.run !== null) throw new Error('invalid latest run');
+        this.emit({ loading: false, restored: true }); return;
+      }
+      const snapshot = parseRunEvents({ ...body, logs: [], nextCursor: '0-0', hasMore: false, truncated: false },
+        (body.task as RunTask).id, '0-0');
+      if (!snapshot.run) throw new Error('missing latest run');
+      // Hide a previous success only during initial restoration. A task followed
+      // in this page keeps its final result and drains its remaining log pages.
+      if (snapshot.run.status === 'completed') { this.emit({ loading: false, restored: true }); return; }
+      this.follow(snapshot.task, snapshot.run);
     } catch (error) { this.fail(error, controller); }
   }
-  follow(task: RunTask) {
+  follow(task: RunTask, snapshot: TaskRun | null = null) {
     if (this.disposed || this.view.task?.id === task.id) return;
     const controller = this.begin();
     this.cursor = '0-0';
     this.view = emptyTaskRun();
-    this.emit({ task, loading: true, polling: true });
+    this.emit({ task, run: snapshot, loading: snapshot === null, polling: true, restored: true });
     void this.poll(task.id, controller);
   }
   retry() {

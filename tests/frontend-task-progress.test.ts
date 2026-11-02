@@ -98,6 +98,16 @@ test('unclaimed expiry reports capacity pressure only without execution evidence
   assert.equal(deriveTaskProgress(oldRun).summary, '排队超时');
 });
 
+test('统一运行记录的queued状态仍显示等待领取', () => {
+  assert.equal(deriveTaskProgress(input('queued')).steps[1].description, '申请正在排队，等待执行服务器领取');
+});
+
+test('统一运行记录的排队超时保留服务器容量提示', () => {
+  const expired = input('expired', { phase: 'expired', session: expireLoginSession(session) });
+  expired.view.run!.errorCode = 'queue_timeout';
+  assert.equal(deriveTaskProgress(expired).summary, '排队超时');
+});
+
 test('right-side steps have three fixed titles and progress from submission through QR to script', () => {
   const fresh = input(undefined, { phase: 'idle', session: null, view: emptyTaskRun() });
   assert.deepEqual(deriveTaskProgress(fresh).steps.map(step => step.title), ['提交登录申请', '二维码获取状态', '执行脚本']);

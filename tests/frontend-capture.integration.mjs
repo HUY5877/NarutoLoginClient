@@ -55,7 +55,7 @@ test('抓号接收后立即显示扫码成功，隐藏二维码和刷新，并�
         let body;
         if (url.pathname === '/api/health') body = { ok: true, environment: 'development' };
         else if (url.pathname === '/api/auth/me') body = { user: { id: 'capture-ui-user', username: '测试用户', isAdmin: false } };
-        else if (url.pathname === '/api/task-runs/latest') body = { task: null };
+        else if (url.pathname === '/api/task-runs/latest') body = { task: null, run: null };
         else if (url.pathname === '/api/login-sessions/active') body = { session: failed ? null : session(), showGetButton: failed };
         else if (url.pathname === `/api/login-sessions/${task.id}`) body = session();
         else if (url.pathname === `/api/login-sessions/${task.id}/qr`) return route.fulfill({ status: 200, contentType: 'image/png',

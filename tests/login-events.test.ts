@@ -130,10 +130,60 @@ test('已投递事件在Redis记录丢失后仍阻止新申请，不再次入队
   const f = fixture(), userId = randomUUID();
   const task = await f.service().create(userId, randomUUID());
   f.queue.clear();
-  assert.equal((await f.service().getActive(userId))?.id, task.id);
-  assert.equal((await f.service().create(userId, randomUUID())).id, task.id);
+  await assert.rejects(f.service().getActive(userId), { status: 503, code: 'TASK_STATE_UNAVAILABLE' });
+  await assert.rejects(f.service().create(userId, randomUUID()), { status: 503, code: 'TASK_STATE_UNAVAILABLE' });
   assert.equal(f.submissions.length, 1);
   assert.equal(f.records.size, 1);
+});
+
+test('活动索引丢失且新失败记录遮住旧周胜时，仍复用旧运行任务', async () => {
+  const f = fixture(), userId = randomUUID();
+  const original = await f.service().create(userId, randomUUID(), { mainTask: 'arena_weekly', equipmentStamina: true, secretRealmMode: 'all' });
+  Object.assign(f.queue.get(original.id)!, { status: 'qr_ready', runStatus: 'running_daily', loginAuthorized: true });
+  f.advance(1_200_000);
+  const newer: LoginEvent = { ...f.records.get(original.id)!, id: randomUUID(), requestId: randomUUID(),
+    createdAt: new Date(Date.parse(original.createdAt) + 600_000).toISOString(), status: 'failed', finishedAt: original.createdAt };
+  f.records.set(newer.id, newer);
+  f.queue.set(newer.id, { ...original, id: newer.id, status: 'failed', runStatus: 'failed' });
+  f.store.getRecentForUser = async () => [newer, f.records.get(original.id)!];
+  assert.equal((await f.service().getActive(userId))?.id, original.id);
+  assert.equal((await f.service().create(userId, randomUUID())).id, original.id);
+  assert.equal(f.submissions.length, 1);
+  assert.equal(f.records.size, 2);
+});
+
+test('无活动任务的新申请把可信历史编号交给入队原子复查', async () => {
+  const f = fixture(), userId = randomUUID();
+  const old = await f.service().create(userId, randomUUID());
+  f.queue.get(old.id)!.status = 'failed';
+  f.records.get(old.id)!.status = 'failed';
+  f.records.get(old.id)!.finishedAt = old.createdAt;
+  f.store.getRecentForUser = async () => [f.records.get(old.id)!];
+  const enqueue = f.tasks.enqueue;
+  let checked: readonly string[] = [];
+  f.tasks.enqueue = async (submission, previousTaskIds: readonly string[] = []) => {
+    checked = previousTaskIds;
+    await enqueue(submission);
+  };
+  const next = await f.service().create(userId, randomUUID());
+  assert.notEqual(next.id, old.id);
+  assert.deepEqual(checked, [old.id]);
+});
+
+test('直接恢复未投递申请也携带可信历史，不绕过同账号运行检查', async () => {
+  const f = fixture(), userId = randomUUID();
+  const original = await f.service().create(userId, randomUUID());
+  const pending: LoginEvent = { ...f.records.get(original.id)!, id: randomUUID(), requestId: randomUUID(), dispatchedAt: null };
+  f.records.set(pending.id, pending);
+  f.store.getRecentForUser = async () => [pending, f.records.get(original.id)!];
+  const enqueue = f.tasks.enqueue;
+  let checked: readonly string[] = [];
+  f.tasks.enqueue = async (submission, previousTaskIds: readonly string[] = []) => {
+    checked = previousTaskIds;
+    await enqueue(submission);
+  };
+  await f.service().getForUser(pending.id, userId);
+  assert(checked.includes(original.id));
 });
 
 test('过期事件停止显示；重放旧requestId仍返回过期，新的requestId才创建新任务', async () => {
@@ -196,7 +246,7 @@ test('跨账户不能恢复或读取事件；数据库查询失败不能伪装�
   const task = await f.service().create(userId, randomUUID());
   assert.equal(await f.service().getActive(other), null);
   await assert.rejects(f.service().getForUser(task.id, other), { status: 404 });
-  f.store.getActive = async () => { throw new Error('private connection'); };
+  f.store.getLatestForUser = async () => { throw new Error('private connection'); };
   await assert.rejects(f.service().getActive(userId), { status: 503, code: 'LOGIN_EVENTS_UNAVAILABLE' });
 });
 
@@ -223,11 +273,16 @@ test('主任务和日常选项先持久化，丢失投递响应后的重试和�
   assert.deepEqual((await f.service().getForUser(recovered.id, userId)).userOptions, original);
   assert.equal(f.queue.size, 1);
   assert.equal(f.submissions.length, 2);
-  // Losing Redis must not lose the persisted selection or re-enqueue the task.
+  // Missing state blocks new work; the durable settings survive and are not replayed.
   f.queue.clear();
-  assert.deepEqual((await f.service().getActive(userId))?.userOptions, original);
+  await assert.rejects(f.service().getActive(userId), { status: 503, code: 'TASK_STATE_UNAVAILABLE' });
+  assert.deepEqual(f.records.get(recovered.id)?.userOptions, original);
   assert.equal(f.submissions.length, 2);
   f.advance(120001);
+  await assert.rejects(f.service().create(userId, randomUUID(), selected), { status: 503, code: 'TASK_STATE_UNAVAILABLE' });
+  // A confirmed failure lets a user select fresh settings for the next task.
+  f.records.get(recovered.id)!.status = 'failed';
+  f.records.get(recovered.id)!.finishedAt = new Date().toISOString();
   const next = await f.service().create(userId, randomUUID(), selected);
   assert.notEqual(next.id, recovered.id);
   assert.deepEqual(next.userOptions, { mainTask: 'daily', equipmentStamina: true, secretRealmMode: 'skip' });

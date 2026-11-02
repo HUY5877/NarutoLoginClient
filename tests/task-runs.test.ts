@@ -26,6 +26,9 @@ function fixture() {
     async connect() { ready = true; connections++; },
     async eval(script, options) {
       calls++; operations.push(options);
+      if (script.includes('for i, key in ipairs(KEYS)')) {
+        return options.keys.map(key => key.endsWith(`:runs:${id}`) ? (snapshot as unknown[])[0] : null);
+      }
       assert.match(script, /redis\.call\('XRANGE'/);
       assert.match(script, /redis\.call\('XINFO'/);
       assert.doesNotMatch(script, /redis\.call\('(SET|DEL|XREADGROUP|XDEL|EXPIRE|LPUSH|BRPOP)'/);
@@ -228,9 +231,10 @@ test('管理员日志按有限快照分页读取超过2000条，保留所有级�
 test('管理员日志覆盖所有运行状态，坏内容推进游标，空快照和过期/裁剪明确标记', async () => {
   const f = adminLogsFixture();
   const tail = '1800000000000-2';
-  for (const status of ['starting_emulator', 'opening_game', 'preparing_qr', 'waiting_scan', 'finishing_login',
+  for (const status of ['queued', 'starting_emulator', 'opening_game', 'preparing_qr', 'waiting_scan', 'finishing_login',
     'running_daily', 'completed', 'failed', 'interrupted', 'expired']) {
-    f.setSnapshot([JSON.stringify({ ...run, status }), [log(1), log(2)], tail, '1800000000000-1', 2, 2, 1]);
+    f.setSnapshot([JSON.stringify({ ...run, status, startedAt: status === 'running_daily' ? at : null }),
+      [log(1), log(2)], tail, '1800000000000-1', 2, 2, 1]);
     assert.equal((await f.service.getAdminLogPage(id)).status, status);
   }
   // An older XINFO lacking entries-added uses length; it cannot prove initial trimming.
@@ -374,14 +378,15 @@ test('failure details reject invalid IDs before Redis access and reject cross-ta
   f.service.close();
 });
 
-test('最近任务仅从用户持久记录恢复，二维码过期仍可读取且不访问 Redis 或重新派发', async () => {
+test('最近任务从用户持久记录和 run 一次恢复，二维码过期仍可读取且不重新派发', async () => {
   const f = fixture();
   const latest = await f.service.getLatest(owner);
   assert.deepEqual(latest, { task: { id, createdAt: event.createdAt, expiresAt: event.expiresAt, status: 'expired',
-    userOptions: { equipmentStamina: true, secretRealmMode: 'all' }, loginType: 'android_qq' } });
-  assert.deepEqual(await f.service.getLatest('other-user'), { task: null });
-  assert.equal(f.calls, 0);
-  assert.equal(f.connections, 0);
+    userOptions: { equipmentStamina: true, secretRealmMode: 'all' }, loginType: 'android_qq' },
+    run: { taskId: id, status: 'running_daily', updatedAt: at, startedAt: at, finishedAt: null, actionIndex: 2, actionTotal: 38 } });
+  assert.deepEqual(await f.service.getLatest('other-user'), { task: null, run: null });
+  assert.equal(f.calls, 1);
+  assert.equal(f.connections, 1);
   assert.doesNotMatch(JSON.stringify(latest), /accessToken|requestId|userId/);
 });
 
@@ -523,10 +528,10 @@ test('进度字段必须成对且索引不超过总数，日志长度按 Unicode
   assert.equal([...(await f.service.getEvents(id, owner)).logs[0].message].length, 1000);
 });
 
-test('未配置 Redis 不影响数据库恢复，超时中止读取并释放连接', async () => {
+test('未配置 Redis 不能把数据库恢复当完整状态，超时中止读取并释放连接', async () => {
   const f = fixture();
   const missing = new TaskRunService({ ...f.config, redisUrl: undefined }, { store: f.store });
-  assert.equal((await missing.getLatest(owner)).task?.id, id);
+  await assert.rejects(missing.getLatest(owner), { code: 'REDIS_NOT_CONFIGURED' });
   await assert.rejects(missing.getEvents(id, owner), { code: 'REDIS_NOT_CONFIGURED' });
   let signal: AbortSignal | undefined;
   f.driver.eval = async (_script, _options, current) => { signal = current; return await new Promise(() => {}); };
