@@ -57,9 +57,10 @@ export function AdminTaskLogDetails({ task, onAccessLost }: { task: DailyTask; o
           </ol>
         </div>}
         {!loading && !error && !logs.length && <p className="text-muted-foreground">暂无已保留的执行日志，记录可能尚未上报或已过期。</p>}
-        {!error && <Button type="button" variant="outline" className="mt-4 min-h-11 w-full" disabled={loading} onClick={loadMore}>
-          {loading && <Spinner aria-hidden="true" />}{logs.length ? '继续读取' : '读取日志'}
-        </Button>}
+        {!error && loading && logs.length > 0 && <p role="status" className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
+          <Spinner aria-hidden="true" />正在读取更多日志…
+        </p>}
+        {!error && !loading && <p className="mt-4 text-xs text-muted-foreground">继续向下滚动可刷新日志</p>}
       </div>
     </DialogContent>
   </Dialog>;

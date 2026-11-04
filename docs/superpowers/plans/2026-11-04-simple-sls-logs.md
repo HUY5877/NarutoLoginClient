@@ -50,7 +50,7 @@
 **Files:** `src/frontend/lib/admin-task-logs.ts`、`hooks/use-admin-task-logs.ts`、`components/admin-task-log-details.tsx`、`lib/task-run.ts`、`components/task-run-panel.tsx` 与前端/浏览器测试。
 
 - [ ] 先补空页后再取到日志、追加去重、关闭取消、向下滚动触发的失败测试。
-- [ ] 移除快照和 hasMore 对管理员读取的限制，用户滚动到底继续刷新；保留手动读取入口和错误重试。
+- [ ] 移除快照和 hasMore 对管理员读取的限制，用户滚动到底继续刷新；底部只显示滚动提示，不显示常驻读取按钮，保留错误重试。
 - [ ] 普通任务日志保留执行中进度更新，结束后用户仍能向下刷新迟到日志；不因缺少上传水位而等待。
 - [ ] 更新浏览器假接口和交互测试，覆盖鼠标、触屏、键盘、空结果和失败保留旧日志。
 

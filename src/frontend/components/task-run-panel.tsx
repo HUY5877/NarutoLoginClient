@@ -97,8 +97,8 @@ export function TaskRunPanel({ view, retry }: { view: TaskRunView; retry: () => 
               {!view.logs.length && !view.unavailable && <p className="text-center text-sm leading-6 text-muted-foreground">
               {view.loading ? '正在读取执行记录…' : view.run?.logSource === 'disabled' ? '本次任务未启用执行日志记录。' : bad ? '本次任务未留下详细执行日志。' : view.task ? '任务开始后，执行进度和日志会显示在这里。' : '生成登录二维码后，在这里查看本次任务的执行进度。'}
               </p>}
+              {canRead && !view.error && <p className="mt-3 text-xs text-muted-foreground">继续向下滚动可刷新日志</p>}
             </div>
-            {canRead && !view.error && <Button type="button" variant="outline" className="min-h-11 w-full" onClick={retry}>继续读取日志</Button>}
             {view.run?.status === 'running_daily' && <p className="text-xs leading-5 text-muted-foreground">二维码到期不会停止已开始的{arena ? '周胜任务' : '日常任务'}，执行记录会继续更新。</p>}
           </>}
         </div>
