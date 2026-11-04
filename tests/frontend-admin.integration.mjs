@@ -45,7 +45,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       const page = await context.newPage(); page.setDefaultTimeout(8_000);
       // Only this isolated page's clock changes: Beijing is already October 8 while UTC is October 7.
       await page.clock.setFixedTime(new Date('2026-10-07T16:30:00.000Z'));
-      const state = { users: [structuredClone(admin), structuredClone(user)], mutations: [], adminReads: [], errors: [], access: isAdmin, failDaily: false, extraDaily: [],
+      const state = { users: [structuredClone(admin), structuredClone(user)], mutations: [], adminReads: [], runReads: [], runReplies: {}, runResponseOverride: null, runGate: null, listGate: null, errors: [], access: isAdmin, failDaily: false, extraDaily: [],
         failureDetails: { errorCode: 'daily_failed', errorMessage: '日常任务执行失败，请查看执行日志。' }, detailStatus: 200, detailIdentityOverride: null, moreGate: null,
         detailResponse: { taskId: 'failed', errorCode: 'daily_failed', errorMessage: '具体错误：VisualError: 未能识别装备材料页面；执行阶段 daily 失败',
           actionIndex: 18, actionTotal: 35, actionName: '装备进阶', truncated: false,
@@ -66,8 +66,8 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
         if (url.pathname === '/api/task-runs/latest') return reply({ task: null, run: null });
         if (url.pathname.startsWith('/api/admin/')) {
           if (!state.access) return reply({ error: '需要管理员权限。' }, 403);
-          if (method === 'GET') state.adminReads.push(url.pathname + url.search);
-          else state.mutations.push({ path: url.pathname, method, body: route.request().postDataJSON() });
+          if (method === 'GET' && url.pathname !== '/api/admin/daily-tasks/runs') state.adminReads.push(url.pathname + url.search);
+          else if (method !== 'GET') state.mutations.push({ path: url.pathname, method, body: route.request().postDataJSON() });
           if (url.pathname.endsWith('/logs')) {
             if (url.searchParams.get('after') !== '0-0' && state.moreGate) await state.moreGate;
             if (state.detailStatus !== 200) return reply({ error: '任务日志暂时不可用，请稍后重试。' }, state.detailStatus);
@@ -93,16 +93,24 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
               total: month === '2020-01' ? 0 : 2, totalRequests: month === '2020-01' ? 0 : 42,
               month, sort, page: 1, pageSize: 20, timeZone: 'Asia/Shanghai' });
           }
+          if (url.pathname === '/api/admin/daily-tasks/runs') {
+            const ids = (url.searchParams.get('ids') || '').split(',');
+            state.runReads.push(ids);
+            const items = ids.map(id => ({ id, run: state.runReplies[id] ?? null }));
+            if (state.runGate) await state.runGate;
+            return reply(state.runResponseOverride ?? { items });
+          }
           if (url.pathname === '/api/admin/daily-tasks') {
+            if (state.listGate) await state.listGate;
             if (state.failDaily) return reply({ error: '任务日志暂时不可用，请稍后重试。' }, 503);
-            const selectedDate = url.searchParams.get('date'), page = Number(url.searchParams.get('page') || 1);
+            const selectedDate = url.searchParams.get('date');
             const mainTask = url.searchParams.get('mainTask') || 'daily';
             const items = [task, { ...task, id: 'running', username: 'Sasuke_02', scannedAt: null, completedAt: null, status: 'running_daily' },
               { ...task, id: 'failed', username: 'Sakura_03', completedAt: null, status: 'failed', ...state.failureDetails }, ...state.extraDaily]
               .map(item => ({ ...item, note: state.users.find(account => account.username === item.username)?.note ?? item.note ?? '' }))
               .filter(item => item.mainTask === mainTask)
               .filter(item => !selectedDate || new Date(Date.parse(item.requestedAt) + 8 * 60 * 60 * 1000).toISOString().slice(0, 10) === selectedDate);
-            return reply({ items: items.slice((page - 1) * 20, page * 20), total: items.length, page, pageSize: 20, mainTask,
+            return reply({ items, total: items.length, page: 1, pageSize: 20, mainTask,
               ...(selectedDate ? { selectedDate } : {}), startDate: '2026-10-02', date: '2026-10-08', timeZone: 'Asia/Shanghai' });
           }
           if (url.pathname === '/api/admin/users' && method === 'GET') {
@@ -139,6 +147,217 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       return { context, page, state, async open(name) { await page.getByRole('button', { name: /^(管理员|管理员账号)$/ }).click(); await page.getByRole('menuitem', { name }).click(); },
         async close() { await context.close(); assert.deepEqual(state.errors, []); } };
     }
+
+
+    await run('45 applications load once and local pages request only their runs, including revisits and refresh', async () => {
+      const f = await fixture();
+      try {
+        f.state.extraDaily.push(...Array.from({ length: 42 }, (_, index) => ({ ...task,
+          id: `30000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`, username: `Cached_${index}`,
+          scannedAt: null, completedAt: null, status: 'queued' })));
+        await f.open('近七天扫码情况');
+        const dialog = f.page.getByRole('dialog', { name: '近七天扫码情况', exact: true });
+        await dialog.getByText('共 45 条 · 第 1 页 / 3 页', { exact: true }).waitFor();
+        await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
+        assert.equal(f.state.adminReads.length, 1);
+        assert.equal(new URL(f.state.adminReads[0], origin).searchParams.has('page'), false);
+        assert.equal(await dialog.getByRole('row').count(), 21);
+        assert.deepEqual(f.state.runReads.map(ids => ids.length), [20]);
+        const firstIds = f.state.runReads[0];
+        await dialog.getByRole('button', { name: '下一页', exact: true }).click();
+        await dialog.getByText('共 45 条 · 第 2 页 / 3 页', { exact: true }).waitFor();
+        await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
+        assert.equal(f.state.adminReads.length, 1);
+        assert.equal(f.state.runReads[1].length, 20);
+        assert.equal(f.state.runReads[1].some(id => firstIds.includes(id)), false);
+        await dialog.getByRole('button', { name: '下一页', exact: true }).click();
+        await dialog.getByText('共 45 条 · 第 3 页 / 3 页', { exact: true }).waitFor();
+        await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
+        assert.equal(await dialog.getByRole('row').count(), 6);
+        assert.deepEqual(f.state.runReads.map(ids => ids.length), [20, 20, 5]);
+        const changed = f.state.extraDaily[17];
+        f.state.runReplies[changed.id] = { taskId: changed.id, status: 'opening_game', startedAt: task.requestedAt, finishedAt: null };
+        await dialog.getByRole('button', { name: '上一页', exact: true }).click();
+        await dialog.getByText('共 45 条 · 第 2 页 / 3 页', { exact: true }).waitFor();
+        await dialog.getByRole('row').filter({ hasText: changed.username }).getByText('打开游戏', { exact: true }).waitFor();
+        assert.deepEqual(f.state.runReads[3], f.state.runReads[1]);
+        assert.equal(f.state.adminReads.length, 1);
+        const refreshedRuns = f.page.waitForResponse(response => response.url().includes('/daily-tasks/runs?'));
+        await dialog.getByRole('button', { name: '刷新', exact: true }).click(); await refreshedRuns;
+        await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
+        assert.equal(f.state.adminReads.length, 2);
+        assert.equal(f.state.runReads.length, 5);
+      } finally { await f.close(); }
+    });
+
+    await run('late page runs are canceled, cannot replace another page and malformed IDs are rejected', async () => {
+      const f = await fixture();
+      let release;
+      try {
+        f.state.extraDaily.push(...Array.from({ length: 42 }, (_, index) => ({ ...task,
+          id: `40000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`, username: `Late_${index}`,
+          scannedAt: null, completedAt: null, status: 'queued' })));
+        await f.open('近七天扫码情况');
+        const dialog = f.page.getByRole('dialog', { name: '近七天扫码情况', exact: true });
+        await dialog.getByText('共 45 条 · 第 1 页 / 3 页', { exact: true }).waitFor();
+        await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
+        f.state.runGate = new Promise(resolve => { release = resolve; });
+        const read = f.page.waitForRequest(request => request.url().includes('/daily-tasks/runs?'));
+        await dialog.getByRole('button', { name: '下一页', exact: true }).click(); await read;
+        const aborted = f.page.waitForEvent('requestfailed', request => request.url().includes('/daily-tasks/runs?'));
+        f.state.runGate = null;
+        await dialog.getByRole('button', { name: '下一页', exact: true }).click(); await aborted;
+        await dialog.getByText('共 45 条 · 第 3 页 / 3 页', { exact: true }).waitFor();
+        await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
+        release();
+        assert.equal(f.state.adminReads.length, 1);
+        assert.equal(await dialog.getByRole('row').count(), 6);
+        assert.doesNotMatch(await dialog.innerText(), /Late_17\b/);
+        f.state.runResponseOverride = { items: f.state.runReads[0].map(id => ({ id, run: null })) };
+        await dialog.getByRole('button', { name: '上一页', exact: true }).click();
+        await dialog.getByRole('alert').filter({ hasText: '返回信息异常' }).waitFor();
+        assert.match(await dialog.innerText(), /Late_17/);
+        assert.equal(f.state.adminReads.length, 1);
+      } finally { release?.(); await f.close(); }
+    });
+
+    await run('date and type changes clear old lists, empty lists skip runs and close cancels pending reads', async () => {
+      const f = await fixture();
+      let release;
+      try {
+        await f.open('近七天扫码情况');
+        const dialog = f.page.getByRole('dialog', { name: '近七天扫码情况', exact: true });
+        await dialog.getByText('共 3 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
+        await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
+        const runs = f.state.runReads.length;
+        await dialog.getByRole('combobox', { name: '任务类型', exact: true }).click();
+        await f.page.getByRole('option', { name: '刷周胜', exact: true }).click();
+        await dialog.getByText('这一天没有周胜申请', { exact: true }).waitFor();
+        assert.equal(f.state.runReads.length, runs);
+        assert.doesNotMatch(await dialog.innerText(), /Naruto_01|Sasuke_02|Sakura_03/);
+        f.state.listGate = new Promise(resolve => { release = resolve; });
+        const read = f.page.waitForRequest(request => new URL(request.url()).pathname === '/api/admin/daily-tasks');
+        await dialog.getByRole('combobox', { name: '查看日期', exact: true }).click();
+        await f.page.getByRole('option', { name: '2026-10-07（昨天）', exact: true }).click(); await read;
+        const aborted = f.page.waitForEvent('requestfailed', request => new URL(request.url()).pathname === '/api/admin/daily-tasks');
+        await dialog.getByRole('button', { name: 'Close', exact: true }).click(); await aborted;
+        await dialog.waitFor({ state: 'hidden' });
+        f.state.listGate = null; release();
+        const reads = f.state.adminReads.length;
+        await f.open('近七天扫码情况');
+        await dialog.getByText('共 3 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
+        await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
+        assert.equal(f.state.adminReads.length, reads + 1);
+        assert.equal(f.state.runReads.length, runs + 1);
+      } finally { release?.(); await f.close(); }
+    });
+
+    await run('closing cancels pending runs and a forbidden runs response closes the list and clears cached users', async () => {
+      const f = await fixture();
+      let release;
+      try {
+        f.state.runGate = new Promise(resolve => { release = resolve; });
+        const read = f.page.waitForRequest(request => request.url().includes('/daily-tasks/runs?'));
+        await f.open('近七天扫码情况'); await read;
+        const dialog = f.page.getByRole('dialog', { name: '近七天扫码情况', exact: true });
+        const aborted = f.page.waitForEvent('requestfailed', request => request.url().includes('/daily-tasks/runs?'));
+        await dialog.getByRole('button', { name: 'Close', exact: true }).click(); await aborted;
+        await dialog.waitFor({ state: 'hidden' });
+        f.state.runGate = null; release();
+        await f.open('近七天扫码情况');
+        await dialog.getByText('共 3 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
+        await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
+        await f.page.route('**/api/admin/daily-tasks/runs?*', route => route.fulfill({ status: 403, json: { error: '需要管理员权限。' } }));
+        await dialog.getByRole('button', { name: '刷新', exact: true }).click();
+        await dialog.waitFor({ state: 'hidden' });
+        assert.equal(await f.page.getByRole('cell', { name: user.username, exact: true }).count(), 0);
+        assert.equal(await f.page.getByRole('button', { name: '管理员', exact: true }).count(), 0);
+      } finally { release?.(); await f.close(); }
+    });
+
+    await run('switching task type cancels old runs and changing date cancels the previous list without leaking records', async () => {
+      const f = await fixture();
+      let releaseRuns, releaseList;
+      try {
+        f.state.runGate = new Promise(resolve => { releaseRuns = resolve; });
+        const firstRun = f.page.waitForRequest(request => request.url().includes('/daily-tasks/runs?'));
+        await f.open('近七天扫码情况'); await firstRun;
+        const dialog = f.page.getByRole('dialog', { name: '近七天扫码情况', exact: true });
+        const abortedRun = f.page.waitForEvent('requestfailed', request => request.url().includes('/daily-tasks/runs?'));
+        await dialog.getByRole('combobox', { name: '任务类型', exact: true }).click();
+        await f.page.getByRole('option', { name: '刷周胜', exact: true }).click(); await abortedRun;
+        await dialog.getByText('这一天没有周胜申请', { exact: true }).waitFor();
+        f.state.runGate = null; releaseRuns();
+        assert.doesNotMatch(await dialog.innerText(), /Naruto_01|Sasuke_02|Sakura_03/);
+        f.state.listGate = new Promise(resolve => { releaseList = resolve; });
+        const firstList = f.page.waitForRequest(request => new URL(request.url()).pathname === '/api/admin/daily-tasks');
+        await dialog.getByRole('combobox', { name: '任务类型', exact: true }).click();
+        await f.page.getByRole('option', { name: '刷日常', exact: true }).click(); await firstList;
+        assert.doesNotMatch(await dialog.innerText(), /Naruto_01|Sasuke_02|Sakura_03/);
+        const abortedList = f.page.waitForEvent('requestfailed', request => new URL(request.url()).pathname === '/api/admin/daily-tasks');
+        f.state.listGate = null;
+        await dialog.getByRole('combobox', { name: '查看日期', exact: true }).click();
+        await f.page.getByRole('option', { name: '2026-10-07（昨天）', exact: true }).click(); await abortedList;
+        await dialog.getByText('这一天没有日常申请', { exact: true }).waitFor();
+        releaseList();
+        assert.doesNotMatch(await dialog.innerText(), /Naruto_01|Sasuke_02|Sakura_03/);
+        assert.equal(f.state.runReads.length, 1, 'Empty replacement filters do not start status reads');
+      } finally { releaseRuns?.(); releaseList?.(); await f.close(); }
+    });
+
+    await run('refresh keeps the last nonempty run while replacing request metadata and resets that cache on close', async () => {
+      const f = await fixture();
+      const id = '50000000-0000-4000-8000-000000000001';
+      try {
+        const cached = { ...task, id, username: 'Refresh_Metadata', note: '原备注', status: 'queued', scannedAt: null, completedAt: null };
+        f.state.extraDaily.push(cached);
+        f.state.runReplies[id] = { taskId: id, status: 'completed', startedAt: task.requestedAt,
+          authorizedAt: '2026-10-08T01:05:00.000Z', finishedAt: '2026-10-08T01:10:00.000Z' };
+        await f.open('近七天扫码情况');
+        const dialog = f.page.getByRole('dialog', { name: '近七天扫码情况', exact: true });
+        await dialog.getByRole('row').filter({ hasText: '原备注' }).getByText('已完成', { exact: true }).waitFor();
+        assert.match(await dialog.getByRole('row').filter({ hasText: '原备注' }).innerText(), /09:05:00.*09:10:00/s);
+        cached.note = '刷新后的备注'; cached.username = 'Fresh_Username'; delete f.state.runReplies[id];
+        const runs = f.page.waitForResponse(response => response.url().includes('/daily-tasks/runs?'));
+        await dialog.getByRole('button', { name: '刷新', exact: true }).click(); await runs;
+        await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
+        const updated = dialog.getByRole('row').filter({ hasText: '刷新后的备注' });
+        assert.match(await updated.innerText(), /已完成/);
+        assert.match(await updated.innerText(), /09:05:00.*09:10:00/s);
+        assert.equal(await updated.getByRole('button', { name: 'Fresh_Username的日志详情', exact: true }).count(), 1);
+        assert.equal(await dialog.getByText('原备注', { exact: true }).count(), 0);
+        await dialog.getByRole('button', { name: 'Close', exact: true }).click(); await dialog.waitFor({ state: 'hidden' });
+        await f.open('近七天扫码情况');
+        await dialog.getByRole('row').filter({ hasText: '刷新后的备注' }).getByText('排队中', { exact: true }).waitFor();
+      } finally { await f.close(); }
+    });
+
+    await run('refresh clamps the stored page so later list growth does not jump back to the removed page', async () => {
+      const f = await fixture();
+      try {
+        f.state.extraDaily.push(...Array.from({ length: 38 }, (_, index) => ({ ...task,
+          id: `60000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`, username: `Clamp_${index}` })));
+        await f.open('近七天扫码情况');
+        const dialog = f.page.getByRole('dialog', { name: '近七天扫码情况', exact: true });
+        await dialog.getByText('共 41 条 · 第 1 页 / 3 页', { exact: true }).waitFor();
+        await dialog.getByRole('button', { name: '下一页', exact: true }).click();
+        await dialog.getByText('共 41 条 · 第 2 页 / 3 页', { exact: true }).waitFor();
+        await dialog.getByRole('button', { name: '下一页', exact: true }).click();
+        await dialog.getByText('共 41 条 · 第 3 页 / 3 页', { exact: true }).waitFor();
+        await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
+        const removed = f.state.extraDaily.pop();
+        let runs = f.page.waitForResponse(response => response.url().includes('/daily-tasks/runs?'));
+        await dialog.getByRole('button', { name: '刷新', exact: true }).click(); await runs;
+        await dialog.getByText('共 40 条 · 第 2 页 / 2 页', { exact: true }).waitFor();
+        await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
+        f.state.extraDaily.push(removed);
+        runs = f.page.waitForResponse(response => response.url().includes('/daily-tasks/runs?'));
+        await dialog.getByRole('button', { name: '刷新', exact: true }).click(); await runs;
+        await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
+        assert.match(await dialog.innerText(), /共 41 条 · 第 2 页 \/ 3 页/);
+        assert.equal(f.state.runReads.at(-1).length, 20);
+      } finally { await f.close(); }
+    });
 
     await run('account status filters combine with search, preserve state and recover from editing the final page on desktop and mobile', async () => {
       for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
@@ -495,13 +714,13 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
           const datePicker = dialog.getByRole('combobox', { name: '查看日期', exact: true });
           await dialog.getByText('共 3 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
           assert.equal(await taskPicker.innerText(), '刷日常');
-          assert.deepEqual(f.state.adminReads, ['/api/admin/daily-tasks?page=1&date=2026-10-08&mainTask=daily']);
+          assert.deepEqual(f.state.adminReads, ['/api/admin/daily-tasks?date=2026-10-08&mainTask=daily']);
           assert.doesNotMatch(await dialog.innerText(), /Weekly_/);
           await taskPicker.click();
           assert.deepEqual(await f.page.getByRole('option').allTextContents(), ['刷日常', '刷周胜']);
           await f.page.getByRole('option', { name: '刷周胜', exact: true }).click();
           await dialog.getByText('共 21 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
-          assert.equal(f.state.adminReads.at(-1), '/api/admin/daily-tasks?page=1&date=2026-10-08&mainTask=arena_weekly');
+          assert.equal(f.state.adminReads.filter(path => path.startsWith('/api/admin/daily-tasks?')).at(-1), '/api/admin/daily-tasks?date=2026-10-08&mainTask=arena_weekly');
           assert.match(await dialog.innerText(), /Weekly_0/);
           assert.doesNotMatch(await dialog.innerText(), /Naruto_01|Sasuke_02|Sakura_03|Weekly_Yesterday/);
           await dialog.getByText('刷周胜中', { exact: true }).waitFor();
@@ -528,10 +747,10 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
           await details.waitFor({ state: 'hidden' });
           await dialog.getByRole('button', { name: '下一页', exact: true }).click();
           await dialog.getByText('共 21 条 · 第 2 页 / 2 页', { exact: true }).waitFor();
-          assert.equal(f.state.adminReads.at(-1), '/api/admin/daily-tasks?page=2&date=2026-10-08&mainTask=arena_weekly');
+          assert.equal(f.state.adminReads.filter(path => path.startsWith('/api/admin/daily-tasks?')).at(-1), '/api/admin/daily-tasks?date=2026-10-08&mainTask=arena_weekly');
           await taskPicker.click(); await f.page.getByRole('option', { name: '刷日常', exact: true }).click();
           await dialog.getByText('共 3 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
-          assert.equal(f.state.adminReads.at(-1), '/api/admin/daily-tasks?page=1&date=2026-10-08&mainTask=daily');
+          assert.equal(f.state.adminReads.filter(path => path.startsWith('/api/admin/daily-tasks?')).at(-1), '/api/admin/daily-tasks?date=2026-10-08&mainTask=daily');
           assert.equal(await datePicker.innerText(), '2026-10-08（今天）');
           await taskPicker.click(); await f.page.getByRole('option', { name: '刷周胜', exact: true }).click();
           await dialog.getByText('共 21 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
@@ -539,16 +758,16 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
           await dialog.getByText('共 21 条 · 第 2 页 / 2 页', { exact: true }).waitFor();
           await datePicker.click(); await f.page.getByRole('option', { name: '2026-10-07（昨天）', exact: true }).click();
           await dialog.getByText('2026-10-07 · 1 次申请', { exact: true }).waitFor();
-          assert.equal(f.state.adminReads.at(-1), '/api/admin/daily-tasks?page=1&date=2026-10-07&mainTask=arena_weekly');
+          assert.equal(f.state.adminReads.filter(path => path.startsWith('/api/admin/daily-tasks?')).at(-1), '/api/admin/daily-tasks?date=2026-10-07&mainTask=arena_weekly');
           assert.match(await dialog.innerText(), /Weekly_Yesterday/);
           await dialog.getByRole('button', { name: '刷新', exact: true }).click();
           await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
-          assert.equal(f.state.adminReads.at(-1), '/api/admin/daily-tasks?page=1&date=2026-10-07&mainTask=arena_weekly');
+          assert.equal(f.state.adminReads.filter(path => path.startsWith('/api/admin/daily-tasks?')).at(-1), '/api/admin/daily-tasks?date=2026-10-07&mainTask=arena_weekly');
           await datePicker.click(); await f.page.getByRole('option', { name: '2026-10-06', exact: true }).click();
           await dialog.getByText('这一天没有周胜申请', { exact: true }).waitFor();
           await datePicker.click(); await f.page.getByRole('option', { name: '全部七天', exact: true }).click();
           await dialog.getByText('共 22 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
-          assert.equal(f.state.adminReads.at(-1), '/api/admin/daily-tasks?page=1&mainTask=arena_weekly');
+          assert.equal(f.state.adminReads.filter(path => path.startsWith('/api/admin/daily-tasks?')).at(-1), '/api/admin/daily-tasks?mainTask=arena_weekly');
           await dialog.getByRole('button', { name: '下一页', exact: true }).click();
           await dialog.getByText('共 22 条 · 第 2 页 / 2 页', { exact: true }).waitFor();
           assert.match(await dialog.innerText(), /Weekly_Yesterday/);
@@ -556,7 +775,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
           await taskPicker.click(); await f.page.getByRole('option', { name: '刷日常', exact: true }).click();
           await dialog.getByText('共 3 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
           assert.equal(await datePicker.innerText(), '全部七天');
-          assert.deepEqual(f.state.adminReads.slice(readsBeforeTypeChange), ['/api/admin/daily-tasks?page=1&mainTask=daily']);
+          assert.deepEqual(f.state.adminReads.slice(readsBeforeTypeChange), ['/api/admin/daily-tasks?mainTask=daily']);
           f.state.extraDaily = [];
           await taskPicker.click(); await f.page.getByRole('option', { name: '刷周胜', exact: true }).click();
           await dialog.getByText('近七天还没有周胜申请', { exact: true }).waitFor();
@@ -566,7 +785,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
           await dialog.getByText('共 3 条 · 第 1 页 / 1 页', { exact: true }).waitFor();
           assert.equal(await taskPicker.innerText(), '刷日常');
           assert.equal(await datePicker.innerText(), '2026-10-08（今天）');
-          assert.deepEqual(f.state.adminReads.slice(readsBeforeReopen), ['/api/admin/daily-tasks?page=1&date=2026-10-08&mainTask=daily']);
+          assert.deepEqual(f.state.adminReads.slice(readsBeforeReopen), ['/api/admin/daily-tasks?date=2026-10-08&mainTask=daily']);
           assert.deepEqual(f.state.mutations, []);
         } finally { await f.close(); }
       }
@@ -606,45 +825,45 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
           await f.open('近七天扫码情况');
           const dialog = f.page.getByRole('dialog', { name: '近七天扫码情况' });
           await dialog.getByText('共 24 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
-          assert.deepEqual(f.state.adminReads, ['/api/admin/daily-tasks?page=1&date=2026-10-08&mainTask=daily'], 'Opening must request today directly without an all-seven-days request');
+          assert.deepEqual(f.state.adminReads, ['/api/admin/daily-tasks?date=2026-10-08&mainTask=daily'], 'Opening must request today directly without an all-seven-days request');
           const picker = dialog.getByRole('combobox', { name: '查看日期' });
           assert.equal(await picker.innerText(), '2026-10-08（今天）');
           assert.match(await dialog.innerText(), /2026-10-08 · 24 次申请/);
           assert.doesNotMatch(await dialog.innerText(), /Yesterday_User/);
           await dialog.getByRole('button', { name: '下一页', exact: true }).click();
           await dialog.getByText('共 24 条 · 第 2 页 / 2 页', { exact: true }).waitFor();
-          assert.equal(f.state.adminReads.at(-1), '/api/admin/daily-tasks?page=2&date=2026-10-08&mainTask=daily');
+          assert.equal(f.state.adminReads.filter(path => path.startsWith('/api/admin/daily-tasks?')).at(-1), '/api/admin/daily-tasks?date=2026-10-08&mainTask=daily');
           await picker.click();
           assert.deepEqual(await f.page.getByRole('option').allTextContents(), ['全部七天', '2026-10-08（今天）', '2026-10-07（昨天）',
             '2026-10-06', '2026-10-05', '2026-10-04', '2026-10-03', '2026-10-02']);
           await f.page.screenshot({ animations: 'disabled', path: path.join(repository, `.data/admin-preview/date-picker-${viewport.width < 768 ? 'mobile' : 'desktop'}.png`) });
           await f.page.getByRole('option', { name: '2026-10-07（昨天）', exact: true }).click();
           await dialog.getByText('2026-10-07 · 1 次申请', { exact: true }).waitFor();
-          assert.match(f.state.adminReads.at(-1), /^\/api\/admin\/daily-tasks\?page=1&date=2026-10-07&mainTask=daily$/);
+          assert.match(f.state.adminReads.at(-1), /^\/api\/admin\/daily-tasks\?date=2026-10-07&mainTask=daily$/);
           assert.match(await dialog.innerText(), /Yesterday_User/);
           assert.doesNotMatch(await dialog.innerText(), /Naruto_01|Sakura_03|Extra_/);
           assert.equal(await dialog.getByRole('button', { name: '下一页', exact: true }).isDisabled(), true);
           await dialog.getByRole('button', { name: '刷新', exact: true }).click();
           await f.page.waitForFunction(() => document.querySelector('[aria-busy="true"]') === null);
-          assert.match(f.state.adminReads.at(-1), /page=1&date=2026-10-07&mainTask=daily$/);
+          assert.match(f.state.adminReads.at(-1), /date=2026-10-07&mainTask=daily$/);
           assert.equal(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth), true);
           await f.page.screenshot({ animations: 'disabled', path: path.join(repository, `.data/admin-preview/daily-filtered-${viewport.width < 768 ? 'mobile' : 'desktop'}.png`) });
           await picker.click(); await f.page.getByRole('option', { name: '2026-10-06', exact: true }).click();
           await dialog.getByText('这一天没有日常申请', { exact: true }).waitFor();
           await picker.click(); await f.page.getByRole('option', { name: '全部七天', exact: true }).click();
           await dialog.getByText('共 25 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
-          assert.equal(f.state.adminReads.at(-1), '/api/admin/daily-tasks?page=1&mainTask=daily');
+          assert.equal(f.state.adminReads.filter(path => path.startsWith('/api/admin/daily-tasks?')).at(-1), '/api/admin/daily-tasks?mainTask=daily');
           await dialog.getByRole('button', { name: '下一页', exact: true }).click();
           await dialog.getByText('共 25 条 · 第 2 页 / 2 页', { exact: true }).waitFor();
           assert.match(await dialog.innerText(), /Yesterday_User/);
-          assert.equal(f.state.adminReads.at(-1), '/api/admin/daily-tasks?page=2&mainTask=daily');
+          assert.equal(f.state.adminReads.filter(path => path.startsWith('/api/admin/daily-tasks?')).at(-1), '/api/admin/daily-tasks?mainTask=daily');
           await dialog.getByRole('button', { name: 'Close', exact: true }).click();
           await dialog.waitFor({ state: 'hidden' });
           const readsBeforeReopen = f.state.adminReads.length;
           await f.open('近七天扫码情况');
           await dialog.getByText('共 24 条 · 第 1 页 / 2 页', { exact: true }).waitFor();
           assert.equal(await picker.innerText(), '2026-10-08（今天）');
-          assert.deepEqual(f.state.adminReads.slice(readsBeforeReopen), ['/api/admin/daily-tasks?page=1&date=2026-10-08&mainTask=daily'], 'Reopening resets both date and page before requesting data');
+          assert.deepEqual(f.state.adminReads.slice(readsBeforeReopen), ['/api/admin/daily-tasks?date=2026-10-08&mainTask=daily'], 'Reopening resets both date and page before requesting data');
           assert.deepEqual(f.state.mutations, []);
         } finally { await f.close(); }
       }

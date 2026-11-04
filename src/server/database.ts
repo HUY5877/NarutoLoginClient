@@ -53,7 +53,7 @@ export interface AdminStore {
   createUser(adminId: string, user: StoredUser & { note?: string }, now: Date): Promise<ManagedUser>;
   updateUser(adminId: string, id: string, changes: UserChanges, now: Date): Promise<ManagedUser>;
   deleteUser(adminId: string, id: string): Promise<void>;
-  listDailyEvents(start: Date, end: Date, offset: number, limit: number, mainTask?: MainTask): Promise<{ items: DailyEvent[]; total: number }>;
+  listDailyEvents(start: Date, end: Date, mainTask?: MainTask): Promise<{ items: DailyEvent[]; total: number }>;
   listMonthlyStats(start: Date, end: Date, sort: MonthlySort, offset: number, limit: number): Promise<{ items: MonthlyUserStats[]; total: number; totalRequests: number }>;
 }
 export class UserManagementError extends Error {
@@ -395,27 +395,22 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
     });
   }
 
-  async listDailyEvents(start: Date, end: Date, offset: number, limit: number, mainTask: MainTask = 'daily') {
+  async listDailyEvents(start: Date, end: Date, mainTask: MainTask = 'daily') {
     await this.initialize();
-    return this.transaction(async client => {
-      await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
-      const count = await client.query<{ total: number }>(`SELECT count(*)::int AS total FROM naruto_login.login_events
-        WHERE created_at >= $1 AND created_at < $2 AND COALESCE(user_options ->> 'mainTask', 'daily') = $3`, [start, end, mainTask]);
-      const result = await client.query<Omit<DailyEvent, 'createdAt' | 'expiresAt' | 'userOptions'> & {
-        createdAt: Timestamp; expiresAt: Timestamp; userOptions: unknown;
-      }>(
-        `SELECT e.id, u.username, u.admin_note AS note, e.created_at AS "createdAt", e.expires_at AS "expiresAt", e.status, e.login_type AS "loginType",
-           e.user_options AS "userOptions"
-         FROM naruto_login.login_events e JOIN naruto_login.users u ON u.id = e.user_id
-         WHERE e.created_at >= $1 AND e.created_at < $2 AND COALESCE(e.user_options ->> 'mainTask', 'daily') = $3
-         ORDER BY e.created_at DESC, e.id DESC LIMIT $4 OFFSET $5`, [start, end, mainTask, limit, offset]);
-      return { items: result.rows.map(row => {
-        const userOptions = parseUserOptions(row.userOptions);
-        if (!userOptions) throw new Error('Stored daily event user options are invalid');
-        return { id: row.id, username: row.username, note: row.note ?? '', status: row.status, loginType: row.loginType ?? DEFAULT_LOGIN_TYPE, userOptions,
-          createdAt: new Date(row.createdAt).toISOString(), expiresAt: new Date(row.expiresAt).toISOString() };
-      }), total: count.rows[0].total };
-    });
+    const result = await this.pool.query<Omit<DailyEvent, 'createdAt' | 'expiresAt' | 'userOptions'> & {
+      createdAt: Timestamp; expiresAt: Timestamp; userOptions: unknown;
+    }>(
+      `SELECT e.id, u.username, u.admin_note AS note, e.created_at AS "createdAt", e.expires_at AS "expiresAt", e.status, e.login_type AS "loginType",
+         e.user_options AS "userOptions"
+       FROM naruto_login.login_events e JOIN naruto_login.users u ON u.id = e.user_id
+       WHERE e.created_at >= $1 AND e.created_at < $2 AND COALESCE(e.user_options ->> 'mainTask', 'daily') = $3
+       ORDER BY e.created_at DESC, e.id DESC`, [start, end, mainTask]);
+    return { items: result.rows.map(row => {
+      const userOptions = parseUserOptions(row.userOptions);
+      if (!userOptions) throw new Error('Stored daily event user options are invalid');
+      return { id: row.id, username: row.username, note: row.note ?? '', status: row.status, loginType: row.loginType ?? DEFAULT_LOGIN_TYPE, userOptions,
+        createdAt: new Date(row.createdAt).toISOString(), expiresAt: new Date(row.expiresAt).toISOString() };
+    }), total: result.rows.length };
   }
 
   async listRegistrationApplications(status: ApplicationStatus | 'all', limit: number): Promise<RegistrationApplication[]> {

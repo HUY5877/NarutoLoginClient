@@ -124,7 +124,7 @@ test('管理员备注独立持久化，省略保持、空串清空，扫码和�
   assert.equal((await f.store.updateUser(adminId, id, input, now)).note, note);
   const updated = await f.store.updateUser(adminId, id, { ...input, note: '新备注' }, now);
   assert.equal(updated.note, '新备注');
-  assert.equal((await f.store.listDailyEvents(now, new Date(now.getTime() + 300000), 0, 20)).items[0].note, '新备注');
+  assert.equal((await f.store.listDailyEvents(now, new Date(now.getTime() + 300000))).items[0].note, '新备注');
   assert.equal((await f.store.listMonthlyStats(now, new Date(now.getTime() + 300000), 'requests', 0, 20)).items[0].note, '新备注');
   const taskQuery = f.calls.find(call => call.sql.includes('FROM naruto_login.login_events e'))!;
   const monthlyQuery = f.calls.find(call => call.sql.startsWith('WITH stats AS'))!;
@@ -155,22 +155,22 @@ test('store defends self mutations and missing targets and deletes through the e
   }
 });
 
-test('扫码列表的总数与分页使用同一主任务条件，缺省日常兼容旧记录且不读取内部凭证', async t => {
+test('扫码列表只执行一次全量查询，按主任务过滤且不读取内部凭证', async t => {
   const f = fixture(t), start = new Date('2026-10-07T16:00:00Z'), end = new Date('2026-10-08T16:00:00Z');
+  await f.store.initialize();
   for (const mainTask of [undefined, 'daily', 'arena_weekly'] as const) {
-    const result = await f.store.listDailyEvents(start, end, 20, 20, mainTask);
-    assert.equal(result.total, 41); assert.equal(result.items[0].createdAt, now.toISOString());
+    f.calls.length = 0;
+    const result = await f.store.listDailyEvents(start, end, mainTask);
+    assert.equal(result.total, 1); assert.equal(result.items[0].createdAt, now.toISOString());
     assert.doesNotMatch(JSON.stringify(result), /accessToken|private-token/);
-    const query = f.calls.filter(call => call.sql.includes('FROM naruto_login.login_events e')).at(-1)!;
-    const count = f.calls.filter(call => call.sql.startsWith('SELECT count(*)') && call.sql.includes('FROM naruto_login.login_events')).at(-1)!;
-    assert.match(count.sql, /AND COALESCE\(user_options ->> 'mainTask', 'daily'\) = \$3/);
+    assert.equal(f.calls.length, 1, 'Only the full SELECT is needed after initialization');
+    const query = f.calls[0];
     assert.match(query.sql, /AND COALESCE\(e.user_options ->> 'mainTask', 'daily'\) = \$3/);
     assert.match(query.sql, /e.user_options AS "userOptions"/);
     assert.match(query.sql, /e.created_at >= \$1 AND e.created_at < \$2/);
-    assert.doesNotMatch(query.sql, /access_token|request_id|password/);
-    assert.deepEqual(count.values, [start, end, mainTask ?? 'daily']);
-    assert.deepEqual(query.values, [start, end, mainTask ?? 'daily', 20, 20]);
-    assert.match(query.sql, /LIMIT \$4 OFFSET \$5/);
+    assert.match(query.sql, /ORDER BY e.created_at DESC, e.id DESC$/);
+    assert.doesNotMatch(query.sql, /access_token|request_id|password|COUNT|LIMIT|OFFSET|BEGIN|COMMIT|SET TRANSACTION/i);
+    assert.deepEqual(query.values, [start, end, mainTask ?? 'daily']);
   }
 });
 
@@ -183,11 +183,11 @@ test('日常列表读取持久选项供首次完成判定，兼容旧记录且�
     [{ equipmentStamina: true, secretRealmMode: 'skip' }, { equipmentStamina: true, secretRealmMode: 'skip' }],
   ]) {
     f.setUserOptions(saved);
-    const result = await f.store.listDailyEvents(now, new Date(now.getTime() + 300000), 0, 20);
+    const result = await f.store.listDailyEvents(now, new Date(now.getTime() + 300000));
     assert.deepEqual(result.items[0].userOptions, expected);
   }
   f.setUserOptions({ secretRealmMode: 'invalid' });
-  await assert.rejects(f.store.listDailyEvents(now, new Date(now.getTime() + 300000), 0, 20), /Stored daily event user options are invalid/);
+  await assert.rejects(f.store.listDailyEvents(now, new Date(now.getTime() + 300000)), /Stored daily event user options are invalid/);
 });
 
 test('月榜总数与排名只统计日常申请，兼容旧记录并按北京日期去重且保留所有执行状态', async t => {

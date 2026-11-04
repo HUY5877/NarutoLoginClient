@@ -52,7 +52,7 @@ test('管理员单条任务中断入口', { skip: unavailable || false, timeout:
       const page = await context.newPage();
       page.setDefaultTimeout(6_000);
       await page.clock.setFixedTime(new Date('2026-10-22T01:00:00.000Z'));
-      const state = { tasks: structuredClone(tasks), reads: 0, posts: [], errors: [], result: 'success', gate: null };
+      const state = { tasks: structuredClone(tasks), reads: 0, runReads: 0, posts: [], errors: [], result: 'success', gate: null };
       page.on('pageerror', error => state.errors.push(error.message));
       await context.route('**/*', async route => {
         const url = new URL(route.request().url());
@@ -66,6 +66,14 @@ test('管理员单条任务中断入口', { skip: unavailable || false, timeout:
           state.reads += 1;
           return reply({ items: state.tasks, total: state.tasks.length, page: 1, pageSize: 20,
             mainTask: 'daily', selectedDate: '2026-10-22', startDate: '2026-10-16', date: '2026-10-22', timeZone: 'Asia/Shanghai' });
+        }
+        if (url.pathname === '/api/admin/daily-tasks/runs') {
+          state.runReads += 1;
+          return reply({ items: url.searchParams.get('ids').split(',').map(id => {
+            const task = state.tasks.find(task => task.id === id);
+            return { id, run: task.status === 'unavailable' ? null : { taskId: id, status: task.status,
+              startedAt: task.requestedAt, finishedAt: null } };
+          }) });
         }
         const match = url.pathname.match(/^\/api\/admin\/daily-tasks\/([^/]+)\/interrupt$/);
         if (match && route.request().method() === 'POST') {
@@ -112,7 +120,8 @@ test('管理员单条任务中断入口', { skip: unavailable || false, timeout:
           await confirmation.waitFor({ state: 'hidden' });
           await f.list.getByRole('button', { name: `${task.username}的中断任务`, exact: true }).waitFor({ state: 'hidden' });
           assert.deepEqual(f.state.posts, [{ path: `/api/admin/daily-tasks/${task.id}/interrupt`, body: {} }]);
-          assert.ok(f.state.reads > reads);
+          assert.equal(f.state.reads, reads);
+          assert.ok(f.state.runReads >= 2);
           await f.list.getByRole('status').filter({ hasText: `已提交「${task.username}」的中断请求。` }).waitFor();
           assert.equal(await f.list.evaluate(element => element.scrollWidth <= element.clientWidth), true);
         } finally { await f.close(); }

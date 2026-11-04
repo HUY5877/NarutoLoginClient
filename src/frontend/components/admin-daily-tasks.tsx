@@ -3,9 +3,9 @@ import { CalendarCheck, Check, RefreshCw } from 'lucide-react';
 import type { DailyStatus } from '../../shared/admin';
 import { DEFAULT_LOGIN_TYPE, loginTypeLabels } from '../../shared/login-types';
 import type { MainTask } from '../../shared/user-options';
-import { useAdminData } from '@/hooks/use-admin';
+import { useAdminDailyTasks } from '@/hooks/use-admin-daily-tasks';
 import { useMediaQuery } from '@/hooks/use-media-query';
-import { adminTaskStatusLabel, formatAdminDate, isDailyPage } from '@/lib/admin';
+import { adminTaskStatusLabel, formatAdminDate } from '@/lib/admin';
 import { AdminError, AdminLoading, AdminPagination } from '@/components/admin-common';
 import { AdminTaskLogDetails } from '@/components/admin-task-log-details';
 import { AdminTaskInterrupt } from '@/components/admin-task-interrupt';
@@ -38,17 +38,16 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
       setToday(date); setSelectedDate(date); setMainTask('daily'); setPage(1);
     } else setSelectedDate(null);
   }, [open]);
-  const { data: response, loading, error, reload } = useAdminData(open && selectedDate
-    ? `/api/admin/daily-tasks?page=${page}${selectedDate === 'all' ? '' : `&date=${selectedDate}`}&mainTask=${mainTask}` : null, isDailyPage, onAccessLost);
-  const data = response?.page === page && (response.selectedDate ?? 'all') === selectedDate
-    && (response.mainTask ?? 'daily') === mainTask ? response : null;
-  useEffect(() => { if (response?.date) setToday(response.date); }, [response?.date]);
+  const { data, loading, listLoading, error, reload, reloadRuns } = useAdminDailyTasks(open && selectedDate
+    ? `/api/admin/daily-tasks?${selectedDate === 'all' ? '' : `date=${selectedDate}&`}mainTask=${mainTask}` : null, page, onAccessLost);
+  useEffect(() => { if (data?.date) setToday(data.date); }, [data?.date]);
+  useEffect(() => { if (data && page !== data.page) setPage(data.page); }, [data?.page, page]);
   const dates = Array.from({ length: 7 }, (_, index) => new Date(Date.parse(today) - index * 24 * 60 * 60 * 1000).toISOString().slice(0, 10));
   const dateLabel = selectedDate === 'all' ? `${dates[6]} — ${today}` : selectedDate ?? today;
   const taskLabel = mainTask === 'arena_weekly' ? '周胜' : '日常';
   function interruptionSubmitted(username: string) {
     setNotice(`已提交「${username}」的中断请求。执行端将在下一次状态更新时停止。`);
-    void reload();
+    reloadRuns();
   }
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent className="auth-dialog daily-tasks-dialog flex max-h-[88dvh] flex-col gap-5 p-5 sm:max-w-6xl sm:p-6"
@@ -138,7 +137,7 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
           </EmptyHeader>
         </Empty>}
       </div>
-      {data && <AdminPagination page={data.page} pageSize={data.pageSize} total={data.total} disabled={loading} onPageChange={setPage} />}
+      {data && <AdminPagination page={data.page} pageSize={data.pageSize} total={data.total} disabled={listLoading} onPageChange={setPage} />}
     </DialogContent>
   </Dialog>;
 }

@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { createApp, type Dependencies } from '../src/server/app.js';
 import { AuthService, type AuthSession, type User } from '../src/server/auth.js';
 import { loadConfig } from '../src/server/config.js';
+import { AdminService } from '../src/server/admin.js';
 import { ApiError } from '../src/server/errors.js';
 import type { Task } from '../src/server/queue.js';
 import type { AuthStore } from '../src/server/database.js';
@@ -146,6 +147,7 @@ test('user management and daily task APIs enforce admin identity, JSON and same-
     createUser: async (actor, body) => { calls.push(['create', actor.id, body]); return { user: managed }; },
     updateUser: async (actor, target, body) => { calls.push(['update', actor.id, target, body]); return { user: managed }; },
     deleteUser: async (actor, target) => { calls.push(['delete', actor.id, target]); },
+    dailyTaskRuns: async () => assert.fail('unexpected run request'),
     dailyTasks: async (actor, query) => { calls.push(['daily', actor.id, query]); return { items: [], total: 0, page: 1, pageSize: 20, date: '2026-10-08', timeZone: 'Asia/Shanghai' }; },
     monthlyStats: async (actor, query) => { calls.push(['monthly', actor.id, query]); return { items: [], total: 0, totalRequests: 0, page: 1, pageSize: 20, month: '2026-10', sort: 'requests', timeZone: 'Asia/Shanghai' }; },
     dailyTaskFailureDetails: async (actor, taskId) => { calls.push(['failure', actor.id, taskId]); return {
@@ -750,5 +752,33 @@ test('主任务通过 userOptions 传入日常或周胜，缺省保持旧请求�
       assert.equal((await response.json() as { code: string }).code, 'INVALID_USER_OPTIONS');
     }
     assert.equal(received.length, 3, 'invalid main tasks must not reserve or dispatch a task');
+  });
+});
+
+
+test('管理员批量执行记录接口鉴权、校验编号并且禁止缓存', async () => {
+  const calls: string[][] = [];
+  const unexpected = async (): Promise<never> => assert.fail('Only batched summary reads are allowed');
+  const adminService = new AdminService({ runs: {
+    getSummaries: async ids => { calls.push(ids); return [null]; },
+    getFailureDetails: unexpected, getAdminLogPage: unexpected, interrupt: unexpected,
+  } });
+  await withApi({ admin: adminService }, async base => {
+    const path = `/api/admin/daily-tasks/runs?ids=${id}`;
+    for (const attempt of [{ headers: {}, status: 401 }, { headers, status: 403 }]) {
+      const response = await fetch(`${base}${path}`, { headers: attempt.headers });
+      assert.equal(response.status, attempt.status);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+    }
+    for (const query of ['', 'ids=', 'ids=invalid', `ids=${id}&ids=${requestId}`, `ids=${id},${id}`,
+      `ids=${id}%0A`, `ids[x]=${id}`, `ids=${Array(21).fill(id).join(',')}`]) {
+      assert.equal((await fetch(`${base}/api/admin/daily-tasks/runs?${query}`, { headers: adminHeaders })).status, 400, query);
+    }
+    assert.deepEqual(calls, []);
+    const response = await fetch(`${base}${path}`, { headers: adminHeaders });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await response.json(), { items: [{ id, run: null }] });
+    assert.deepEqual(calls, [[id]]);
   });
 });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isMonthlyStatsPage, isDailyPage, isDailyTaskFailureDetails, isUserResponse, isUsersPage, formatAdminDate } from '../src/frontend/lib/admin.js';
+import { isMonthlyStatsPage, isDailyPage, isDailyTaskRunPage, isDailyTaskFailureDetails, isUserResponse, isUsersPage, formatAdminDate } from '../src/frontend/lib/admin.js';
 
 const user = { id: 'user', username: 'Naruto', isAdmin: false, isInvalid: false, createdAt: '2026-10-08T16:00:00.000Z', applicationStatus: null };
 
@@ -91,4 +91,30 @@ test('monthly leaderboard accepts both rankings and rejects malformed counts, da
   for (const invalid of [{ ...page, month: '2026-13' }, { ...page, sort: 'other' }, { ...page, totalRequests: -1 },
     { ...page, items: [{ ...item, requestDays: 10 }] }, { ...page, items: [{ ...item, requestCount: 1.5 }] },
     { ...page, items: [{ ...item, rank: 0 }] }]) assert.equal(isMonthlyStatsPage(invalid), false);
+});
+
+
+test('当前页状态必须逐项对应请求 ID，拒绝缺失、重复、串页和无效状态', () => {
+  const ids = ['task-a', 'task-b'];
+  const run = { taskId: ids[0], status: 'running_daily', startedAt: user.createdAt, finishedAt: null };
+  const valid = { items: [{ id: ids[0], run }, { id: ids[1], run: null }] };
+  assert.ok(isDailyTaskRunPage(valid, ids));
+  for (const items of [valid.items.slice(0, 1), [...valid.items].reverse(), [valid.items[0], valid.items[0]],
+    [...valid.items, { id: 'other', run: null }], [{ id: ids[0], run: { ...run, taskId: ids[1] } }, valid.items[1]],
+    [{ id: ids[0], run: { ...run, status: 'unavailable' } }, valid.items[1]],
+    [{ id: ids[0], run: { ...run, startedAt: 'broken' } }, valid.items[1]],
+    [{ id: ids[0], run: { ...run, finishedAt: undefined } }, valid.items[1]],
+    [{ id: ids[0], run: { ...run, authorizedAt: null } }, valid.items[1]],
+    [{ id: ids[0], run: { ...run, errorCode: {} } }, valid.items[1]]]) {
+    assert.equal(isDailyTaskRunPage({ items }, ids), false);
+  }
+});
+
+test('全量申请列表拒绝分页残片、重复 ID 和无效用户选项', () => {
+  const item = { id: 'task', username: 'Naruto', requestedAt: user.createdAt, scannedAt: null, completedAt: null, status: 'queued' };
+  const page = { items: [item], total: 1, page: 1, pageSize: 20, date: '2026-10-09', timeZone: 'Asia/Shanghai' };
+  for (const invalid of [{ ...page, total: 45 }, { ...page, page: 2 }, { ...page, pageSize: 40 },
+    { ...page, total: 2, items: [item, item] }, { ...page, items: [{ ...item, userOptions: { secretRealmMode: 'bad' } }] }]) {
+    assert.equal(isDailyPage(invalid), false);
+  }
 });

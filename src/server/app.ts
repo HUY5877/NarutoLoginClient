@@ -22,7 +22,7 @@ export interface Dependencies {
   auth: Pick<AuthService, 'register' | 'login' | 'getUser' | 'listApplications' | 'reviewApplication'>;
   storage: ObjectReader;
   runs?: Pick<TaskRunService, 'getLatest' | 'getEvents'>;
-  admin?: Pick<AdminService, 'listUsers' | 'getUser' | 'createUser' | 'updateUser' | 'deleteUser' | 'dailyTasks' | 'dailyTaskFailureDetails' | 'dailyTaskLogs' | 'interruptDailyTask' | 'monthlyStats'>;
+  admin?: Pick<AdminService, 'listUsers' | 'getUser' | 'createUser' | 'updateUser' | 'deleteUser' | 'dailyTasks' | 'dailyTaskRuns' | 'dailyTaskFailureDetails' | 'dailyTaskLogs' | 'interruptDailyTask' | 'monthlyStats'>;
   qqCaptures?: Pick<QqCaptureService, 'upload' | 'list'> & Partial<Pick<QqCaptureService, 'initialize'>>;
   qqBindings?: Pick<QqBindingService, 'getStatus' | 'createChallenge' | 'confirm' | 'unbind' | 'handleWebhook'>;
   modelChannels?: Pick<ModelChannelService, 'list' | 'update' | 'test'>;
@@ -48,7 +48,7 @@ function cookieOptions(req: Request): CookieOptions {
 function logPath(req: Request): string {
   const path = req.originalUrl.split('?')[0].replace(/\/[0-9a-f-]{36}(?=\/|$)/gi, '/:id');
   // Unknown paths can contain arbitrary user input; never include them in diagnostics.
-  return /^\/api\/(?:health|auth\/(?:me|login|register|logout)|qq-captures|qq-authorizations|login-sessions(?:\/(?:active|:id)(?:\/(?:refresh|qr))?)?|task-runs\/(?:latest|:id\/events)|admin\/(?:users(?:\/:id)?|monthly-stats|daily-tasks(?:\/:id\/(?:failure-details|logs|interrupt))?|registration-applications(?:\/:id\/review)?))$/.test(path)
+  return /^\/api\/(?:health|auth\/(?:me|login|register|logout)|qq-captures|qq-authorizations|login-sessions(?:\/(?:active|:id)(?:\/(?:refresh|qr))?)?|task-runs\/(?:latest|:id\/events)|admin\/(?:users(?:\/:id)?|monthly-stats|daily-tasks(?:\/runs|\/:id\/(?:failure-details|logs|interrupt))?|registration-applications(?:\/:id\/review)?))$/.test(path)
     ? path : '/api/unknown';
 }
 
@@ -163,6 +163,7 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     return admin;
   };
   app.get('/api/admin/daily-tasks', async (req, res) => res.json(await adminService().dailyTasks(res.locals.user as User, req.query)));
+  app.get('/api/admin/daily-tasks/runs', async (req, res) => res.json(await adminService().dailyTaskRuns(res.locals.user as User, req.query)));
   app.post('/api/admin/daily-tasks/:id/interrupt', async (req, res) =>
     res.json(await adminService().interruptDailyTask(res.locals.user as User, sessionId(req))));
   app.get('/api/admin/monthly-stats', async (req, res) => res.json(await adminService().monthlyStats(res.locals.user as User, req.query)));

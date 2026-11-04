@@ -1,5 +1,7 @@
 import type { LoginType } from './login-types';
-import type { MainTask } from './user-options';
+import type { MainTask, UserOptions } from './user-options';
+import { getDailyMilestoneAt } from './daily-completion.js';
+import { taskFailureMessage } from './task-errors.js';
 
 export const MAX_USER_NOTE_LENGTH = 100;
 
@@ -33,6 +35,7 @@ export interface DailyTask {
   id: string;
   loginType?: LoginType;
   mainTask?: MainTask;
+  userOptions?: UserOptions;
   username: string;
   note?: string;
   requestedAt: string;
@@ -42,6 +45,41 @@ export interface DailyTask {
   errorCode?: string;
   errorMessage?: string;
 }
+/** Public execution fields used to update the administrator's cached list. */
+export interface DailyTaskRun {
+  taskId: string;
+  status: Exclude<DailyStatus, 'unavailable'>;
+  startedAt: string | null;
+  finishedAt: string | null;
+  authorizedAt?: string;
+  secretRealmCompletedAt?: string;
+  errorCode?: string;
+}
+export interface DailyTaskRunPage {
+  items: Array<{ id: string; run: DailyTaskRun | null }>;
+}
+
+export function withDailyTaskRun(task: DailyTask, run: DailyTaskRun | null): DailyTask {
+  if (!run || run.taskId !== task.id) return { ...task };
+  const milestoneAt = getDailyMilestoneAt(run, task.userOptions);
+  const milestoneCompleted = Boolean(milestoneAt && ['failed', 'interrupted', 'expired'].includes(run.status));
+  const status = milestoneCompleted ? 'completed' : run.status;
+  const result: DailyTask = {
+    ...task,
+    scannedAt: run.authorizedAt ?? task.scannedAt,
+    // A later sweep failure cannot erase an already recorded daily milestone.
+    completedAt: run.status === 'completed' && run.startedAt ? run.finishedAt : milestoneCompleted ? milestoneAt : null,
+    status,
+  };
+  delete result.errorCode;
+  delete result.errorMessage;
+  if (status === 'failed') {
+    if (run.errorCode) result.errorCode = run.errorCode;
+    result.errorMessage = taskFailureMessage(run.errorCode, '未记录具体错误原因。');
+  }
+  return result;
+}
+
 export interface PageResult<T> { items: T[]; total: number; page: number; pageSize: number }
 export interface DailyTaskPage extends PageResult<DailyTask> {
   date: string; startDate?: string; selectedDate?: string; timeZone: 'Asia/Shanghai';

@@ -4,12 +4,11 @@ import { UserManagementError, UsernameTakenError, type AdminStore, type UserChan
 import { ApiError } from './errors.js';
 import { logBackend } from './logging.js';
 import type { TaskRunService } from './task-runs.js';
-import type { DailyTask, DailyTaskFailureDetails, DailyTaskLogPage, DailyTaskPage, ManagedUser, PageResult, MonthlyStatsPage } from '../shared/admin.js';
+import type { DailyTask, DailyTaskFailureDetails, DailyTaskLogPage, DailyTaskPage, DailyTaskRun, DailyTaskRunPage, ManagedUser, PageResult, MonthlyStatsPage } from '../shared/admin.js';
 import { MAX_USER_NOTE_LENGTH, userStatusLabels, type UserStatusFilter } from '../shared/admin.js';
 import { DEFAULT_LOGIN_TYPE } from '../shared/login-types.js';
 import { taskFailureMessage } from '../shared/task-errors.js';
-import { getDailyMilestoneAt } from '../shared/daily-completion.js';
-import { getMainTask } from '../shared/user-options.js';
+import { DEFAULT_USER_OPTIONS, getMainTask } from '../shared/user-options.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const pageSize = 20;
@@ -114,7 +113,7 @@ export class AdminService {
     if (mainTask !== 'daily' && mainTask !== 'arena_weekly') {
       throw new ApiError(400, '请选择日常任务或决斗场周胜。', 'INVALID_MAIN_TASK');
     }
-    const page = pageNumber(query.page), now = this.now();
+    const now = this.now();
     const date = new Date(now + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const midnight = new Date(`${date}T00:00:00+08:00`).getTime();
     const dates = Array.from({ length: 7 }, (_, index) => new Date(midnight + 8 * 60 * 60 * 1000 - index * 24 * 60 * 60 * 1000).toISOString().slice(0, 10));
@@ -125,28 +124,36 @@ export class AdminService {
     const startDate = dates[6];
     const start = new Date(`${selectedDate ?? startDate}T00:00:00+08:00`);
     const end = new Date((selectedDate ? start.getTime() : midnight) + 24 * 60 * 60 * 1000);
-    const events = await this.database(store => store.listDailyEvents(start, end, (page - 1) * pageSize, pageSize, mainTask));
-    const summaries = await this.options.runs.getSummaries(events.items.map(event => event.id));
-    const items: DailyTask[] = events.items.map((event, index) => {
-      const run = summaries[index];
-      const milestoneAt = getDailyMilestoneAt(run, event.userOptions);
-      const milestoneCompleted = Boolean(milestoneAt && run && ['failed', 'interrupted', 'expired'].includes(run.status));
-      const status: DailyTask['status'] = milestoneCompleted ? 'completed' : run?.status ?? (event.status === 'failed' ? 'failed'
-        : Date.parse(event.expiresAt) <= now ? 'unavailable' : event.status === 'qr_ready' ? 'waiting_scan' : event.status);
+    const events = await this.database(store => store.listDailyEvents(start, end, mainTask));
+    const items: DailyTask[] = events.items.map(event => {
+      const status: DailyTask['status'] = event.status === 'failed' ? 'failed'
+        : Date.parse(event.expiresAt) <= now ? 'unavailable' : event.status === 'qr_ready' ? 'waiting_scan' : event.status;
       return { id: event.id, username: event.username, requestedAt: event.createdAt, loginType: event.loginType ?? DEFAULT_LOGIN_TYPE,
-        note: event.note ?? '',
-        mainTask: getMainTask(event.userOptions),
-        scannedAt: run?.authorizedAt ?? null,
-        // A later sweep failure cannot erase an already recorded daily milestone.
-        completedAt: run?.status === 'completed' && run.startedAt ? run.finishedAt : milestoneCompleted ? milestoneAt : null,
-        status,
-        ...(status === 'failed' ? {
-          ...(run?.errorCode ? { errorCode: run.errorCode } : {}),
-          errorMessage: taskFailureMessage(run?.errorCode, '未记录具体错误原因。'),
-        } : {}) };
+        note: event.note ?? '', mainTask: getMainTask(event.userOptions), userOptions: event.userOptions ?? { ...DEFAULT_USER_OPTIONS },
+        scannedAt: null, completedAt: null, status,
+        ...(status === 'failed' ? { errorMessage: taskFailureMessage(undefined, '未记录具体错误原因。') } : {}) };
     });
-    return { items, total: events.total, page, pageSize, date, startDate, mainTask,
+    return { items, total: events.total, page: 1, pageSize, date, startDate, mainTask,
       ...(selectedDate ? { selectedDate } : {}), timeZone: 'Asia/Shanghai' };
+  }
+  async dailyTaskRuns(admin: User, query: { ids?: unknown }): Promise<DailyTaskRunPage> {
+    requireAdmin(admin);
+    const ids = typeof query.ids === 'string' ? query.ids.split(',') : [];
+    if (ids.length < 1 || ids.length > pageSize || ids.some(id => id !== id.trim() || !uuid.test(id))
+      || new Set(ids.map(id => id.toLowerCase())).size !== ids.length) {
+      throw new ApiError(400, '请选择一至二十个不重复的有效任务编号。', 'INVALID_TASK_IDS');
+    }
+    const summaries = await this.options.runs.getSummaries(ids);
+    return { items: ids.map((id, index) => {
+      const summary = summaries[index];
+      if (!summary || summary.taskId !== id) return { id, run: null };
+      const run: DailyTaskRun = { taskId: summary.taskId, status: summary.status,
+        startedAt: summary.startedAt, finishedAt: summary.finishedAt,
+        ...(summary.authorizedAt === undefined ? {} : { authorizedAt: summary.authorizedAt }),
+        ...(summary.secretRealmCompletedAt === undefined ? {} : { secretRealmCompletedAt: summary.secretRealmCompletedAt }),
+        ...(summary.errorCode === undefined ? {} : { errorCode: summary.errorCode }) };
+      return { id, run };
+    }) };
   }
   async dailyTaskFailureDetails(admin: User, taskId: string): Promise<DailyTaskFailureDetails> {
     requireAdmin(admin);
