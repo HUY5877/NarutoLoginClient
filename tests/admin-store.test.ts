@@ -201,8 +201,10 @@ test('月榜总数与排名只统计日常申请，兼容旧记录并按北京�
     assert.match(query.sql, /AND COALESCE\(user_options ->> 'mainTask', 'daily'\) = 'daily'/);
     assert.match(query.sql, /count\(DISTINCT \(created_at AT TIME ZONE 'Asia\/Shanghai'\)::date\)/);
     assert.match(query.sql, /created_at >= \$1 AND created_at < \$2/);
-    assert.match(query.sql, sort === 'days' ? /dense_rank\(\) OVER \(ORDER BY request_days DESC\)/ : /dense_rank\(\) OVER \(ORDER BY request_count DESC\)/);
-    assert.match(query.sql, /s.user_id ASC LIMIT \$3 OFFSET \$4/);
+    assert.match(query.sql, sort === 'days'
+      ? /row_number\(\) OVER \(ORDER BY request_days DESC, request_count DESC, u.username COLLATE "C" ASC\)/
+      : /row_number\(\) OVER \(ORDER BY request_count DESC, request_days DESC, u.username COLLATE "C" ASC\)/);
+    assert.match(query.sql, /u.username COLLATE "C" ASC LIMIT \$3 OFFSET \$4/);
     assert.doesNotMatch(query.sql, /status|access_token|password|dispatched_at/);
     assert.deepEqual(query.values, [start, end, 20, 20]);
   }

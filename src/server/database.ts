@@ -435,6 +435,7 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
     // Aggregate all statuses, independently of Redis execution-log retention.
     const primary = sort === 'days' ? 'request_days' : 'request_count';
     const secondary = sort === 'days' ? 'request_count' : 'request_days';
+    const orderBy = `${primary} DESC, ${secondary} DESC, u.username COLLATE "C" ASC`;
     return this.transaction(async client => {
       await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
       const count = await client.query<{ total: number; totalRequests: number }>(
@@ -449,9 +450,9 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
              AND COALESCE(user_options ->> 'mainTask', 'daily') = 'daily' GROUP BY user_id
          )
          SELECT s.user_id AS "userId", u.username, u.admin_note AS note, s.request_count AS "requestCount", s.request_days AS "requestDays",
-           dense_rank() OVER (ORDER BY ${primary} DESC)::int AS rank
+           row_number() OVER (ORDER BY ${orderBy})::int AS rank
          FROM stats s JOIN naruto_login.users u ON u.id = s.user_id
-         ORDER BY ${primary} DESC, ${secondary} DESC, s.user_id ASC LIMIT $3 OFFSET $4`, [start, end, limit, offset]);
+         ORDER BY ${orderBy} LIMIT $3 OFFSET $4`, [start, end, limit, offset]);
       return { items: result.rows.map(row => ({ userId: row.userId, username: row.username, note: row.note ?? '', rank: row.rank,
         requestCount: row.requestCount, requestDays: row.requestDays })), ...count.rows[0] };
     });

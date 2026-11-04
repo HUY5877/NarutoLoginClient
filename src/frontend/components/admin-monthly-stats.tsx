@@ -73,7 +73,7 @@ export function AdminMonthlyStats({ open, onOpenChange, onAccessLost, returnFocu
               </TableRow>)}</TableBody>
             </Table>
           </div> : <p role="status" className="py-12 text-center text-sm text-muted-foreground">{result.total ? '本页暂无记录，请返回上一页。' : '这个月还没有日常申请。'}</p>}
-          <p className="mt-3 text-xs leading-5 text-muted-foreground">同分并列排名。刷新二维码、重复提交同一申请不增加次数。</p>
+          <p className="mt-3 text-xs leading-5 text-muted-foreground">次数和天数均相同时，按用户名排序。刷新二维码、重复提交同一申请不增加次数。</p>
         </>}
       </div>
       {result && <AdminPagination page={result.page} pageSize={result.pageSize} total={result.total} disabled={loading} onPageChange={setPage} />}
