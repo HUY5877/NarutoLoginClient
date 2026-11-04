@@ -7,7 +7,7 @@ import type { ObjectReader } from './storage.js';
 import { ApiError } from './errors.js';
 import type { Task } from './queue.js';
 import type { LoginEventService } from './login-events.js';
-import { isLogCursorRange, isStreamCursor, type TaskRunService } from './task-runs.js';
+import { isStreamCursor, type TaskRunService } from './task-runs.js';
 import { parseUserOptions } from '../shared/user-options.js';
 import { parseLoginType } from '../shared/login-types.js';
 import type { AdminService } from './admin.js';
@@ -170,15 +170,14 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     res.json(await adminService().dailyTaskFailureDetails(res.locals.user as User, sessionId(req))));
   app.get('/api/admin/daily-tasks/:id/logs', async (req, res) => {
     // Vercel 的 /api/:path* 重写会附带 path；任务身份仍只使用 URL 路径。
-    if (Object.keys(req.query).some(key => key !== 'after' && key !== 'snapshot' && key !== 'path')) {
+    if (Object.keys(req.query).some(key => key !== 'after' && key !== 'path')) {
       throw new ApiError(400, '无效的日志读取位置。');
     }
     const after = req.query.after === undefined ? '0-0' : req.query.after;
-    const snapshot = req.query.snapshot;
-    if (!isStreamCursor(after) || snapshot !== undefined && (!isStreamCursor(snapshot) || !isLogCursorRange(after, snapshot))) {
+    if (!isStreamCursor(after)) {
       throw new ApiError(400, '无效的日志读取位置。');
     }
-    res.json(await adminService().dailyTaskLogs(res.locals.user as User, sessionId(req), after, snapshot));
+    res.json(await adminService().dailyTaskLogs(res.locals.user as User, sessionId(req), after));
   });
   app.get('/api/admin/users', async (req, res) => res.json(await adminService().listUsers(res.locals.user as User, req.query)));
   app.get('/api/admin/users/:id', async (req, res) => res.json(await adminService().getUser(res.locals.user as User, req.params.id as string)));

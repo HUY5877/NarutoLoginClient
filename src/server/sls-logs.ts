@@ -11,13 +11,12 @@ const SlsClient = (SlsClientExport as unknown as { default?: typeof SlsClientExp
 
 export interface SlsLogPage {
   logs: TaskLog[];
-  snapshotCursor: string;
   nextCursor: string;
   hasMore: boolean;
   truncated: boolean;
 }
 export interface TaskLogArchive {
-  read(taskId: string, after: string, snapshot: string | undefined, watermark: string | undefined, tail?: boolean): Promise<SlsLogPage | null>;
+  read(taskId: string, after: string, tail?: boolean): Promise<SlsLogPage | null>;
 }
 export interface SlsQueryResult { progress: string | undefined; data: unknown }
 export type SlsQuery = (query: string, from: number, to: number, timeoutMs: number) => Promise<SlsQueryResult>;
@@ -30,10 +29,9 @@ function compare(left: string, right: string) {
   const [lm, ls] = left.split('-').map(BigInt), [rm, rs] = right.split('-').map(BigInt);
   return lm < rm ? -1 : lm > rm ? 1 : ls < rs ? -1 : ls > rs ? 1 : 0;
 }
-function position(id: string, operator: '>' | '>=' | '<=') {
+function position(id: string) {
   const [ms, seq] = id.split('-');
-  const outer = operator === '<=' ? '<' : '>';
-  return `("streamMs" ${outer} ${ms} OR ("streamMs" = ${ms} AND "streamSeq" ${operator} ${seq}))`;
+  return `("streamMs" > ${ms} OR ("streamMs" = ${ms} AND "streamSeq" > ${seq}))`;
 }
 function integer(value: unknown): number | null {
   if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value))) return null;
@@ -54,7 +52,7 @@ function parseLog(row: Record<string, unknown>): TaskLog | null {
     ...(hasProgress ? { actionIndex: actionIndex!, actionTotal: actionTotal! } : {}) };
 }
 
-/** Complete alone cannot prove ingestion: validate the producer's checkpoint range and the run watermark too. */
+/** Read the indexed body once. Empty pages can be refreshed as more logs arrive. */
 export class SlsTaskLogArchive implements TaskLogArchive {
   private readonly query: SlsQuery;
   constructor(config: SlsConfig, private readonly environment: 'prod' | 'test', private readonly timeoutMs: number,
@@ -75,63 +73,44 @@ export class SlsTaskLogArchive implements TaskLogArchive {
   }
   private readonly now: () => number;
 
-  async read(taskId: string, after: string, snapshot: string | undefined, watermark: string | undefined, tail = false): Promise<SlsLogPage | null> {
+  async read(taskId: string, after: string, tail = false): Promise<SlsLogPage | null> {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(taskId)
-      || !cursor(after) || snapshot !== undefined && !cursor(snapshot)) return null;
-    const now = this.now(), deadline = Date.now() + this.timeoutMs;
+      || !cursor(after)) return null;
+    const now = this.now();
     const from = Math.max(0, Math.floor(now / 1000) - 8 * 86400), to = Math.floor(now / 1000) + 60;
     const scoped = `"taskId" = '${taskId}' AND "environment" = '${this.environment}'`;
     const search = `taskId: "${taskId}" AND environment: "${this.environment}"`;
-    const execute = async (sql: string): Promise<Array<Record<string, unknown>> | null> => {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) return null;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        const result = await Promise.race([this.query(sql, from, to, remaining), new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error('SLS query timed out')), remaining);
-        })]);
-        if (result.progress !== 'Complete' || !Array.isArray(result.data) || !result.data.every(object)) return null;
-        return result.data;
-      } finally { clearTimeout(timer); }
-    };
-    const markers = await execute(`${search} AND kind: checkpoint | SELECT DISTINCT "taskId", "environment", "firstId", "throughId", "entryCount", "truncated", "streamMs", "streamSeq" FROM log WHERE ${scoped} AND "kind" = 'checkpoint' ORDER BY "streamMs" DESC, "streamSeq" DESC LIMIT 10`);
-    if (!markers?.length) return null;
-    const valid = markers.filter(row => row.taskId === taskId && row.environment === this.environment
-      && cursor(row.firstId) && cursor(row.throughId) && compare(row.firstId, row.throughId) <= 0
-      && `${row.streamMs}-${row.streamSeq}` === row.throughId && integer(row.entryCount) !== null && Number(row.entryCount) > 0
-      && ['true', 'false'].includes(String(row.truncated)));
-    valid.sort((a, b) => compare(b.throughId as string, a.throughId as string)
-      || compare(a.firstId as string, b.firstId as string)
-      || Number(String(b.truncated) === 'true') - Number(String(a.truncated) === 'true'));
-    const marker = valid[0];
-    if (!marker) return null;
-    const first = marker.firstId as string, through = marker.throughId as string;
-    const upper = snapshot ?? watermark ?? through;
-    if (!cursor(upper) || compare(upper, through) > 0 || compare(after, upper) > 0) return null;
-    const window = `${position(first, '>=')} AND ${position(through, '<=')}`;
-    const producer = `("firstId" = '${first}' OR "firstId" IS NULL)`;
-    const pageWindow = `${position(after, '>')} AND ${position(upper, '<=')}`;
-    // A restarted producer starts a new checkpoint range. Validate that range without excluding older producers' logs.
-    const counts = await execute(`${search} AND kind: event | SELECT count(DISTINCT CASE WHEN ${window} AND ${producer} THEN "id" END) AS "entryCount", count(DISTINCT CASE WHEN ${pageWindow} THEN "id" END) AS "remainingCount" FROM log WHERE ${scoped} AND "kind" = 'event'`);
-    if (counts?.length !== 1 || integer(counts[0].entryCount) !== Number(marker.entryCount)) return null;
-    const remaining = integer(counts[0].remainingCount);
-    if (remaining === null) return null;
-    const limit = tail ? 11 : 101, direction = tail ? 'DESC' : 'ASC';
-    const rows = await execute(`${search} AND kind: event | SELECT "id", max("taskId") AS "taskId", max("environment") AS "environment", max("time") AS "time", max("level") AS "level", max("message") AS "message", max("actionIndex") AS "actionIndex", max("actionTotal") AS "actionTotal", max("streamMs") AS "streamMs", max("streamSeq") AS "streamSeq" FROM log WHERE ${scoped} AND "kind" = 'event' AND ${pageWindow} GROUP BY "id" ORDER BY "streamMs" ${direction}, "streamSeq" ${direction} LIMIT ${limit}`);
-    if (!rows || rows.length !== Math.min(limit, remaining)) return null;
-    const logs: TaskLog[] = [];
-    for (const row of rows) {
-      if (row.taskId !== taskId || row.environment !== this.environment) return null;
-      const log = parseLog(row);
-      if (!log || compare(log.id, after) <= 0 || compare(log.id, upper) > 0
-        || logs.length && (tail ? compare(log.id, logs.at(-1)!.id) >= 0 : compare(log.id, logs.at(-1)!.id) <= 0)) return null;
-      logs.push(log);
+    const size = tail ? 10 : 100, limit = size + 1, direction = tail ? 'DESC' : 'ASC';
+    // Filter invalid positions before LIMIT so a corrupt id cannot displace a
+    // valid body at the same numeric position or keep an empty page repeating.
+    const validPosition = `"streamMs" IS NOT NULL AND "streamSeq" IS NOT NULL AND "streamMs" >= 0 AND "streamSeq" >= 0 AND "id" = concat(cast("streamMs" AS varchar), '-', cast("streamSeq" AS varchar))`;
+    const sql = `${search} AND kind: event | SELECT "id", max("taskId") AS "taskId", max("environment") AS "environment", max("time") AS "time", max("level") AS "level", max("message") AS "message", max("actionIndex") AS "actionIndex", max("actionTotal") AS "actionTotal", max("streamMs") AS "streamMs", max("streamSeq") AS "streamSeq" FROM log WHERE ${scoped} AND "kind" = 'event' AND ${validPosition} AND ${position(after)} GROUP BY "id" ORDER BY "streamMs" ${direction}, "streamSeq" ${direction} LIMIT ${limit}`;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let result: SlsQueryResult;
+    try {
+      result = await Promise.race([this.query(sql, from, to, this.timeoutMs), new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('SLS query timed out')), this.timeoutMs);
+      })]);
+    } finally { clearTimeout(timer); }
+    // An incomplete index can still provide useful rows. Provider/transport failures throw above.
+    if (!Array.isArray(result.data) || !result.data.every(object) || result.data.length > limit) {
+      throw new Error('SLS query returned invalid data');
     }
-    const hasMore = remaining > (tail ? 10 : 100);
-    // Validate and paginate the raw range before hiding private diagnostics.
-    // A fully hidden page must still advance to its original cursor.
-    return { logs: (tail ? logs : logs.slice(0, 100)).filter(isPublicTaskLog), snapshotCursor: upper,
-      nextCursor: hasMore && !tail ? logs[99].id : upper, hasMore,
-      truncated: valid.some(value => String(value.truncated) === 'true') };
+    const logs: TaskLog[] = [];
+    let previous: string | undefined, nextCursor = after, truncated = false;
+    for (const [index, row] of result.data.entries()) {
+      if (row.taskId !== taskId || row.environment !== this.environment || !cursor(row.id)
+        || `${row.streamMs}-${row.streamSeq}` !== row.id || compare(row.id, after) <= 0
+        || previous !== undefined && (tail ? compare(row.id, previous) >= 0 : compare(row.id, previous) <= 0)) {
+        throw new Error('SLS query returned invalid log positions');
+      }
+      previous = row.id;
+      if (!tail && index >= size) continue;
+      if (!tail || index === 0) nextCursor = row.id;
+      const log = parseLog(row);
+      if (!log) truncated = true;
+      else if (isPublicTaskLog(log)) logs.push(log);
+    }
+    return { logs, nextCursor, hasMore: result.data.length > size, truncated };
   }
 }

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { FileText, X } from 'lucide-react';
 import type { DailyTask } from '../../shared/admin';
 import { useAdminTaskLogs } from '@/hooks/use-admin-task-logs';
+import { useBottomLogLoader } from '@/hooks/use-bottom-log-loader';
 import { adminTaskStatusLabel, formatAdminDate } from '@/lib/admin';
 import { mainTaskFailureMessage } from '@/lib/main-task';
 import { Badge } from '@/components/ui/badge';
@@ -11,7 +12,8 @@ import { Spinner } from '@/components/ui/spinner';
 
 export function AdminTaskLogDetails({ task, onAccessLost }: { task: DailyTask; onAccessLost: () => void }) {
   const [open, setOpen] = useState(false);
-  const { status, logs, loading, error, loadMore, hasMore, truncated, logsPending } = useAdminTaskLogs(task.id, open, onAccessLost);
+  const { status, logs, loading, error, loadMore } = useAdminTaskLogs(task.id, open, onAccessLost);
+  const scrollHandlers = useBottomLogLoader(open && !loading && !error, loadMore, `${task.id}:${open}`);
   const currentStatus = task.status === 'completed' && task.completedAt ? 'completed' : status ?? task.status;
   const failed = ['failed', 'interrupted', 'expired'].includes(currentStatus);
   const failureMessage = !failed ? undefined : task.mainTask === 'arena_weekly' && task.errorMessage
@@ -36,7 +38,7 @@ export function AdminTaskLogDetails({ task, onAccessLost }: { task: DailyTask; o
       <DialogClose asChild>
         <Button type="button" variant="ghost" size="icon" className="absolute right-2 top-2 z-10 size-11" aria-label="关闭日志详情"><X aria-hidden="true" /></Button>
       </DialogClose>
-      <div data-slot="task-log-details-scroll" tabIndex={0} role="region" aria-label="任务执行日志"
+      <div {...scrollHandlers} data-slot="task-log-details-scroll" tabIndex={0} role="region" aria-label="任务执行日志"
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 text-sm leading-6">
         {failureMessage && <p className="whitespace-pre-wrap text-destructive [overflow-wrap:anywhere]">{failureMessage}</p>}
         {errorCode && <p className="mt-2 break-all text-xs text-muted-foreground">错误码：{errorCode}</p>}
@@ -54,11 +56,9 @@ export function AdminTaskLogDetails({ task, onAccessLost }: { task: DailyTask; o
             </li>)}
           </ol>
         </div>}
-        {logsPending && <p role="status" className="text-muted-foreground">执行日志正在上传或暂时不可用，请稍后重试读取。</p>}
-        {!loading && !error && !logsPending && !logs.length && <p className="text-muted-foreground">暂无已保留的执行日志，记录可能尚未上报或已过期。</p>}
-        {truncated && <p className="mt-3 text-xs text-muted-foreground">部分记录可能已过期、被裁剪或无法读取。</p>}
-        {(hasMore || logsPending) && !error && <Button type="button" variant="outline" className="mt-4 min-h-11 w-full" disabled={loading} onClick={loadMore}>
-          {loading && <Spinner aria-hidden="true" />}{logsPending ? '重试读取' : logs.length ? '加载更多' : '读取日志'}
+        {!loading && !error && !logs.length && <p className="text-muted-foreground">暂无已保留的执行日志，记录可能尚未上报或已过期。</p>}
+        {!error && <Button type="button" variant="outline" className="mt-4 min-h-11 w-full" disabled={loading} onClick={loadMore}>
+          {loading && <Spinner aria-hidden="true" />}{logs.length ? '继续读取' : '读取日志'}
         </Button>}
       </div>
     </DialogContent>

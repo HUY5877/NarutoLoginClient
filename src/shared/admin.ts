@@ -74,14 +74,10 @@ export interface DailyTaskFailureDetails {
   logsPending?: boolean;
 }
 
-/** 管理员按需读取的日志分页，包含所有日志级别及固定的快照结束位置。 */
+/** 管理员按最后读取位置继续读取日志。 */
 export interface DailyTaskLogPage {
   taskId: string;
   status: DailyStatus | null;
   logs: DailyTaskFailureDetails['logs'];
   nextCursor: string;
-  snapshotCursor: string;
-  hasMore: boolean;
-  truncated: boolean;
-  logsPending?: boolean;
 }

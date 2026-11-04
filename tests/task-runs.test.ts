@@ -103,21 +103,17 @@ function failureFixture(snapshot: unknown = [null, []]) {
   return { service: f.service, setSnapshot(value: unknown) { snapshot = value; }, get calls() { return calls; } };
 }
 
-function adminLogsFixture(snapshot: unknown = [null, [], '0-0', '', 0, 0, 0]) {
+function adminLogsFixture(snapshot: unknown = [null, [], '', 0, 0]) {
   const f = fixture();
   f.store.initialize = async () => assert.fail('administrator log pages must not query owner records');
   f.store.getEvent = async () => assert.fail('administrator log pages must not query owner records');
   const operations: Array<{ keys: string[]; arguments: string[] }> = [];
   f.driver.eval = async (script, options) => {
     operations.push(options);
-    assert.match(script, /redis\.call\('XRANGE', KEYS\[2\], '\(' \.\. ARGV\[1\], upper, 'COUNT', ARGV\[3\]\)/);
-    assert.match(script, /redis\.call\('XREVRANGE', KEYS\[2\], '\+', '-', 'COUNT', 1\)/);
-    assert.match(script, /if upper == '' then/);
-    assert.match(script, /local upper, firstId, added, length = ARGV\[2\], '', nil, 0/);
-    assert.match(script, /if added == nil then added = length end/);
+    assert.match(script, /redis\.call\('XRANGE', KEYS\[2\], '\(' \.\. ARGV\[1\], '\+', 'COUNT', ARGV\[2\]\)/);
     assert.doesNotMatch(script, /redis\.(?:call|pcall)\('(?:SET|DEL|XREADGROUP|XDEL|EXPIRE|LPUSH|BRPOP|SCAN)'/);
     assert.deepEqual(options.keys, [`naruto:login:tasks:runs:${id}`, `naruto:login:tasks:logs:${id}`]);
-    assert.equal(options.arguments[2], '101');
+    assert.equal(options.arguments[1], '101');
     return snapshot;
   };
   return { ...f, operations, setSnapshot(value: unknown) { snapshot = value; } };
@@ -129,37 +125,35 @@ test('Redis 用户与管理员日志在读取历史时过滤内部实现，保�
   const tail = `1800000000000-${messages.length}`;
   const live = fixture();
   live.setSnapshot([JSON.stringify(run), entries, '1800000000000-1', entries.length, entries.length]);
-  const admin = adminLogsFixture([JSON.stringify(run), entries, tail, '1800000000000-1', entries.length, entries.length, 1]);
+  const admin = adminLogsFixture([JSON.stringify(run), entries, '1800000000000-1', entries.length, entries.length]);
   for (const page of [await live.service.getEvents(id, owner), await admin.service.getAdminLogPage(id)]) {
     assert.deepEqual(page.logs.map(row => row.message), publicTaskMessages);
     assert.equal(page.nextCursor, tail);
-    assert.equal(page.hasMore, false);
-    assert.equal(page.truncated, false);
+    if ('hasMore' in page) { assert.equal(page.hasMore, false); assert.equal(page.truncated, false); }
   }
   live.service.close(); admin.service.close();
 });
 
-test('Redis 整页均为内部日志时仍按原始记录推进，随后可读到公开日志和固定快照终点', async () => {
+test('Redis 整页均为内部日志时仍按原始记录推进，随后可读到公开日志', async () => {
   const hidden = Array.from({ length: 100 }, (_, i) => log(i + 1, { time: at, level: 'WARNING', message: privateTaskMessages[0] }));
   const visible = log(101, { time: at, level: 'INFO', message: '完成组织祈福' });
   const tail = '1800000000000-101';
   const live = fixture();
   live.setSnapshot([JSON.stringify(run), [...hidden, visible], '1800000000000-1', 101, 101]);
-  const admin = adminLogsFixture([JSON.stringify(run), [...hidden, visible], tail, '1800000000000-1', 101, 101, 1]);
+  const admin = adminLogsFixture([JSON.stringify(run), [...hidden, visible], '1800000000000-1', 101, 101]);
   const livePage = await live.service.getEvents(id, owner);
   const adminPage = await admin.service.getAdminLogPage(id);
   for (const page of [livePage, adminPage]) {
     assert.deepEqual(page.logs, []);
     assert.equal(page.nextCursor, '1800000000000-100');
-    assert.equal(page.hasMore, true); assert.equal(page.truncated, false);
+    if ('hasMore' in page) { assert.equal(page.hasMore, true); assert.equal(page.truncated, false); }
   }
-  assert.equal(adminPage.snapshotCursor, tail);
   live.setSnapshot([JSON.stringify(run), [visible], '1800000000000-1', 101, 101]);
-  admin.setSnapshot([JSON.stringify(run), [visible], tail, '1800000000000-1', 101, 101, 1]);
+  admin.setSnapshot([JSON.stringify(run), [visible], '1800000000000-1', 101, 101]);
   for (const page of [await live.service.getEvents(id, owner, livePage.nextCursor),
-    await admin.service.getAdminLogPage(id, adminPage.nextCursor, adminPage.snapshotCursor)]) {
+    await admin.service.getAdminLogPage(id, adminPage.nextCursor)]) {
     assert.deepEqual(page.logs.map(row => row.message), ['完成组织祈福']);
-    assert.equal(page.nextCursor, tail); assert.equal(page.hasMore, false);
+    assert.equal(page.nextCursor, tail); if ('hasMore' in page) assert.equal(page.hasMore, false);
   }
   live.service.close(); admin.service.close();
 });
@@ -198,88 +192,63 @@ test('内部运行错误码映射到公开错误码，原始 Redis 执行快照�
   f.service.close(); failure.service.close();
 });
 
-test('管理员日志按有限快照分页读取超过2000条，保留所有级别且不消费流或查任务归属', async () => {
+test('管理员Redis日志按读取位置分页超过2000条，只返回正文与下一位置', async () => {
   const f = adminLogsFixture();
   const total = 2050;
-  const snapshot = `1800000000000-${total}`;
   const collected: string[] = [];
   let after = '0-0';
   for (let offset = 0; offset < total; offset += 100) {
     const entries = Array.from({ length: Math.min(101, total - offset) }, (_, index) => log(offset + index + 1, {
       time: at, level: ['INFO', 'WARNING', 'ERROR'][index % 3], message: `日志${offset + index + 1}`, workerId: 'private-worker',
     }));
-    f.setSnapshot([JSON.stringify(run), entries, snapshot, '1800000000000-1', total + 20, total + 20, 1]);
-    const page = await f.service.getAdminLogPage(id, after, offset ? snapshot : undefined);
+    f.setSnapshot([JSON.stringify(run), entries, '1800000000000-1', total, total]);
+    const page = await f.service.getAdminLogPage(id, after);
     assert.equal(page.status, 'running_daily');
-    assert.equal(page.snapshotCursor, snapshot);
     assert.equal(page.logs.length, Math.min(100, total - offset));
-    assert.equal(page.hasMore, offset + 100 < total);
-    assert.equal(page.truncated, false);
+    assert.deepEqual(Object.keys(page).sort(), ['logs', 'nextCursor', 'status', 'taskId']);
     assert.notEqual(page.nextCursor, after);
     assert.doesNotMatch(JSON.stringify(page), /private-worker|workerId/);
     collected.push(...page.logs.map(entry => entry.id));
     after = page.nextCursor;
   }
-  assert.equal(collected.length, total);
   assert.equal(new Set(collected).size, total);
-  assert.equal(after, snapshot);
-  assert.deepEqual(f.operations[0].arguments, ['0-0', '', '101']);
-  assert.deepEqual(f.operations[1].arguments, ['1800000000000-100', snapshot, '101']);
+  assert.equal(after, `1800000000000-${total}`);
+  assert.deepEqual(f.operations[0].arguments, ['0-0', '101']);
+  assert.deepEqual(f.operations[1].arguments, ['1800000000000-100', '101']);
   f.service.close();
 });
 
-test('管理员日志覆盖所有运行状态，坏内容推进游标，空快照和过期/裁剪明确标记', async () => {
+test('管理员Redis日志覆盖运行状态，坏正文推进，空响应之后可继续刷新', async () => {
   const f = adminLogsFixture();
-  const tail = '1800000000000-2';
   for (const status of ['queued', 'starting_emulator', 'opening_game', 'preparing_qr', 'waiting_scan', 'finishing_login',
     'running_daily', 'completed', 'failed', 'interrupted', 'expired']) {
-    f.setSnapshot([JSON.stringify({ ...run, status, startedAt: status === 'running_daily' ? at : null }),
-      [log(1), log(2)], tail, '1800000000000-1', 2, 2, 1]);
+    f.setSnapshot([JSON.stringify({ ...run, status, startedAt: status === 'running_daily' ? at : null }), [log(1), log(2)], '1800000000000-1', 2, 2]);
     assert.equal((await f.service.getAdminLogPage(id)).status, status);
   }
-  // An older XINFO lacking entries-added uses length; it cannot prove initial trimming.
-  f.setSnapshot([null, [log(1)], '1800000000000-1', '1800000000000-1', 1, 1, 1]);
-  assert.equal((await f.service.getAdminLogPage(id)).truncated, false);
-  f.setSnapshot([null, [], '0-0', '', 0, 0, 1]);
-  assert.deepEqual(await f.service.getAdminLogPage(id), { taskId: id, status: null, logs: [],
-    nextCursor: '0-0', snapshotCursor: '0-0', hasMore: false, truncated: false });
-  assert.deepEqual(await f.service.getAdminLogPage(id, '0-0', '0-0'), { taskId: id, status: null, logs: [],
-    nextCursor: '0-0', snapshotCursor: '0-0', hasMore: false, truncated: false });
-  f.setSnapshot([null, [], '0-0', '', 0, 0, 0]);
-  assert.equal((await f.service.getAdminLogPage(id)).truncated, false);
-  f.setSnapshot([null, [], tail, '', 0, 0, 0]);
-  const expired = await f.service.getAdminLogPage(id, '1800000000000-1', tail);
-  assert.equal(expired.nextCursor, tail);
-  assert.equal(expired.hasMore, false); assert.equal(expired.truncated, true);
-  f.setSnapshot([null, [log(2)], tail, tail, 9, 1, 1]);
-  assert.equal((await f.service.getAdminLogPage(id)).truncated, true);
-  const corrupt = Array.from({ length: 101 }, (_, index) => log(index + 1, { message: 'invalid' }));
-  f.setSnapshot([null, corrupt, '1800000000000-101', '1800000000000-1', 101, 101, 1]);
+  f.setSnapshot([null, [], '', 0, 0]);
+  assert.deepEqual(await f.service.getAdminLogPage(id, '1800000000000-100'), {
+    taskId: id, status: null, logs: [], nextCursor: '1800000000000-100' });
+  f.setSnapshot([null, Array.from({ length: 101 }, (_, index) => log(index + 1, { message: 'invalid' })), '', 101, 101]);
   const damaged = await f.service.getAdminLogPage(id);
-  assert.equal(damaged.logs.length, 0);
-  assert.equal(damaged.nextCursor, '1800000000000-100');
-  assert.equal(damaged.hasMore, true); assert.equal(damaged.truncated, true);
+  assert.deepEqual(damaged.logs, []); assert.equal(damaged.nextCursor, '1800000000000-100');
+  f.setSnapshot([null, [log(101)], '', 102, 102]);
+  assert.equal((await f.service.getAdminLogPage(id, damaged.nextCursor)).logs[0].id, '1800000000000-101');
   f.service.close();
 });
 
-test('管理员日志拒绝非法游标及损坏/跨任务/越界数据，错误不泄露内容', async () => {
+test('管理员Redis日志拒绝非法位置和损坏执行状态，不泄露原始内容', async () => {
   const f = adminLogsFixture();
   for (const invalid of ['invalid', ` ${id}`, `${id}\n`]) await assert.rejects(f.service.getAdminLogPage(invalid), { status: 400 });
   for (const value of ['01-0', '-1-0', '18446744073709551616-0', '1', ' 1-0', '1-0\n']) {
     await assert.rejects(f.service.getAdminLogPage(id, value), { status: 400 });
-    await assert.rejects(f.service.getAdminLogPage(id, '0-0', value), { status: 400 });
   }
-  await assert.rejects(f.service.getAdminLogPage(id, '2-0', '1-0'), { status: 400 });
   assert.equal(f.operations.length, 0);
   for (const raw of [
-    [JSON.stringify({ ...run, taskId: owner }), [], '0-0', '', 0, 0, 1],
-    ['private-not-json', [], '0-0', '', 0, 0, 1],
-    [null, [log(2), log(1)], '1800000000000-2', '1800000000000-1', 2, 2, 1],
-    [null, [log(1), log(1)], '1800000000000-1', '1800000000000-1', 2, 2, 1],
-    [null, [log(2)], '1800000000000-1', '1800000000000-1', 2, 2, 1],
-    [null, Array.from({ length: 102 }, (_, index) => log(index + 1)), '1800000000000-102', '', 102, 102, 1],
-    [null, [], '0-0', '', -1, 0, 1], [null, [], '0-0', '', 1, 2, 1],
-    [null, [], '0-0', '', Number.MAX_SAFE_INTEGER + 1, 0, 1], [null, [], '0-0', '', 0, 0, true],
+    [JSON.stringify({ ...run, taskId: owner }), [], '', 0, 0],
+    ['private-not-json', [], '', 0, 0],
+    [null, [log(2), log(1)], '', 2, 2], [null, [log(1), log(1)], '', 2, 2],
+    [null, Array.from({ length: 102 }, (_, index) => log(index + 1)), '', 102, 102],
+    [null, [], '', -1, 0], [null, [], '', 1, 2], [null, [], '', Number.MAX_SAFE_INTEGER + 1, 0],
   ]) {
     f.setSnapshot(raw);
     await assert.rejects(f.service.getAdminLogPage(id), error => {
@@ -287,8 +256,6 @@ test('管理员日志拒绝非法游标及损坏/跨任务/越界数据，错误
       assert.doesNotMatch(String(error), /private/); return true;
     });
   }
-  f.setSnapshot([null, [], '3-0', '', 0, 0, 1]);
-  await assert.rejects(f.service.getAdminLogPage(id, '0-0', '2-0'), { code: 'TASK_RUN_DATA_INVALID' });
   f.service.close();
 });
 

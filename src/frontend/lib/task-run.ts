@@ -25,7 +25,6 @@ export interface RunEvents {
 export interface TaskRunView {
   task: RunTask | null; run: TaskRun | null; logs: RunLog[];
   loading: boolean; polling: boolean; unavailable: boolean; truncated: boolean; error: string;
-  logsPending?: boolean;
   restored?: boolean;
 }
 export const emptyTaskRun = (): TaskRunView => ({
@@ -75,14 +74,13 @@ export function parseRunEvents(value: unknown, taskId: string, after: string): R
     previous = log.id;
   }
   if (compareCursor(value.nextCursor, previous) < 0
-    || (value.hasMore && compareCursor(value.nextCursor, after) <= 0)
-    || value.logsPending === true && (value.hasMore || value.logs.length > 0 || value.nextCursor !== after)) throw new Error('invalid run cursor');
+    || (value.hasMore && compareCursor(value.nextCursor, after) <= 0)) throw new Error('invalid run cursor');
   return value as unknown as RunEvents;
 }
-export function appendRunLogs(previous: RunLog[], incoming: RunLog[]): { logs: RunLog[]; trimmed: boolean } {
+export function appendRunLogs(previous: RunLog[], incoming: RunLog[]): { logs: RunLog[] } {
   const seen = new Set(previous.map(log => log.id));
   const combined = [...previous, ...incoming.filter(log => !seen.has(log.id) && Boolean(seen.add(log.id)))];
-  return { logs: combined.slice(-2_000), trimmed: combined.length > 2_000 };
+  return { logs: combined };
 }
 export class RunRequestError extends Error {
   constructor(readonly status: number) { super('Task run request failed'); }
@@ -120,7 +118,7 @@ export class TaskRunTracker {
 
   constructor(private readonly update: (view: TaskRunView) => void,
     private readonly unauthorized: () => void,
-    private readonly request: Read = read, private readonly pause: Wait = wait, private readonly now = Date.now) {}
+    private readonly request: Read = read, private readonly pause: Wait = wait) {}
 
   private emit(patch: Partial<TaskRunView>) {
     this.view = { ...this.view, ...patch };
@@ -187,7 +185,6 @@ export class TaskRunTracker {
     this.view = emptyTaskRun();
   }
   private async poll(taskId: string, controller: AbortController) {
-    let pendingSince: number | undefined;
     try {
       while (this.active(controller)) {
         const body = await this.request(`/api/task-runs/${encodeURIComponent(taskId)}/events?after=${this.cursor}`, controller.signal);
@@ -198,15 +195,11 @@ export class TaskRunTracker {
         const unavailable = events.run === null && (Date.parse(events.task.expiresAt) <= Date.now()
           || ['failed', 'expired'].includes(events.task.status));
         const terminal = unavailable || Boolean(events.run && isRunTerminal(events.run.status));
-        if (terminal && events.logsPending) pendingSince ??= this.now();
-        else pendingSince = undefined;
-        const timedOut = pendingSince !== undefined && this.now() - pendingSince >= 90_000;
-        const done = !events.hasMore && !events.logsPending && terminal;
+        const done = terminal;
         this.emit({ task: events.task, run: events.run, logs: merged.logs, loading: false,
-          polling: !done && !timedOut, unavailable, logsPending: events.logsPending ?? false,
-          truncated: this.view.truncated || events.truncated || merged.trimmed,
-          error: timedOut ? '任务已结束，执行日志仍在上传或暂时不可用。请稍后重试更新。' : '' });
-        if (done || timedOut) return;
+          polling: !done, unavailable,
+          truncated: this.view.truncated || events.truncated, error: '' });
+        if (done) return;
         await this.pause(events.hasMore ? 0 : 1_500, controller.signal);
       }
     } catch (error) { this.fail(error, controller); }

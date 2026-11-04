@@ -71,9 +71,6 @@ function compareIds(left: string, right: string): number {
   const [lm, ls] = left.split('-').map(BigInt), [rm, rs] = right.split('-').map(BigInt);
   return lm < rm ? -1 : lm > rm ? 1 : ls < rs ? -1 : ls > rs ? 1 : 0;
 }
-export function isLogCursorRange(after: string, snapshot: string): boolean {
-  return isStreamCursor(after) && isStreamCursor(snapshot) && compareIds(after, snapshot) <= 0;
-}
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -154,28 +151,6 @@ const failureSnapshotScript = `
 local run = redis.call('GET', KEYS[1])
 local entries = redis.call('XREVRANGE', KEYS[2], '+', '-', 'COUNT', ARGV[1])
 return {run, entries}
-`;
-// Fix the upper cursor on the first page, so continuing work cannot extend this read.
-const adminLogSnapshotScript = `
-local run = redis.call('GET', KEYS[1])
-local exists = redis.call('EXISTS', KEYS[2])
-local upper, firstId, added, length = ARGV[2], '', nil, 0
-if exists == 1 then
-  local info = redis.call('XINFO', 'STREAM', KEYS[2])
-  for i = 1, #info, 2 do
-    if info[i] == 'first-entry' and type(info[i + 1]) == 'table' then firstId = info[i + 1][1] end
-    if info[i] == 'entries-added' then added = info[i + 1] end
-    if info[i] == 'length' then length = info[i + 1] end
-  end
-  if upper == '' then
-    local tail = redis.call('XREVRANGE', KEYS[2], '+', '-', 'COUNT', 1)
-    upper = #tail > 0 and tail[1][1] or '0-0'
-  end
-end
-if added == nil then added = length end
-if upper == '' then upper = '0-0' end
-local entries = redis.call('XRANGE', KEYS[2], '(' .. ARGV[1], upper, 'COUNT', ARGV[3])
-return {run, entries, upper, firstId, added, length, exists}
 `;
 // New tasks only keep a lightweight state/watermark in Redis, never a log stream.
 const archiveStateScript = `return redis.call('GET', KEYS[1])`;
@@ -315,7 +290,7 @@ export class TaskRunService {
   }
   async getFailureDetails(taskId: string): Promise<DailyTaskFailureDetails> {
     if (taskId !== taskId.trim() || !taskIdPattern.test(taskId)) throw new ApiError(400, '无效的任务编号。');
-    const archived = await this.readArchive(taskId, '0-0', undefined, true);
+    const archived = await this.readArchive(taskId, '0-0', true);
     if (archived?.page) return this.failureDetails(taskId, archived.run, archived.page.logs.slice(0, failureLogLimit),
       archived.page.truncated || archived.page.hasMore);
     if (archived?.run?.logSource) return this.waitingFailure(taskId, archived.run);
@@ -350,81 +325,66 @@ export class TaskRunService {
       logs: logs.reverse(), truncated };
   }
   private waitingFailure(taskId: string, run: TaskRun): DailyTaskFailureDetails {
-    return { ...this.failureDetails(taskId, run, [], false), logsPending: run.logSource === 'sls',
-      errorMessage: run.logSource === 'sls' ? '执行日志正在上传或暂时不可用，请稍后重试。' : '本次任务未启用执行日志记录。' };
+    if (run.logSource === 'sls') throw this.logReadFailed();
+    return { ...this.failureDetails(taskId, run, [], false), errorMessage: '本次任务未启用执行日志记录。' };
   }
-  private waitingPage(taskId: string, run: TaskRun, after: string, snapshot?: string): DailyTaskLogPage {
-    const candidate = snapshot ?? run.logCursor ?? after;
-    const upper = compareIds(candidate, after) < 0 ? after : candidate;
-    const pending = run.logSource === 'sls';
-    return { taskId, status: run.status, logs: [], nextCursor: pending ? after : upper,
-      snapshotCursor: upper, hasMore: false, truncated: false, logsPending: pending };
+  private logReadFailed() {
+    return new ApiError(503, '任务日志读取失败，请稍后重试。', 'TASK_LOGS_UNAVAILABLE');
   }
-  async getAdminLogPage(taskId: string, after = '0-0', snapshot?: string): Promise<DailyTaskLogPage> {
+  async getAdminLogPage(taskId: string, after = '0-0'): Promise<DailyTaskLogPage> {
     if (taskId !== taskId.trim() || !taskIdPattern.test(taskId)) throw new ApiError(400, '无效的任务编号。');
-    if (!isStreamCursor(after) || snapshot !== undefined && (!isStreamCursor(snapshot) || compareIds(after, snapshot) > 0)) {
-      throw new ApiError(400, '无效的日志读取位置。');
-    }
-    const archived = await this.readArchive(taskId, after, snapshot);
-    if (archived?.page) return { taskId, status: archived.run?.status ?? null, ...archived.page, logsPending: false };
-    if (archived?.run?.logSource) return this.waitingPage(taskId, archived.run, after, snapshot);
-    const raw = await this.callRedis(adminLogSnapshotScript,
+    if (!isStreamCursor(after)) throw new ApiError(400, '无效的日志读取位置。');
+    const archived = await this.readArchive(taskId, after);
+    if (archived?.page) return { taskId, status: archived.run?.status ?? null,
+      logs: archived.page.logs, nextCursor: archived.page.nextCursor };
+    if (archived?.run?.logSource === 'disabled') return { taskId, status: archived.run.status, logs: [], nextCursor: after };
+    // Legacy Redis streams use the same bounded, non-consuming read as ordinary task logs.
+    const raw = await this.callRedis(snapshotScript,
       [`${this.config.redisQueueKey}:runs:${taskId}`, `${this.config.redisQueueKey}:logs:${taskId}`],
-      [after, snapshot ?? '', String(pageSize + 1)]);
-    if (!Array.isArray(raw) || raw.length !== 7 || !Array.isArray(raw[1]) || raw[1].length > pageSize + 1
-      || !isStreamCursor(raw[2]) || snapshot !== undefined && raw[2] !== snapshot
-      || typeof raw[3] !== 'string' || raw[3] !== '' && !isStreamCursor(raw[3])
-      || !Number.isSafeInteger(raw[4]) || raw[4] < 0 || !Number.isSafeInteger(raw[5]) || raw[5] < 0 || raw[4] < raw[5]
-      || raw[6] !== 0 && raw[6] !== 1) throw invalidData();
+      [after, String(pageSize + 1)]);
+    if (!Array.isArray(raw) || raw.length !== 5 || !Array.isArray(raw[1]) || raw[1].length > pageSize + 1
+      || typeof raw[2] !== 'string' || raw[2] !== '' && !isStreamCursor(raw[2])
+      || !Number.isSafeInteger(raw[3]) || raw[3] < 0 || !Number.isSafeInteger(raw[4]) || raw[4] < 0 || raw[3] < raw[4]) throw invalidData();
     const run = parseRun(raw[0], taskId, this.now());
-    if (run?.logSource) return this.waitingPage(taskId, run, after, snapshot);
-    const snapshotCursor = raw[2];
-    if (compareIds(after, snapshotCursor) > 0) throw new ApiError(400, '无效的日志读取位置。');
+    if (run?.logSource === 'sls') throw this.logReadFailed();
+    if (run?.logSource === 'disabled') return { taskId, status: run.status, logs: [], nextCursor: after };
     const logs: TaskLog[] = [];
-    let nextCursor = after;
-    let previous = after;
-    let truncated = raw[6] === 0 && (after !== '0-0' || snapshotCursor !== '0-0') || raw[4] > raw[5]
-      || after !== '0-0' && raw[3] !== '' && compareIds(after, raw[3]) < 0;
+    let nextCursor = after, previous = after;
     for (const [index, entry] of (raw[1] as unknown[]).entries()) {
       if (!Array.isArray(entry) || entry.length !== 2 || !isStreamCursor(entry[0])
-        || compareIds(entry[0], previous) <= 0 || compareIds(entry[0], snapshotCursor) > 0) throw invalidData();
+        || compareIds(entry[0], previous) <= 0) throw invalidData();
       previous = entry[0];
+      if (index >= pageSize) continue;
+      nextCursor = entry[0];
       const log = parseLog(entry[0], entry[1]);
-      if (!log) truncated = true;
-      if (index < pageSize) {
-        nextCursor = entry[0];
-        if (log && isPublicTaskLog(log)) logs.push(log);
-      }
+      if (log && isPublicTaskLog(log)) logs.push(log);
     }
-    const hasMore = raw[1].length > pageSize;
-    if (!hasMore && compareIds(nextCursor, snapshotCursor) < 0) {
-      // Entries still inside the fixed snapshot have disappeared between pages.
-      truncated = true;
-      nextCursor = snapshotCursor;
-    }
-    return { taskId, status: run?.status ?? null, logs, nextCursor, snapshotCursor, hasMore, truncated };
+    return { taskId, status: run?.status ?? null, logs, nextCursor };
   }
-  private async readArchive(taskId: string, after: string, snapshot?: string, tail = false, live = false) {
+  private async readArchive(taskId: string, after: string, tail = false) {
     if (!this.archive) return null;
     let run: TaskRun | null = null;
-    let redisFailure: unknown;
     try {
       const raw = await this.callRedis(archiveStateScript, [`${this.config.redisQueueKey}:runs:${taskId}`], []);
       run = parseRun(raw, taskId, this.now());
-    } catch (error) { redisFailure = error; }
-    // A rejection can publish its source before its first emit has a cursor. That gap is not completion.
-    if (run?.logSource === 'disabled' || run?.logSource === 'sls' && (!run.logCursor || run.logCursor === '0-0')) return { run, page: null };
+    } catch (error) {
+      // Invalid state must not bypass validation; an unavailable state can still use the durable archive.
+      if (error instanceof ApiError && error.code === 'TASK_RUN_DATA_INVALID') throw error;
+    }
+    if (run?.logSource === 'disabled') return { run, page: null };
     try {
-      // Active tasks keep polling: show the indexed prefix now, but require the final watermark before stopping.
-      const activeLive = live && run && !['completed', 'failed', 'interrupted', 'expired'].includes(run.status);
-      const page = await this.archive.read(taskId, after, snapshot, activeLive ? undefined : run?.logCursor, tail);
-      if (page) return { run, page: { ...page, logs: page.logs.filter(isPublicTaskLog) } };
+      const page = await this.archive.read(taskId, after, tail);
+      if (page) {
+        // Older workers also stored bodies in Redis. An empty archive must not hide that history.
+        if (run && !run.logSource && page.logs.length === 0 && page.nextCursor === after && !page.hasMore) return { run, page: null };
+        return { run, page: { ...page, logs: page.logs.filter(isPublicTaskLog) } };
+      }
+      throw new Error('SLS query returned no page');
     } catch (error) {
       logBackend('warn', 'sls.read_failed', { component: 'task-runs', phase: 'sls.query', error });
+      if (run && !run.logSource) return { run, page: null };
+      throw this.logReadFailed();
     }
-    // Do not repeat an already failed Redis call after spending the archive query budget.
-    if (redisFailure) throw redisFailure;
-    return { run, page: null };
   }
   async getEvents(taskId: string, userId: string, after = '0-0'): Promise<TaskRunEvents> {
     if (taskId !== taskId.trim() || !taskIdPattern.test(taskId)) throw new ApiError(400, '无效的任务编号。');
@@ -432,21 +392,22 @@ export class TaskRunService {
     // The durable database owns authorization even after QR/session Redis TTLs expire.
     const event = await this.database(store => store.getEvent(taskId, userId));
     if (!event) throw new ApiError(404, '任务不存在或不属于当前账号。');
-    const archived = await this.readArchive(taskId, after, undefined, false, true);
+    const archived = await this.readArchive(taskId, after);
     if (archived?.page) {
       const { logs, nextCursor, hasMore, truncated } = archived.page;
       return { task: this.publicTask(event), run: this.knownFailure(event, archived.run), logs, nextCursor, hasMore, truncated, logsPending: false };
     }
-    if (archived?.run?.logSource) return { task: this.publicTask(event), run: archived.run, logs: [], nextCursor: after,
-      hasMore: false, truncated: false, logsPending: archived.run.logSource === 'sls' };
+    if (archived?.run?.logSource === 'disabled') return { task: this.publicTask(event), run: archived.run, logs: [], nextCursor: after,
+      hasMore: false, truncated: false, logsPending: false };
     const raw = await this.callRedis(snapshotScript,
       [`${this.config.redisQueueKey}:runs:${event.id}`, `${this.config.redisQueueKey}:logs:${event.id}`], [after, String(pageSize + 1)]);
     if (!Array.isArray(raw) || raw.length !== 5 || !Array.isArray(raw[1]) || raw[1].length > pageSize + 1
       || typeof raw[2] !== 'string' || raw[2] !== '' && !isStreamCursor(raw[2])
       || !Number.isSafeInteger(raw[3]) || !Number.isSafeInteger(raw[4])) throw invalidData();
     const run = this.knownFailure(event, parseRun(raw[0], event.id, this.now()));
-    if (run?.logSource) return { task: this.publicTask(event), run, logs: [], nextCursor: after,
-      hasMore: false, truncated: false, logsPending: run.logSource === 'sls' };
+    if (run?.logSource === 'sls') throw this.logReadFailed();
+    if (run?.logSource === 'disabled') return { task: this.publicTask(event), run, logs: [], nextCursor: after,
+      hasMore: false, truncated: false, logsPending: false };
     const logs: TaskLog[] = [];
     let nextCursor = after;
     let truncated = after === '0-0' ? raw[3] > raw[4] : raw[2] !== '' && compareIds(after, raw[2]) < 0;

@@ -44,15 +44,14 @@ test('administrator failure details read the requested task without dispatching 
   assert.deepEqual(await service.dailyTaskFailureDetails(admin, id), details);
 });
 
-test('administrator log pages forward the snapshot and cursor without owner lookup or summary reads', async () => {
-  const page = { taskId: id, status: 'completed' as const, logs: [], nextCursor: '1-1',
-    snapshotCursor: '1-2', hasMore: true, truncated: false };
+test('administrator log pages forward only the cursor without owner lookup or summary reads', async () => {
+  const page = { taskId: id, status: 'completed' as const, logs: [], nextCursor: '1-1' };
   const calls: unknown[][] = [];
   const service = new AdminService({ runs: { getSummaries: fail, getFailureDetails: fail, interrupt: fail,
     getAdminLogPage: async (...args) => { calls.push(args); return page; } } });
   assert.deepEqual(await service.dailyTaskLogs(admin, id), page);
-  assert.deepEqual(await service.dailyTaskLogs(admin, id, '1-1', '1-2'), page);
-  assert.deepEqual(calls, [[id, '0-0', undefined], [id, '1-1', '1-2']]);
+  assert.deepEqual(await service.dailyTaskLogs(admin, id, '1-1'), page);
+  assert.deepEqual(calls, [[id, '0-0'], [id, '1-1']]);
 });
 
 test('user search is validated, trimmed and paginated without silently dropping users', async () => {

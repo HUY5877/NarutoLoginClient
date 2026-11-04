@@ -26,6 +26,8 @@ const task = { id: '20000000-0000-4000-8000-000000000001', username: user.userna
   requestedAt: '2026-10-08T00:00:00.000Z', scannedAt: '2026-10-08T00:02:00.000Z', completedAt: '2026-10-08T00:30:00.000Z', status: 'completed' };
 
 test('administrator menu, scan history and user CRUD', { skip: skip || false, timeout: 150_000 }, async t => {
+  const run = (name, body) => t.test(name, { skip: process.env.FRONTEND_TEST_PATTERN
+    ? !new RegExp(process.env.FRONTEND_TEST_PATTERN).test(name) : false }, body);
   const { createServer } = await import(pathToFileURL(require.resolve('vite')).href);
   const { default: react } = await import(pathToFileURL(require.resolve('@vitejs/plugin-react')).href);
   const { default: tailwindcss } = await import(pathToFileURL(require.resolve('@tailwindcss/vite')).href);
@@ -75,13 +77,12 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
             };
             const taskId = url.pathname.split('/')[4];
             const after = url.searchParams.get('after') || '0-0';
-            const snapshotCursor = url.searchParams.get('snapshot') || state.detailResponse.logs.at(-1)?.id || '0-0';
-            const remaining = state.detailResponse.logs.filter(log => compare(log.id, after) > 0 && compare(log.id, snapshotCursor) <= 0);
-            const logs = remaining.slice(0, 100), hasMore = remaining.length > 100;
+            const remaining = state.detailResponse.logs.filter(log => compare(log.id, after) > 0);
+            const logs = remaining.slice(0, 100);
             const current = taskId === task.id ? task : taskId === 'running' ? { status: 'running_daily' }
               : taskId === 'failed' ? { status: 'failed' } : state.extraDaily.find(item => item.id === taskId);
             return reply({ taskId: state.detailIdentityOverride || taskId, status: state.detailResponse.status ?? current?.status ?? null, logs,
-              nextCursor: hasMore ? logs.at(-1).id : snapshotCursor, snapshotCursor, hasMore, truncated: state.detailResponse.truncated });
+              nextCursor: logs.at(-1)?.id || after });
           }
           if (url.pathname === '/api/admin/monthly-stats') {
             const month = url.searchParams.get('month'), sort = url.searchParams.get('sort');
@@ -139,7 +140,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
         async close() { await context.close(); assert.deepEqual(state.errors, []); } };
     }
 
-    await t.test('account status filters combine with search, preserve state and recover from editing the final page on desktop and mobile', async () => {
+    await run('account status filters combine with search, preserve state and recover from editing the final page on desktop and mobile', async () => {
       for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
         const f = await fixture(true, viewport, viewport.width < 768);
         try {
@@ -240,7 +241,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       }
     });
 
-    await t.test('administrator notes can be created, viewed, searched and cleared without changing usernames on desktop and mobile', async () => {
+    await run('administrator notes can be created, viewed, searched and cleared without changing usernames on desktop and mobile', async () => {
       for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
         const f = await fixture(true, viewport, viewport.width < 768);
         try {
@@ -361,7 +362,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       }
     });
 
-    await t.test('scan history prefers trimmed notes while logs and monthly rankings preserve the original username', async () => {
+    await run('scan history prefers trimmed notes while logs and monthly rankings preserve the original username', async () => {
       for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
         const f = await fixture(true, viewport, viewport.width < 768);
         try {
@@ -479,7 +480,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       } finally { await ordinary.close(); }
     });
 
-    await t.test('scan history filters task type with date, pagination, logs and reopening on desktop and mobile', async () => {
+    await run('scan history filters task type with date, pagination, logs and reopening on desktop and mobile', async () => {
       for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
         const f = await fixture(true, viewport, viewport.width < 768);
         try {
@@ -571,7 +572,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       }
     });
 
-    await t.test('monthly rankings switch metrics/months and fit desktop and mobile', async () => {
+    await run('monthly rankings switch metrics/months and fit desktop and mobile', async () => {
       for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
         const f = await fixture(true, viewport);
         try {
@@ -596,7 +597,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       }
     });
 
-    await t.test('daily tasks default to Beijing today on every open, while date selection resets pagination on desktop and mobile', async () => {
+    await run('daily tasks default to Beijing today on every open, while date selection resets pagination on desktop and mobile', async () => {
       for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
         const f = await fixture(true, viewport, viewport.width < 768);
         try {
@@ -649,7 +650,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       }
     });
 
-    await t.test('daily table has a separate log column and every task state opens real logs only on click', async () => {
+    await run('daily table has a separate log column and every task state opens real logs only on click', async () => {
       const f = await fixture();
       try {
         const statuses = { queued: '排队中', starting_emulator: '启动模拟器', opening_game: '打开游戏', preparing_qr: '生成二维码',
@@ -691,7 +692,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       } finally { await f.close(); }
     });
 
-    await t.test('confirmed daily completion stays completed when raw logs report a later worker timeout on desktop and mobile', async () => {
+    await run('confirmed daily completion stays completed when raw logs report a later worker timeout on desktop and mobile', async () => {
       for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
         const f = await fixture(true, viewport, viewport.width < 768);
         try {
@@ -741,7 +742,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       }
     });
 
-    await t.test('log details manually load stable snapshot pages and preserve previous logs through retry', async () => {
+    await run('log details append late records using only after and preserve previous logs through retry', async () => {
       const f = await fixture();
       let release;
       try {
@@ -756,11 +757,11 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
         assert.equal(reads().length, 1, 'Opening reads one page only');
         assert.match(reads()[0], /\/logs\?after=0-0$/);
         assert.equal(await list.locator('[aria-busy="true"]').count(), 0, 'Log reads never keep the task list loading');
-        await details.getByRole('button', { name: '加载更多', exact: true }).scrollIntoViewIfNeeded();
+        await details.getByRole('button', { name: '继续读取', exact: true }).scrollIntoViewIfNeeded();
         await f.page.screenshot({ animations: 'disabled', path: path.join(repository, '.data/admin-preview/task-log-pagination-desktop.png') });
-        f.state.detailResponse.logs.push({ id: '106-0', time: task.requestedAt, level: 'INFO', message: '快照之后的新日志' });
+        f.state.detailResponse.logs.push({ id: '106-0', time: task.requestedAt, level: 'INFO', message: '后来追加的新日志' });
         f.state.moreGate = new Promise(done => { release = done; });
-        const more = details.getByRole('button', { name: '加载更多', exact: true });
+        const more = details.getByRole('button', { name: '继续读取', exact: true });
         await more.click();
         assert.equal(await more.isDisabled(), true);
         assert.equal(await details.getByRole('listitem').count(), 100, 'Existing logs stay mounted while the next page loads');
@@ -769,25 +770,61 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
         assert.equal(await details.getByRole('listitem').count(), 100);
         f.state.detailStatus = 200;
         await details.getByRole('button', { name: '重试读取' }).click();
-        await details.getByText('已加载 105 条', { exact: true }).waitFor();
-        assert.equal(await details.getByRole('listitem').count(), 105);
+        await details.getByText('已加载 106 条', { exact: true }).waitFor();
+        assert.equal(await details.getByRole('listitem').count(), 106);
         assert.equal(await details.getByText('分页日志 1', { exact: true }).count(), 1);
-        assert.equal(await details.getByText('快照之后的新日志', { exact: true }).count(), 0);
-        assert.equal(await details.getByRole('button', { name: '加载更多' }).count(), 0);
-        assert.equal(reads()[1], reads()[2], 'Retry uses the same successful cursor and snapshot');
-        assert.match(reads()[1], /after=100-0&snapshot=105-0$/);
+        assert.equal(await details.getByText('后来追加的新日志', { exact: true }).count(), 1);
+        assert.equal(await details.getByRole('button', { name: '继续读取' }).count(), 1);
+        assert.equal(reads()[1], reads()[2], 'Retry uses the same successful cursor');
+        assert.match(reads()[1], /after=100-0$/);
         await details.getByRole('button', { name: '关闭日志详情' }).click();
         await details.waitFor({ state: 'hidden' });
         await trigger.click();
         await details.getByText('已加载 100 条', { exact: true }).waitFor();
-        await details.getByRole('button', { name: '加载更多' }).click();
+        await details.getByRole('button', { name: '继续读取' }).click();
         await details.getByText('已加载 106 条', { exact: true }).waitFor();
-        await details.getByText('快照之后的新日志', { exact: true }).waitFor();
+        await details.getByText('后来追加的新日志', { exact: true }).waitFor();
         assert.deepEqual(f.state.mutations, []);
       } finally { release?.(); await f.close(); }
     });
 
-    await t.test('log details reject another task, show honest empty state and close on lost admin access', async () => {
+    await run('bottom gestures read again after an empty page without hover or automatic loops', async () => {
+      for (const touch of [false, true]) {
+        const f = await fixture(true, touch ? { width: 390, height: 844 } : { width: 1280, height: 900 }, touch);
+        try {
+          f.state.detailResponse.logs = [];
+          await f.open('近七天扫码情况');
+          await f.page.getByRole('button', { name: `${user.username}的日志详情`, exact: true }).click();
+          const details = f.page.getByRole('dialog', { name: '日志详情', exact: true });
+          const scroll = details.getByRole('region', { name: '任务执行日志', exact: true });
+          await details.getByRole('button', { name: '读取日志', exact: true }).waitFor();
+          const reads = () => f.state.adminReads.filter(path => path.includes('/logs?'));
+          await scroll.hover(); await f.page.waitForTimeout(850);
+          assert.equal(reads().length, 1, 'Open, hover and empty results do not trigger loops');
+          assert.equal(await scroll.evaluate(element => element.scrollHeight <= element.clientHeight), true);
+          if (touch) {
+            const box = await scroll.boundingBox();
+            const cdp = await f.context.newCDPSession(f.page);
+            const x = box.x + box.width / 2, y = box.y + box.height / 2;
+            await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+            await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y - 60 }] });
+            await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+            await cdp.detach();
+          } else await f.page.mouse.wheel(0, 300);
+          await f.page.waitForFunction(() => document.querySelector('[role="dialog"] [role="region"]') !== null);
+          await f.page.waitForTimeout(850);
+          assert.equal(reads().length, 2, 'The same empty cursor can be read on a new downward gesture');
+          f.state.detailResponse.logs = [{ id: '1-0', time: task.requestedAt, level: 'INFO', message: '迟到日志' }];
+          await scroll.focus(); await f.page.keyboard.press('PageDown');
+          await details.getByText('迟到日志', { exact: true }).waitFor();
+          assert.equal(reads().length, 3);
+          await f.page.waitForTimeout(850); assert.equal(reads().length, 3);
+          assert(reads().every(path => !path.includes('snapshot')));
+        } finally { await f.close(); }
+      }
+    });
+
+    await run('log details reject another task, show honest empty state and close on lost admin access', async () => {
       const f = await fixture();
       try {
         await f.open('近七天扫码情况');
@@ -805,7 +842,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
         f.state.detailResponse.logs = [];
         await trigger.click();
         await details.getByText('暂无已保留的执行日志，记录可能尚未上报或已过期。', { exact: true }).waitFor();
-        assert.equal(await details.getByRole('button', { name: '加载更多' }).count(), 0);
+        assert.equal(await details.getByRole('button', { name: '读取日志' }).count(), 1);
         await details.getByRole('button', { name: '关闭日志详情' }).click();
         await details.waitFor({ state: 'hidden' });
         f.state.access = false;
@@ -815,7 +852,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       } finally { await f.close(); }
     });
 
-    await t.test('long desktop logs scroll inside the dialog while the close button remains fixed', async () => {
+    await run('long desktop logs scroll inside the dialog while the close button remains fixed', async () => {
       const f = await fixture();
       try {
         f.state.detailResponse.logs = Array.from({ length: 10 }, (_, index) => ({ id: `1000-${index}`, time: task.requestedAt,
@@ -837,7 +874,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       } finally { await f.close(); }
     });
 
-    await t.test('touch tasks all have log buttons and long logs scroll with a fixed close button in every orientation', async () => {
+    await run('touch tasks all have log buttons and long logs scroll with a fixed close button in every orientation', async () => {
       for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 430, height: 932 }, { width: 844, height: 390 }]) {
         const f = await fixture(true, viewport, true);
         try {
@@ -890,7 +927,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       }
     });
 
-    await t.test('mobile log details retry read errors and dismiss after permission loss', async () => {
+    await run('mobile log details retry read errors and dismiss after permission loss', async () => {
       const f = await fixture(true, { width: 390, height: 844 }, true);
       try {
         f.state.detailStatus = 503;
@@ -909,7 +946,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       } finally { await f.close(); }
     });
 
-    await t.test('create, inspect, search, edit and delete users with shadcn dialogs', async () => {
+    await run('create, inspect, search, edit and delete users with shadcn dialogs', async () => {
       const f = await fixture();
       try {
         await f.open('用户管理');
@@ -951,13 +988,13 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       } finally { await f.close(); }
     });
 
-    await t.test('ordinary users cannot see admin menu or initiate administrator reads', async () => {
+    await run('ordinary users cannot see admin menu or initiate administrator reads', async () => {
       const f = await fixture(false);
       try { assert.equal(await f.page.getByRole('button', { name: '管理员', exact: true }).count(), 0); assert.deepEqual(f.state.adminReads, []); }
       finally { await f.close(); }
     });
 
-    await t.test('pagination exposes all users and closing a modal restores menu focus', async () => {
+    await run('pagination exposes all users and closing a modal restores menu focus', async () => {
       const f = await fixture();
       try {
         f.state.users.push(...Array.from({ length: 21 }, (_, index) => ({ ...user, id: `user-${index}`, username: `Extra_${index}` })));
@@ -972,7 +1009,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       } finally { await f.close(); }
     });
 
-    await t.test('duplicate usernames keep create form open with a useful error; self edit disables role and state', async () => {
+    await run('duplicate usernames keep create form open with a useful error; self edit disables role and state', async () => {
       const f = await fixture();
       try {
         await f.open('用户管理'); const list = f.page.getByRole('dialog', { name: '用户管理', exact: true });
@@ -990,7 +1027,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       } finally { await f.close(); }
     });
 
-    await t.test('losing admin access closes the list and clears sensitive data', async () => {
+    await run('losing admin access closes the list and clears sensitive data', async () => {
       const f = await fixture();
       try {
         await f.open('用户管理'); const list = f.page.getByRole('dialog', { name: '用户管理', exact: true });
@@ -1001,7 +1038,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
       } finally { await f.close(); }
     });
 
-    await t.test('mobile table scrolls inside dialog and editor remains within viewport', async () => {
+    await run('mobile table scrolls inside dialog and editor remains within viewport', async () => {
       const f = await fixture(true, { width: 390, height: 844 });
       try {
         await f.open('用户管理'); const list = f.page.getByRole('dialog', { name: '用户管理', exact: true });

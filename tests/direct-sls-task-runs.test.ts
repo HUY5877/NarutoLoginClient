@@ -14,7 +14,7 @@ function fixture(patch: Record<string, unknown> = {}, enabled = true) {
   const run = { taskId, status: 'failed', updatedAt: time, startedAt: time, finishedAt: time,
     logSource: 'sls', logCursor: '100-2', ...patch };
   const scripts: string[] = [];
-  let result: Awaited<ReturnType<TaskLogArchive['read']>> = null;
+  let result: Awaited<ReturnType<TaskLogArchive['read']>> = { logs: [], nextCursor: '0-0', hasMore: false, truncated: false };
   let error: Error | undefined;
   let reader: TaskLogArchive['read'] | undefined;
   const calls: unknown[][] = [];
@@ -22,8 +22,6 @@ function fixture(patch: Record<string, unknown> = {}, enabled = true) {
   const driver: RunRedisDriver = { isReady: true, async connect() {}, destroy() {}, async eval(script) {
     scripts.push(script);
     if (/return redis.call\('GET', KEYS\[1\]\)/.test(script)) return JSON.stringify(run);
-    if (script.includes('return {run, firstId, lastId, exists}')) return [JSON.stringify(run), '', '0-0', 0];
-    if (script.includes('local upper')) return [JSON.stringify(run), [], '0-0', '', 0, 0, 0];
     if (script.includes('XINFO')) return [JSON.stringify(run), [], '', 0, 0];
     return [JSON.stringify(run), []];
   } };
@@ -31,101 +29,117 @@ function fixture(patch: Record<string, unknown> = {}, enabled = true) {
     ...(enabled ? { archive } : {}), createDriver: () => driver, store: { async initialize() {}, async getLatestForUser() { return event; },
       async getEvent(id, userId) { return id === taskId && userId === owner ? event : null; } },
   });
-  return { service, scripts, calls, run, set result(value: typeof result) { result = value; }, set error(value: Error) { error = value; },
+  return { service, scripts, calls, run, driver, set result(value: typeof result) { result = value; }, set error(value: Error) { error = value; },
     set reader(value: TaskLogArchive['read']) { reader = value; } };
 }
 
-test('SLS 新任务日志未入库时实时和管理员详情均明确等待，不能回退空 Redis 后假装结束', async () => {
-  for (const logCursor of ['100-2', undefined]) {
+test('SLS 空响应正常返回且可再刷新，不因缺少Redis日志水位跳过查询', async () => {
+  for (const logCursor of ['100-2', undefined, '0-0']) {
     const f = fixture({ logCursor });
-    const live = await f.service.getEvents(taskId, owner) as unknown as Record<string, unknown>;
-    assert.equal(live.logsPending, true); assert.equal(live.nextCursor, '0-0'); assert.equal(live.hasMore, false);
-    const admin = await f.service.getAdminLogPage(taskId) as unknown as Record<string, unknown>;
-    assert.equal(admin.logsPending, true); assert.equal(admin.nextCursor, '0-0');
-    const failure = await f.service.getFailureDetails(taskId) as unknown as Record<string, unknown>;
-    assert.equal(failure.logsPending, true); assert.match(String(failure.errorMessage), /上传|重试/);
+    const live = await f.service.getEvents(taskId, owner);
+    assert.equal(live.logsPending, false); assert.equal(live.nextCursor, '0-0');
+    const admin = await f.service.getAdminLogPage(taskId);
+    assert.deepEqual(admin, { taskId, status: 'failed', logs: [], nextCursor: '0-0' });
+    const failure = await f.service.getFailureDetails(taskId);
+    assert.equal(failure.logsPending, undefined); assert.doesNotMatch(failure.errorMessage, /正在上传/);
+    assert.equal(f.calls.length, 3);
     assert(f.scripts.every(script => !/XRANGE|XREVRANGE|XINFO/.test(script)));
   }
 });
 
-test('SLS 实时任务直接返回已验证日志和轻量执行状态，其他账号仍在读取前被拒绝', async () => {
-  const f = fixture();
+test('归属检查先于SLS读取，部分正文直接展示且不传最终水位', async () => {
+  const f = fixture({ logCursor: undefined });
   f.result = { logs: [{ id: '100-1', time, level: 'ERROR', message: '具体错误：执行失败' }],
-    snapshotCursor: '100-2', nextCursor: '100-2', hasMore: false, truncated: false };
+    nextCursor: '100-1', hasMore: false, truncated: false };
   await assert.rejects(f.service.getEvents(taskId, 'someone-else'), { status: 404 });
   assert.equal(f.scripts.length, 0);
-  const live = await f.service.getEvents(taskId, owner);
-  assert.equal(live.logs.length, 1);
-  assert.equal((live.run as unknown as Record<string, unknown>).logSource, 'sls');
-  assert.equal((live as unknown as Record<string, unknown>).logsPending, false);
-  assert.equal(live.nextCursor, '100-2');
-  assert.equal(f.calls[0][3], '100-2', 'lightweight run watermark is passed to the archive');
+  for (const status of ['running_daily', 'completed', 'failed', 'interrupted', 'expired']) {
+    f.run.status = status;
+    const live = await f.service.getEvents(taskId, owner);
+    assert.equal(live.logs.length, 1); assert.equal(live.logsPending, false); assert.equal(live.nextCursor, '100-1');
+    assert.equal((await f.service.getAdminLogPage(taskId)).logs.length, 1);
+  }
+  assert(f.calls.every(args => args.length === 3 && args[2] === false));
 });
 
-test('归档读取边界再次过滤全部服务出口，包括失败原因和动作名，保持分页元信息', async () => {
+test('归档出口过滤内部错误及动作名，管理员仅返回最小四个字段', async () => {
   const f = fixture({ errorCode: 'login_failed' });
   for (const message of privateTaskMessages) {
     f.result = { logs: [
       { id: '100-2', time, level: 'ERROR', message: `具体错误：${message}` },
       { id: '100-1', time, level: 'INFO', message: `动作 2/38：${message}`, actionIndex: 2, actionTotal: 38 },
-    ], nextCursor: '100-2', snapshotCursor: '100-3', hasMore: true, truncated: false };
+    ], nextCursor: '100-2', hasMore: true, truncated: false };
     const live = await f.service.getEvents(taskId, owner);
-    const admin = await f.service.getAdminLogPage(taskId);
-    for (const page of [live, admin]) {
-      assert.deepEqual(page.logs, [], message);
-      assert.equal(page.nextCursor, '100-2'); assert.equal(page.hasMore, true);
-      assert.equal(page.truncated, false); assert.equal(page.logsPending, false);
-    }
-    assert.equal(admin.snapshotCursor, '100-3');
+    assert.deepEqual(live.logs, []); assert.equal(live.nextCursor, '100-2'); assert.equal(live.hasMore, true);
+    assert.deepEqual(await f.service.getAdminLogPage(taskId), { taskId, status: 'failed', logs: [], nextCursor: '100-2' });
     const failure = await f.service.getFailureDetails(taskId);
-    assert.deepEqual(failure.logs, []);
-    assert.equal(failure.actionName, undefined);
+    assert.deepEqual(failure.logs, []); assert.equal(failure.actionName, undefined);
     assert.equal(failure.errorMessage, '未能确认游戏登录成功，请重新申请。');
   }
-  f.service.close();
 });
 
-test('SLS 新任务查询失败或客户端未启用 SLS 时保留读取位置并提示待恢复，不用空 Redis 宣布成功', async () => {
+test('SLS读取失败和未配置均明确报读失败，不伪装日志正在上传', async () => {
   for (const enabled of [true, false]) {
-    const f = fixture({}, enabled); f.error = new Error('fixture provider failure');
-    const live = await f.service.getEvents(taskId, owner, '100-1');
-    assert.equal(live.logsPending, true); assert.equal(live.nextCursor, '100-1'); assert.equal(live.hasMore, false);
-    const page = await f.service.getAdminLogPage(taskId, '100-1');
-    assert.equal(page.logsPending, true); assert.equal(page.nextCursor, '100-1'); assert.equal(page.snapshotCursor, '100-2');
-    assert.equal((await f.service.getFailureDetails(taskId)).logsPending, true);
+    const f = fixture({}, enabled); f.error = new Error('fixture provider secret');
+    for (const read of [() => f.service.getEvents(taskId, owner, '100-1'),
+      () => f.service.getAdminLogPage(taskId, '100-1'), () => f.service.getFailureDetails(taskId)]) {
+      await assert.rejects(read(), error => {
+        assert.equal((error as { code: string }).code, 'TASK_LOGS_UNAVAILABLE');
+        assert.match(String(error), /读取失败/); assert.doesNotMatch(String(error), /secret|上传/); return true;
+      });
+    }
   }
 });
 
-test('显式关闭日志的任务不查询 SLS，不等待不存在的日志，失败详情说明未记录', async () => {
+test('显式关闭日志不查SLS，失败详情说明未记录', async () => {
   const f = fixture({ logSource: 'disabled', logCursor: undefined });
   const live = await f.service.getEvents(taskId, owner);
-  assert.equal(live.logsPending, false); assert.equal(live.run?.logSource, 'disabled');
-  const page = await f.service.getAdminLogPage(taskId);
-  assert.equal(page.logsPending, false); assert.equal(page.hasMore, false);
-  const details = await f.service.getFailureDetails(taskId);
-  assert.equal(details.logsPending, false); assert.match(details.errorMessage, /未启用/);
+  assert.equal(live.logsPending, false);
+  assert.deepEqual(await f.service.getAdminLogPage(taskId), { taskId, status: 'failed', logs: [], nextCursor: '0-0' });
+  assert.match((await f.service.getFailureDetails(taskId)).errorMessage, /未启用/);
   assert.equal(f.calls.length, 0);
 });
 
-test('运行中的实时日志展示已入库前缀，终态仍须追上最终水位，管理员始终严格检查', async () => {
-  const f = fixture({ status: 'running_daily', logCursor: '100-5' });
-  f.reader = async (_id, after, _snapshot, watermark) => {
-    if (watermark === '100-5') return null;
-    assert.equal(watermark, undefined);
-    return { logs: [1, 2, 3].filter(seq => Number(after.split('-')[1]) < seq)
-      .map(seq => ({ id: `100-${seq}`, time, level: 'INFO', message: `日志 ${seq}` })),
-    nextCursor: '100-3', snapshotCursor: '100-3', hasMore: false, truncated: false };
-  };
-  const live = await f.service.getEvents(taskId, owner);
-  assert.deepEqual(live.logs.map(row => row.id), ['100-1', '100-2', '100-3']);
-  assert.equal(live.logsPending, false); assert.equal(live.nextCursor, '100-3');
-  const admin = await f.service.getAdminLogPage(taskId);
-  assert.equal(admin.logsPending, true); assert.equal(admin.nextCursor, '0-0');
-  assert.equal((await f.service.getFailureDetails(taskId)).logsPending, true);
-  for (const status of ['completed', 'failed', 'interrupted', 'expired']) {
-    f.run.status = status;
-    const terminal = await f.service.getEvents(taskId, owner, live.nextCursor);
-    assert.equal(terminal.logsPending, true); assert.equal(terminal.nextCursor, '100-3');
-    assert.equal(terminal.hasMore, false); assert.deepEqual(terminal.logs, []);
+test('旧任务无日志来源且SLS确实为空时仍读取Redis历史，新SLS任务不回退', async () => {
+  const f = fixture({ logSource: undefined, logCursor: undefined });
+  const original = f.driver.eval;
+  f.driver.eval = async (script, options, signal) => script.includes('XINFO')
+    ? [JSON.stringify(f.run), [['100-1', ['json', JSON.stringify({ time, level: 'INFO', message: '旧任务日志' })]]], '100-1', 1, 1]
+    : original(script, options, signal);
+  const page = await f.service.getAdminLogPage(taskId);
+  assert.equal(page.logs[0]?.message, '旧任务日志'); assert.equal(page.nextCursor, '100-1');
+  assert.equal(f.calls.length, 1);
+  f.result = { logs: [], nextCursor: '100-2', hasMore: true, truncated: false };
+  assert.equal((await f.service.getAdminLogPage(taskId)).nextCursor, '100-2', '隐藏页已推进时不能回读旧Redis页');
+  f.service.close();
+});
+
+test('Redis状态不可用仍能读归档，归档失败不重复等待同一次Redis故障', async () => {
+  const f = fixture();
+  f.driver.eval = async script => { f.scripts.push(script); throw new Error('fixture redis unavailable'); };
+  f.result = { logs: [{ id: '100-1', time, level: 'INFO', message: '归档可读' }], nextCursor: '100-1', hasMore: false, truncated: false };
+  assert.equal((await f.service.getAdminLogPage(taskId)).logs[0].message, '归档可读');
+  assert.equal(f.scripts.length, 1); assert.equal(f.calls.length, 1);
+  f.error = new Error('fixture provider failed');
+  await assert.rejects(f.service.getAdminLogPage(taskId), { code: 'TASK_LOGS_UNAVAILABLE' });
+  assert.equal(f.scripts.length, 2); assert.equal(f.calls.length, 2);
+});
+
+test('已确认旧任务来源时SLS故障回读Redis，显式SLS来源仍报读取失败', async () => {
+  for (const logSource of [undefined, 'sls']) {
+    const f = fixture({ logSource });
+    f.error = new Error('fixture provider failed');
+    const original = f.driver.eval;
+    const entries = [['100-1', ['json', JSON.stringify({ time, level: 'ERROR', message: '具体错误：旧任务执行失败' })]]];
+    f.driver.eval = async (script, options, signal) => script.includes('XINFO')
+      ? [JSON.stringify(f.run), entries, '100-1', 1, 1] : script.includes('XREVRANGE')
+        ? [JSON.stringify(f.run), entries] : original(script, options, signal);
+    for (const read of [() => f.service.getEvents(taskId, owner), () => f.service.getAdminLogPage(taskId),
+      () => f.service.getFailureDetails(taskId)]) {
+      if (logSource === 'sls') await assert.rejects(read(), { code: 'TASK_LOGS_UNAVAILABLE' });
+      else assert.equal((await read()).logs[0].message, '具体错误：旧任务执行失败');
+    }
+    assert.equal(f.calls.length, 3);
+    f.service.close();
   }
 });

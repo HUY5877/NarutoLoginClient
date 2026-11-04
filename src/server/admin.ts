@@ -157,9 +157,9 @@ export class AdminService {
     if (taskId !== taskId.trim() || !uuid.test(taskId)) throw new ApiError(400, '无效的任务编号。');
     return await this.options.runs.interrupt(taskId);
   }
-  async dailyTaskLogs(admin: User, taskId: string, after = '0-0', snapshot?: string): Promise<DailyTaskLogPage> {
+  async dailyTaskLogs(admin: User, taskId: string, after = '0-0'): Promise<DailyTaskLogPage> {
     requireAdmin(admin);
-    return await this.options.runs.getAdminLogPage(taskId, after, snapshot);
+    return await this.options.runs.getAdminLogPage(taskId, after);
   }
   async monthlyStats(admin: User, query: { month?: unknown; sort?: unknown; page?: unknown }): Promise<MonthlyStatsPage> {
     requireAdmin(admin);

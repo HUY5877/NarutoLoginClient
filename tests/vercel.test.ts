@@ -74,13 +74,12 @@ test('Vercel 重写参数兼容日志分页，并保留权限、游标及 URL �
   AuthService.prototype.getUser = async token => token === 'admin.fixture.signature'
     ? { id: otherTaskId, username: 'admin-fixture', isAdmin: true }
     : token === 'user.fixture.signature' ? { id: otherTaskId, username: 'user-fixture', isAdmin: false } : null;
-  TaskRunService.prototype.getAdminLogPage = async (id, after = '0-0', snapshot) => {
-    calls.push([id, after, snapshot]);
+  TaskRunService.prototype.getAdminLogPage = async (id, after = '0-0') => {
+    calls.push([id, after]);
     const first = after === '0-0' ? 1 : 101;
     const logs = Array.from({ length: 100 }, (_, index) => ({ id: `${first + index}-0`,
       time: '2026-10-14T09:30:00.000Z', level: 'INFO' as const, message: `执行记录 ${first + index}` }));
-    return { taskId: id, status: 'completed', logs, nextCursor: `${first + 99}-0`,
-      snapshotCursor: '205-0', hasMore: true, truncated: false };
+    return { taskId: id, status: 'completed', logs, nextCursor: `${first + 99}-0` };
   };
   let server: Server | undefined;
   try {
@@ -103,18 +102,17 @@ test('Vercel 重写参数兼容日志分页，并保留权限、游标及 URL �
     const firstPage = await first.json();
     assert.equal(firstPage.logs.length, 100);
     assert.equal(firstPage.nextCursor, '100-0');
-    assert.equal(firstPage.snapshotCursor, '205-0');
-    assert.equal(firstPage.hasMore, true);
-    assert.deepEqual(calls, [[taskId, '0-0', undefined]]);
-    const next = await fetch(`${base}?after=100-0&snapshot=205-0&${rewrite}`, { headers });
+    assert.deepEqual(Object.keys(firstPage).sort(), ['logs', 'nextCursor', 'status', 'taskId']);
+    assert.deepEqual(calls, [[taskId, '0-0']]);
+    const next = await fetch(`${base}?after=100-0&${rewrite}`, { headers });
     assert.equal(next.status, 200);
     const nextPage = await next.json();
     assert.equal(nextPage.logs.length, 100);
     assert.equal(nextPage.logs[0].id, '101-0');
     assert.equal(nextPage.nextCursor, '200-0');
-    assert.deepEqual(calls.at(-1), [taskId, '100-0', '205-0']);
+    assert.deepEqual(calls.at(-1), [taskId, '100-0']);
     for (const query of ['after=invalid', 'after=1-0&after=2-0', 'after[x]=1-0',
-      'snapshot=invalid', 'snapshot=1-0&snapshot=2-0', 'snapshot[x]=1-0', 'after=2-0&snapshot=1-0']) {
+      'snapshot=1-0', 'snapshot=invalid', 'snapshot=1-0&snapshot=2-0', 'snapshot[x]=1-0', 'after=2-0&snapshot=1-0']) {
       const invalid = await fetch(`${base}?${query}&${rewrite}`, { headers });
       assert.equal(invalid.status, 400, query);
       assert.equal((await invalid.json()).error, '无效的日志读取位置。');
@@ -122,7 +120,7 @@ test('Vercel 重写参数兼容日志分页，并保留权限、游标及 URL �
     assert.equal(calls.length, 2);
     const alternateRewrite = `path=${encodeURIComponent(`admin/daily-tasks/${otherTaskId}/logs`)}`;
     assert.equal((await fetch(`${base}?after=0-0&${alternateRewrite}`, { headers })).status, 200);
-    assert.deepEqual(calls.at(-1), [taskId, '0-0', undefined]);
+    assert.deepEqual(calls.at(-1), [taskId, '0-0']);
     const invalidId = base.replace(taskId, 'invalid');
     assert.equal((await fetch(`${invalidId}?after=0-0&${alternateRewrite}`, { headers })).status, 400);
     assert.equal(calls.length, 3);
