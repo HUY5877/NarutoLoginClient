@@ -12,6 +12,7 @@ export function useAdminDailyTasks(path: string | null, page: number, onAccessLo
   const [listLoading, setListLoading] = useState(false);
   const [listError, setListError] = useState('');
   const [runLoading, setRunLoading] = useState(false);
+  const [settledRuns, setSettledRuns] = useState<{ source: TaskList; page: number; refresh: number } | null>(null);
   const [runError, setRunError] = useState('');
   const [runRefresh, setRunRefresh] = useState(0);
   const [known, setKnown] = useState<{ path: string; runs: Map<string, DailyTaskRun> } | null>(null);
@@ -19,13 +20,15 @@ export function useAdminDailyTasks(path: string | null, page: number, onAccessLo
   const runRequest = useRef<AbortController | null>(null);
   const current = path && list?.path === path ? list : null;
   const currentPage = current ? Math.min(page, Math.max(1, Math.ceil(current.data.total / 20))) : 1;
+  const statusLoading = runLoading || Boolean(current?.data.items.length
+    && (settledRuns?.source !== current || settledRuns.page !== currentPage || settledRuns.refresh !== runRefresh));
 
   const reload = useCallback(async () => {
     listRequest.current?.abort(); runRequest.current?.abort(); runRequest.current = null;
     setList(previous => previous?.path === path ? previous : null);
     setKnown(previous => previous?.path === path ? previous : null);
     setListError(''); setRunError(''); setRunLoading(false);
-    if (!path) { setListLoading(false); return; }
+    if (!path) { setSettledRuns(null); setListLoading(false); return; }
     const controller = new AbortController(); listRequest.current = controller;
     setListLoading(true);
     try {
@@ -75,7 +78,12 @@ export function useAdminDailyTasks(path: string | null, page: number, onAccessLo
         if (runRequest.current !== controller) return;
         if (error instanceof AdminRequestError && [401, 403].includes(error.status)) { onAccessLost(); return; }
         setRunError(errorMessage(error));
-      } finally { if (runRequest.current === controller) setRunLoading(false); }
+      } finally {
+        if (runRequest.current === controller) {
+          setSettledRuns({ source, page: currentPage, refresh: runRefresh });
+          setRunLoading(false);
+        }
+      }
     })();
     return () => { controller.abort(); if (runRequest.current === controller) runRequest.current = null; };
   }, [current, currentPage, runRefresh, onAccessLost]);
@@ -83,6 +91,6 @@ export function useAdminDailyTasks(path: string | null, page: number, onAccessLo
   const data = current ? { ...current.data, page: currentPage,
     items: current.data.items.slice((currentPage - 1) * 20, currentPage * 20)
       .map(item => withDailyTaskRun(item, known?.path === current.path ? known.runs.get(item.id) ?? null : null)) } : null;
-  return { data, loading: listLoading || runLoading, listLoading, error: listError || runError,
+  return { data, loading: listLoading || statusLoading, listLoading, statusLoading, error: listError || runError,
     reload, reloadRuns: () => setRunRefresh(value => value + 1) };
 }

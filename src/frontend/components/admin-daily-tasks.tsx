@@ -21,6 +21,14 @@ import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, Tabl
 function statusVariant(status: DailyStatus) {
   return status === 'completed' ? 'default' : ['failed', 'interrupted'].includes(status) ? 'destructive' : 'secondary';
 }
+function TaskStatus({ status, mainTask, loading, className }: {
+  status: DailyStatus; mainTask?: MainTask; loading: boolean; className?: string;
+}) {
+  return <Badge variant={loading ? 'secondary' : statusVariant(status)} className={className} aria-busy={loading}>
+    {loading ? <><Spinner aria-hidden="true" />状态获取中</>
+      : status === 'unavailable' ? '暂无执行状态' : adminTaskStatusLabel(status, mainTask)}
+  </Badge>;
+}
 const beijingToday = () => new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus }: {
   open: boolean; onOpenChange: (open: boolean) => void; onAccessLost: () => void; returnFocus: () => void;
@@ -38,7 +46,7 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
       setToday(date); setSelectedDate(date); setMainTask('daily'); setPage(1);
     } else setSelectedDate(null);
   }, [open]);
-  const { data, loading, listLoading, error, reload, reloadRuns } = useAdminDailyTasks(open && selectedDate
+  const { data, loading, listLoading, statusLoading, error, reload, reloadRuns } = useAdminDailyTasks(open && selectedDate
     ? `/api/admin/daily-tasks?${selectedDate === 'all' ? '' : `date=${selectedDate}&`}mainTask=${mainTask}` : null, page, onAccessLost);
   useEffect(() => { if (data?.date) setToday(data.date); }, [data?.date]);
   useEffect(() => { if (data && page !== data.page) setPage(data.page); }, [data?.page, page]);
@@ -99,7 +107,7 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
               <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatAdminDate(task.requestedAt)}</TableCell>
               <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatAdminDate(task.scannedAt)}</TableCell>
               <TableCell className="whitespace-nowrap text-xs tabular-nums">{formatAdminDate(task.completedAt)}</TableCell>
-              <TableCell><Badge variant={statusVariant(task.status)}>{adminTaskStatusLabel(task.status, task.mainTask)}</Badge></TableCell>
+              <TableCell><TaskStatus status={task.status} mainTask={task.mainTask} loading={statusLoading} /></TableCell>
               <TableCell className="pr-4"><div className="flex items-center gap-2">
                 <AdminTaskLogDetails task={task} onAccessLost={onAccessLost} />
                 <AdminTaskInterrupt task={task} onAccessLost={onAccessLost} onSubmitted={() => interruptionSubmitted(task.username)} />
@@ -110,7 +118,7 @@ export function AdminDailyTasks({ open, onOpenChange, onAccessLost, returnFocus 
           {data.items.map(task => <li key={task.id} className="rounded-xl border bg-white/45 p-4">
             <div className="mb-3 flex items-start justify-between gap-3">
               <span className="min-w-0 break-all text-sm font-semibold">{task.note?.trim() || task.username}</span>
-              <Badge variant={statusVariant(task.status)} className="shrink-0">{adminTaskStatusLabel(task.status, task.mainTask)}</Badge>
+              <TaskStatus status={task.status} mainTask={task.mainTask} loading={statusLoading} className="shrink-0" />
             </div>
             <dl className="space-y-2 text-xs leading-5">
               <div className="grid grid-cols-[4rem_minmax(0,1fr)] gap-2">
