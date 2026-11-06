@@ -47,7 +47,10 @@ export function createHyrzMcpHandler(config: Config, dependencies: McpDependenci
         id: 'bind_qq', description: '为 QQ 号生成一次性网站绑定链接。请把链接交给该 QQ 用户，由其登录网站并明确确认；返回链接不代表已绑定。',
         inputSchema: z.object({ qq }).strict(),
         outputSchema: z.object({ qq: z.string(), bindingUrl: z.string(), expiresAt: z.string() }).or(failure),
-        execute: async input => safely(() => bindings().create(input.qq)),
+        execute: async (input, context) => safely(() => {
+          const auth = context?.mcp?.extra.authInfo as { extra?: { publicOrigin?: string } } | undefined;
+          return bindings().create(input.qq, auth?.extra?.publicOrigin);
+        }),
       }),
       unbind_qq: createTool({
         id: 'unbind_qq', description: '解除指定网站用户的数字 QQ 号绑定。保留原有 QQ 官方机器人 openid 群提醒绑定。',
@@ -126,8 +129,8 @@ export function createHyrzMcpHandler(config: Config, dependencies: McpDependenci
       if (origin && !allowed.has(origin) || !origin && req.get('Sec-Fetch-Site') === 'cross-site') return reject(res, 403, '请求来源不被允许。');
       if (!dependencies.mcpBindings) return reject(res, 503, 'QQ 号绑定服务尚未配置。');
       // Keep the backend credential out of the SDK request context and diagnostics.
-      (req as Request & { auth: { token: string; clientId: string; scopes: string[] } }).auth = {
-        token: 'hyrz-trusted-backend', clientId: 'hyrz', scopes: ['hyrz:tools'],
+      (req as Request & { auth: { token: string; clientId: string; scopes: string[]; extra: { publicOrigin: string } } }).auth = {
+        token: 'hyrz-trusted-backend', clientId: 'hyrz', scopes: ['hyrz:tools'], extra: { publicOrigin: ownOrigin },
       };
       await mcpServer().startHTTP({ url: new URL(req.originalUrl, 'http://localhost'), httpPath: '/api/mcp', req, res });
     },

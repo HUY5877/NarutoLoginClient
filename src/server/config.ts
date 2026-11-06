@@ -105,8 +105,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(sessionCookieName)) throw new Error('SESSION_COOKIE_NAME 格式不正确');
   const sls = slsConfig(env);
   const hyrzMcpToken = env.HYRZ_MCP_TOKEN?.trim() || undefined;
-  if (hyrzMcpToken && (Buffer.byteLength(hyrzMcpToken) < 32 || /\s/.test(hyrzMcpToken))) {
-    throw new Error('HYRZ_MCP_TOKEN 至少需要 32 字节且不能包含空白');
+  if (hyrzMcpToken && /\s/.test(hyrzMcpToken)) {
+    throw new Error('HYRZ_MCP_TOKEN 不能包含空白');
   }
   let hyrzPublicUrl: string | undefined;
   if (env.HYRZ_PUBLIC_URL?.trim()) {

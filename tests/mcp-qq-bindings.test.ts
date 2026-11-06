@@ -16,7 +16,8 @@ const config = { databaseUrl: 'postgresql://fixture:fixture@db.invalid/fixture',
 const status = (value: number) => (error: unknown) => error instanceof ApiError && error.status === value;
 const tokenOf = (value: { bindingUrl: string }) => new URL(value.bindingUrl).hash.slice('#mcp-bind='.length);
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, overrides: Partial<typeof config> = {}) {
+  const serviceConfig = { ...config, ...overrides };
   const db = new PGlite(); let clock = start; let tail = Promise.resolve();
   const pool = { async connect() {
     const previous = tail; let unlock!: () => void;
@@ -24,8 +25,8 @@ async function fixture(t: TestContext) {
     return { query: (sql: string, values?: unknown[]) => values ? db.query<Record<string, unknown>>(sql, values)
       : db.exec(sql).then(results => results.at(-1) ?? { rows: [] }), release: () => unlock() };
   }, async end() { await db.close(); } };
-  const store = new PgMcpQqBindingStore(config, { pool, beforeInitialize: async () => {} });
-  const service = new McpQqBindingService(config, { store, now: () => clock, beforeInitialize: async () => {
+  const store = new PgMcpQqBindingStore(serviceConfig, { pool, beforeInitialize: async () => {} });
+  const service = new McpQqBindingService(serviceConfig, { store, now: () => clock, beforeInitialize: async () => {
     await db.exec(`CREATE SCHEMA naruto_login; CREATE TABLE naruto_login.users(id uuid PRIMARY KEY, is_invalid boolean NOT NULL DEFAULT false);
       INSERT INTO naruto_login.users VALUES ('${userId}', false), ('${otherId}', false), ('${disabledId}', true);
       CREATE TABLE naruto_login.qq_bindings(user_id uuid PRIMARY KEY, member_openid text NOT NULL);
@@ -36,6 +37,49 @@ async function fixture(t: TestContext) {
   t.after(() => service.close());
   return { service, db, advance: (ms: number) => { clock += ms; } };
 }
+
+test('未配置网站地址时从本次请求生成链接，不同请求不会串地址', async t => {
+  const { service } = await fixture(t, { hyrzPublicUrl: undefined });
+  for (const origin of ['https://test.example', 'https://second.example/', 'http://localhost:4300', 'http://127.0.0.1:4300', 'http://[::1]:4300']) {
+    const created = await service.create('123456789', origin);
+    assert.equal(new URL(created.bindingUrl).origin, new URL(origin).origin);
+    assert.equal((await service.preview(tokenOf(created))).qq, '123456789');
+  }
+  await assert.rejects(service.create('123456789'), status(503));
+});
+
+test('配置的网站地址优先于当前请求地址', async t => {
+  const { service } = await fixture(t);
+  const created = await service.create('123456789', 'https://preview.example');
+  assert.equal(new URL(created.bindingUrl).origin, 'https://hyrz.example');
+});
+
+test('非法网站根地址在建表和写入前被拒绝', async () => {
+  for (const origin of [undefined, '', 'https://', 'http://site.example', 'http://localhost.evil', 'ftp://site.example',
+    'https://user:pass@site.example', 'https://@site.example', 'https://site.example/path', 'https://site.example//',
+    'https://site.example?x=1', 'https://site.example?', 'https://site.example#part', 'https://site.example#',
+    ' https://site.example', 'https://site.example ', 'https://site.example\\path', 'https://site.example\n']) {
+    let initialized = false;
+    const service = new McpQqBindingService({ databaseUrl: config.databaseUrl, timeoutMs: config.timeoutMs }, {
+      beforeInitialize: async () => { initialized = true; throw new Error('unexpected initialization'); },
+    });
+    await assert.rejects(service.create('123456789', origin), status(503), String(origin));
+    assert.equal(initialized, false, String(origin));
+    await service.close();
+  }
+});
+
+test('非法配置地址也不能绕过根地址限制或降级到请求地址', async () => {
+  for (const origin of ['http://site.example', 'https://@site.example', 'https://site.example?', 'https://site.example#']) {
+    let initialized = false;
+    const service = new McpQqBindingService({ ...config, hyrzPublicUrl: origin }, {
+      beforeInitialize: async () => { initialized = true; throw new Error('unexpected initialization'); },
+    });
+    await assert.rejects(service.create('123456789', 'https://valid.example'), status(503), origin);
+    assert.equal(initialized, false, origin);
+    await service.close();
+  }
+});
 
 test('未确认的数字 QQ 只能预览，数据库仅保存令牌摘要', async t => {
   const { service, db } = await fixture(t);

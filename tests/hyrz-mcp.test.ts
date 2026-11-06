@@ -34,8 +34,9 @@ function dependencies() {
   } as unknown as Dependencies;
 }
 
-async function fixture(t: TestContext, deps = dependencies(), appConfig = config) {
+async function fixture(t: TestContext, deps = dependencies(), appConfig = config, trustProxy = false) {
   const app = createApp(appConfig, deps);
+  if (trustProxy) app.set('trust proxy', 1);
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
@@ -46,6 +47,34 @@ async function fixture(t: TestContext, deps = dependencies(), appConfig = config
   const address = server.address(); assert(address && typeof address !== 'string');
   return `http://127.0.0.1:${address.port}`;
 }
+
+test('绑定链接按每次MCP连接的地址生成，无需额外配置网站地址', async t => {
+  const deps = dependencies();
+  const origins: unknown[] = [];
+  deps.mcpBindings!.create = async (qq, origin?: string) => {
+    origins.push(origin);
+    return { qq, bindingUrl: `${origin}/#mcp-bind=${token}`, expiresAt: '2099-11-06T00:05:00.000Z' };
+  };
+  const base = await fixture(t, deps, loadConfig({ HYRZ_MCP_TOKEN: secret }));
+  const results = await Promise.all(Array.from({ length: 3 }, () => call(base, 'bind_qq', { qq: '123456789' })));
+  assert.deepEqual(origins, [base, base, base]);
+  assert(results.every(result => result.bindingUrl === `${base}/#mcp-bind=${token}`));
+});
+
+test('反代并发连接各自保留地址与协议，不采用客户端伪造的转发域名', async t => {
+  const deps = dependencies();
+  deps.mcpBindings!.create = async (qq, origin?: string) => {
+    await new Promise(resolve => setImmediate(resolve));
+    return { qq, bindingUrl: `${origin}/#mcp-bind=${token}`, expiresAt: '2099-11-06T00:05:00.000Z' };
+  };
+  const base = await fixture(t, deps, loadConfig({ HYRZ_MCP_TOKEN: secret }), true);
+  for (const version of ['2026-07-28', '2025-11-25']) {
+    const results = await Promise.all(['https', 'http'].map(protocol =>
+      call(base, 'bind_qq', { qq: '123456789' }, { 'X-Forwarded-Proto': protocol,
+        'X-Forwarded-Host': 'untrusted.example', 'MCP-Protocol-Version': version })));
+    assert.deepEqual(results.map(result => result.bindingUrl), ['https', 'http'].map(protocol => `${protocol}://${new URL(base).host}/#mcp-bind=${token}`));
+  }
+});
 
 async function payload(response: Response): Promise<Record<string, any>> {
   const text = await response.text();
@@ -93,6 +122,13 @@ test('hyrz 拒绝缺失或错误后台密钥，网站Cookie不能替代后台认
     assert.equal(response.status, 401);
     assert.match(response.headers.get('www-authenticate') ?? '', /Bearer/);
     assert.equal((await response.text()).includes(secret), false);
+  }
+});
+
+test('客户端请求头中的短Token必须与服务端配置完全一致', async t => {
+  const base = await fixture(t, dependencies(), loadConfig({ HYRZ_MCP_TOKEN: 'demo' }));
+  for (const [value, expectedStatus] of [['demo', 200], ['Demo', 401], ['demo1', 401], ['dem', 401]]) {
+    assert.equal((await rpc(base, 'tools/list', {}, { Authorization: `Bearer ${value}` })).status, expectedStatus);
   }
 });
 
@@ -224,7 +260,7 @@ test('真实MCP串起QQ确认、用户解析、二维码提交查询和解绑，
     const result = values ? await db.query<Record<string, unknown>>(sql, values) : (await db.exec(sql)).at(-1)!;
     return { rows: result.rows };
   }, release() {} }; }, async end() {} };
-  const appConfig = loadConfig({ HYRZ_MCP_TOKEN: secret, HYRZ_PUBLIC_URL: 'https://site.example',
+  const appConfig = loadConfig({ HYRZ_MCP_TOKEN: secret,
     DATABASE_URL: 'postgresql://fixture:fixture@database.invalid/fixture' });
   const store = new PgMcpQqBindingStore(appConfig, { beforeInitialize: async () => {}, pool });
   const bindingService = new McpQqBindingService(appConfig, { beforeInitialize: async () => {}, store });
@@ -237,6 +273,7 @@ test('真实MCP串起QQ确认、用户解析、二维码提交查询和解绑，
   const pending = await call(base, 'bind_qq', { qq: '123456789' });
   assert.equal((await call(base, 'qq_to_userid', { qq: '123456789' })).code, 'MCP_QQ_NOT_BOUND');
   const link = new URL(pending.bindingUrl);
+  assert.equal(link.origin, base);
   const confirm = await fetch(`${base}/api/mcp-bindings/confirm`, { method: 'POST', headers: {
     'Content-Type': 'application/json', Cookie: 'naruto_session=fixture.cookie.signature',
   }, body: JSON.stringify({ token: link.hash.slice('#mcp-bind='.length), expectedUserId: userId }) });

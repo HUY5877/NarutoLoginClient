@@ -208,15 +208,20 @@ export class McpQqBindingService {
   private async run<T>(work: () => Promise<T>): Promise<T> {
     try { await this.ready(); return await work(); } catch (error) { throw safeError(error); }
   }
-  private origin(): string {
+  private origin(requestOrigin?: string): string {
     try {
-      const url = new URL(this.config.hyrzPublicUrl ?? '');
-      if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw unavailable();
+      const value = this.config.hyrzPublicUrl ?? requestOrigin;
+      // Validate the original text too: URL normalizes empty credentials, bare
+      // query/fragment markers, whitespace and backslashes before inspection.
+      if (!fullMatch(/^https?:\/\/[^/?#@\\\s]+\/?$/, value)) throw unavailable();
+      const url = new URL(value);
+      if (url.username || url.password || url.search || url.hash || url.pathname !== '/'
+        || url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) throw unavailable();
       return url.origin;
     } catch { throw unavailable(); }
   }
-  async create(qq: string): Promise<{ qq: string; bindingUrl: string; expiresAt: string }> {
-    validateQq(qq); const origin = this.origin();
+  async create(qq: string, requestOrigin?: string): Promise<{ qq: string; bindingUrl: string; expiresAt: string }> {
+    validateQq(qq); const origin = this.origin(requestOrigin);
     return this.run(async () => {
       const token = randomBytes(32).toString('base64url'); const now = new Date(this.now()); const expires = new Date(now.getTime() + 300000);
       await this.store.create(qq, digest(token), now, expires);

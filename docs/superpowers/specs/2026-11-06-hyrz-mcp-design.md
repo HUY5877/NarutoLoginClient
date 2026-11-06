@@ -10,6 +10,8 @@
 
 MCP 仅供可信机器人后台接入。后台配置服务端 Bearer 密钥，不向普通用户分发；该后台负责传入可信 QQ 号及其解析出的用户 ID。`userId` 是业务选择参数，不是登录凭据，任意用户客户端不能凭它获得权限。网站用户不配置个人 Token。未配置密钥时 MCP 关闭，网站继续工作。每次操作核对账号存在且未停用。
 
+用户后续确认采用共享 Token：从所选 Cloudflare KV 读取 `HYRZ_MCP_TOKEN`，可信客户端在 TOML 的 `Authorization: Bearer ...` 中传同一值，服务端比较一致性；不限制 Token 最短长度，不加 OAuth。`HYRZ_PUBLIC_URL` 改为可选覆盖，默认按每次连接的站点地址生成绑定链接，HTTPS 或本地 HTTP 根地址经严格校验，并发请求独立传递。
+
 ## 五个工具
 
 | 工具 | 输入 | 行为 |
@@ -38,6 +40,6 @@ MCP 仅供可信机器人后台接入。后台配置服务端 Bearer 密钥，�
 
 采用核对后的 `@mastra/mcp` 2.x 与当前 MCP `2026-07-28`（消息格式 JSON-RPC 2.0），开启旧客户端基本工具调用兼容。现有 TypeScript ESM 保留；Node 最低版本按 Mastra 要求提升到 22.13。
 
-测试使用合成账号、受控依赖和临时数据库；不连接真实 QQ、Cloudflare、Redis、OSS 或生产数据库。检查真实 MCP HTTP 工具发现/调用、并发隔离、拒绝未认证调用、QQ 确认/冲突/过期/解绑、任务归属/重复申请/二维码失效。执行类型检查、全套低并发测试、构建和本地 HTTP 冒烟。只创建本地中文提交；不推送、部署或修改真实配置。
+测试使用合成账号、受控依赖和临时数据库；检查真实 MCP HTTP 工具发现/调用、并发隔离、拒绝未认证调用、QQ 确认/冲突/过期/解绑、任务归属/重复申请/二维码失效。执行类型检查、相关测试和构建。后续按用户要求将提交推送 `origin/test`，并设置测试环境 Cloudflare 的 MCP Token；不部署，不连接真实 QQ、Redis、OSS 或生产数据库。
 
 参考：<https://mastra.ai/reference/tools/mcp-server>；<https://modelcontextprotocol.io/specification/2026-07-28>；<https://github.com/tencent-connect/qqbot-nodejs/blob/main/USAGE.md>。

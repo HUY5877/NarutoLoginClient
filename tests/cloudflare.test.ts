@@ -37,6 +37,19 @@ const profiles = {
     REDIS_URL: 'redis://fixture:fixture@redis.invalid:6379/0', JWT_SECRET: 't'.repeat(32) },
 };
 
+test('MCP共享Token读取所选Cloudflare配置，支持短值且不回退本地Token', async () => {
+  for (const profile of ['prod', 'test'] as const) {
+    const config = await createRuntimeConfigLoader({ env: { ...cloudflareTestEnv, APP_ENV: profile,
+      HYRZ_MCP_TOKEN: 'local-value-is-ignored' }, fetch: kv({ ...profiles[profile], HYRZ_MCP_TOKEN: profile }) })();
+    assert.equal(config.hyrzMcpToken, profile);
+    assert.equal(config.hyrzPublicUrl, undefined);
+  }
+  const missing = await createRuntimeConfigLoader({ env: { ...cloudflareTestEnv,
+    HYRZ_MCP_TOKEN: 'local-value-is-ignored' }, fetch: kv(profiles.prod) })();
+  assert.equal(missing.hyrzMcpToken, undefined);
+  assert.throws(() => loadConfig({ HYRZ_MCP_TOKEN: 'has whitespace' }), /不能包含空白/);
+});
+
 test('只读取所选独立 namespace，同连接的不同数据库、任务和日志前缀由 KV 决定', async () => {
   for (const profile of ['prod', 'test'] as const) {
     const calls: URL[] = [];

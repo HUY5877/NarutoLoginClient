@@ -4,16 +4,28 @@
 
 ## 接入与配置
 
-该接口供可信机器人后台使用，不作为普通用户直接连接的公开 MCP。后台有权选择网站 `userId` 执行业务，所以后台必须从自己的可信消息上下文识别用户，不能让模型或普通用户任意替换他人的身份。QQ 号、用户 ID、任务 ID 都不是认证凭据。
+该接口使用一个共享 Token，供可信 MCP 客户端或机器人后台使用。服务器比较请求中的 Token 与配置是否一致，不需要额外的 MCP 登录流程。持有 Token 的调用方有权选择网站 `userId` 执行业务，所以机器人后台仍需从可信消息上下文识别用户，不能让普通用户任意替换他人的身份。QQ 号、用户 ID、任务 ID 都不是认证凭据。
 
 在当前环境对应的 Cloudflare KV namespace 中配置以下键，沿用既有 `APP_ENV` 的正式/测试隔离：
 
 | 键 | 含义 |
 | --- | --- |
-| `HYRZ_MCP_TOKEN` | 至少 32 字节、没有空白的随机后台密钥，仅网站服务和可信机器人后台持有 |
-| `HYRZ_PUBLIC_URL` | 本网站 HTTPS 根地址，如 `https://huy1.site`；本机开发允许 localhost HTTP |
+| `HYRZ_MCP_TOKEN` | 必填；不含空白的共享 Token，服务器和可信客户端配置同一个值，不限制最短长度 |
+| `HYRZ_PUBLIC_URL` | 可选；仅需固定绑定域名时填写 HTTPS 根地址，本机开发允许 localhost HTTP。默认使用本次 MCP 连接的网站地址 |
 
-请求头设置 `Authorization: Bearer <HYRZ_MCP_TOKEN>`。不要把密钥交给普通用户、放进网页、工具参数或日志。不配置密钥时 MCP 返回 503，网站其他功能继续工作。绑定链接需要 `HYRZ_PUBLIC_URL`、数据库和已有网站登录；返回 OSS 链接需要既有 OSS 配置。仅修改源码不会自动配置 KV 或发布。
+请求头设置 `Authorization: Bearer <HYRZ_MCP_TOKEN>`。Token 不一致或缺失时返回 401，服务端未配置时返回 503，网站其他功能继续工作。不要把共享 Token 放进仓库、网页、工具参数或日志。绑定链接使用本次连接的地址、数据库和已有网站登录；返回 OSS 链接使用网站既有 OSS 配置。仅修改源码不会自动配置 KV 或发布。
+
+Codex 客户端在 `~/.codex/config.toml`（Windows 为 `%USERPROFILE%\.codex\config.toml`）中加入以下内容，把网址和 Token 替换成实际值即可：
+
+```toml
+[mcp_servers.hyrz]
+url = "https://你的网站域名/api/mcp"
+http_headers = { Authorization = "Bearer 与服务器一致的Token" }
+```
+
+这里的 `http_headers` 会随每次 MCP HTTP 请求发送，写法见 [OpenAI 官方配置说明](https://learn.chatgpt.com/docs/config-file/config-reference)。只需地址和 Token，无需 OAuth 或单独配置站点根地址。修改后在客户端重新连接该 MCP。
+
+绑定链接默认按当前请求的站点域名生成，不直接采用 `X-Forwarded-Host`。Vercel 入口已信任平台的一层反代，能识别 HTTPS；自行部署反代时应正确传递站点 Host 并在受信任入口启用反代协议识别，或使用可选的 `HYRZ_PUBLIC_URL` 固定 HTTPS 域名。每次调用的地址通过独立请求上下文传递，并发连接不会互相覆盖。
 
 使用支持 Streamable HTTP 的客户端连接本站 `/api/mcp`。当前协议每个请求的元信息和方法头由原生 MCP SDK 填写，建议使用 SDK，不手写不完整的 JSON-RPC 请求。旧协议下 Mastra 可能把联合结果放在 `structuredContent.result`，以其工具发现返回的输出结构为准。
 
