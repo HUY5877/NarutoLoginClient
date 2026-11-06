@@ -3,7 +3,8 @@ import { Pool } from 'pg';
 import type { Config } from './config.js';
 import { ApiError } from './errors.js';
 import { logBackend } from './logging.js';
-import { parseQqAuthorization, QqAuthorizationCipher, QQ_APP_ID, qqExpired, qqUnavailable, verifyQqAuthorization,
+import { prepareQqAuthorizationTables } from './qq-authorization-schema.js';
+import { parseStrictQqAuthorization as parseQqAuthorization, QqAuthorizationCipher, QQ_APP_ID, qqExpired, qqUnavailable, verifyQqAuthorization,
   type ParsedQqAuthorization, type QqAuthorization, type QqEncryptedAuthorization } from './qq-authorization-data.js';
 
 export interface QqAuthorizationRecord extends QqEncryptedAuthorization {
@@ -37,7 +38,7 @@ const limitReached = () => new ApiError(409, '最多保存 200 个账号，请�
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const columns = `id, owner_id AS "ownerId", openid_fingerprint AS fingerprint, label, account_hint AS "accountHint",
   captured_at AS "capturedAt", expires_at AS "expiresAt", updated_at AS "updatedAt", ciphertext, nonce, auth_tag AS "authTag"`;
-const schema = `CREATE TABLE IF NOT EXISTS naruto_login.qq_authorizations (
+const schema = `CREATE TABLE IF NOT EXISTS naruto_login.qq_authorizations_encrypted (
   id uuid PRIMARY KEY,
   owner_id uuid NOT NULL REFERENCES naruto_login.users(id) ON DELETE CASCADE,
   app_id text NOT NULL CHECK (app_id = '1104307008'),
@@ -53,8 +54,8 @@ const schema = `CREATE TABLE IF NOT EXISTS naruto_login.qq_authorizations (
   encryption_version smallint NOT NULL DEFAULT 1 CHECK (encryption_version = 1),
   UNIQUE (owner_id, app_id, openid_fingerprint)
 );
-CREATE INDEX IF NOT EXISTS qq_authorizations_owner_updated_idx
-  ON naruto_login.qq_authorizations (owner_id, updated_at DESC, id);`;
+CREATE INDEX IF NOT EXISTS qq_authorizations_encrypted_owner_updated_idx
+  ON naruto_login.qq_authorizations_encrypted (owner_id, updated_at DESC, id);`;
 const rowRecord = (row: Record<string, unknown>): QqAuthorizationRecord => ({
   id: row.id as string, ownerId: row.ownerId as string, fingerprint: row.fingerprint as string,
   label: row.label as string, accountHint: row.accountHint as string,
@@ -89,7 +90,7 @@ export class PgQqAuthorizationStore implements QqAuthorizationStore {
       const result = await client.query('SELECT current_database() AS database');
       if (result.rows[0]?.database !== 'naruto_login_test') throw qqUnavailable();
       await client.query('BEGIN'); transaction = true;
-      await client.query("SELECT pg_advisory_xact_lock(hashtext('naruto_login.qq_authorizations.schema.v1'))");
+      await prepareQqAuthorizationTables(client, 'test');
       // users is owned by the existing auth service. Never initialize or modify existing tables here.
       await client.query(schema); await client.query('COMMIT'); transaction = false;
     } finally {
@@ -110,16 +111,16 @@ export class PgQqAuthorizationStore implements QqAuthorizationStore {
         await client.query('BEGIN'); transaction = true;
         // Serialize each owner's count + insertion so simultaneous uploads cannot exceed the limit.
         await client.query("SELECT pg_advisory_xact_lock(hashtext('huy:qq-owner:' || $1))", [record.ownerId]);
-        const found = await client.query(`SELECT ${columns} FROM naruto_login.qq_authorizations
+        const found = await client.query(`SELECT ${columns} FROM naruto_login.qq_authorizations_encrypted
           WHERE owner_id = $1 AND app_id = $2 AND openid_fingerprint = $3 FOR UPDATE`, [record.ownerId, QQ_APP_ID, record.fingerprint]);
         if (found.rows[0] && new Date(found.rows[0].capturedAt as string | Date).getTime() > Date.parse(record.capturedAt)) {
           await client.query('COMMIT'); transaction = false; return rowRecord(found.rows[0]);
         }
         if (!found.rows[0]) {
-          const count = await client.query('SELECT count(*)::int AS count FROM naruto_login.qq_authorizations WHERE owner_id = $1', [record.ownerId]);
+          const count = await client.query('SELECT count(*)::int AS count FROM naruto_login.qq_authorizations_encrypted WHERE owner_id = $1', [record.ownerId]);
           if (Number(count.rows[0]?.count) >= 200) throw limitReached();
         }
-        const result = await client.query(`INSERT INTO naruto_login.qq_authorizations
+        const result = await client.query(`INSERT INTO naruto_login.qq_authorizations_encrypted
           (id, owner_id, app_id, openid_fingerprint, label, account_hint, captured_at, expires_at, updated_at, ciphertext, nonce, auth_tag)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
           ON CONFLICT (owner_id, app_id, openid_fingerprint) DO UPDATE SET label = EXCLUDED.label,
@@ -133,7 +134,7 @@ export class PgQqAuthorizationStore implements QqAuthorizationStore {
   }
   async list(ownerId: string): Promise<QqAuthorizationRecord[]> {
     return this.request(async client => {
-      const result = await client.query(`SELECT ${columns} FROM naruto_login.qq_authorizations WHERE owner_id = $1
+      const result = await client.query(`SELECT ${columns} FROM naruto_login.qq_authorizations_encrypted WHERE owner_id = $1
         ORDER BY updated_at DESC, id LIMIT 201`, [ownerId]);
       if (result.rows.length > 200) throw limitReached();
       return result.rows.map(rowRecord);
@@ -141,12 +142,12 @@ export class PgQqAuthorizationStore implements QqAuthorizationStore {
   }
   async get(ownerId: string, id: string): Promise<QqAuthorizationRecord | null> {
     return this.request(async client => {
-      const result = await client.query(`SELECT ${columns} FROM naruto_login.qq_authorizations WHERE owner_id = $1 AND id = $2`, [ownerId, id]);
+      const result = await client.query(`SELECT ${columns} FROM naruto_login.qq_authorizations_encrypted WHERE owner_id = $1 AND id = $2`, [ownerId, id]);
       return result.rows[0] ? rowRecord(result.rows[0]) : null;
     });
   }
   async delete(ownerId: string, id: string): Promise<boolean> {
-    return this.request(async client => (await client.query('DELETE FROM naruto_login.qq_authorizations WHERE owner_id = $1 AND id = $2 RETURNING id', [ownerId, id])).rows.length === 1);
+    return this.request(async client => (await client.query('DELETE FROM naruto_login.qq_authorizations_encrypted WHERE owner_id = $1 AND id = $2 RETURNING id', [ownerId, id])).rows.length === 1);
   }
   async close(): Promise<void> { await this.pool.end(); }
 }
@@ -168,6 +169,9 @@ export class QqAuthorizationService {
     return { store, cipher };
   }
   async initialize(): Promise<void> { await this.ready().store.initialize(); }
+  isConfigured(): boolean {
+    return this.config.appEnv === 'test' && !!this.config.databaseUrl && /^[0-9a-f]{64}$/i.test(this.config.qqAuthorizationEncryptionKey ?? '');
+  }
   async close(): Promise<void> { await this.store?.close(); }
   private item(row: QqAuthorizationRecord): QqAuthorizationItem {
     return { id: row.id, label: row.label, accountHint: row.accountHint, capturedAt: row.capturedAt,

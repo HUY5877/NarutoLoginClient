@@ -1,13 +1,16 @@
-import { dailyStatusLabels, type DailyTaskPage, type DailyTaskFailureDetails, type ManagedUser, type PageResult, type MonthlyStatsPage } from '../../shared/admin';
+import { MAX_USER_NOTE_LENGTH, dailyStatusLabels, type DailyStatus, type DailyTaskPage, type DailyTaskRunPage, type DailyTaskFailureDetails, type ManagedUser, type PageResult, type MonthlyStatsPage } from '../../shared/admin';
 import { parseLoginType } from '../../shared/login-types';
+import { mainTasks, parseUserOptions, type MainTask } from '../../shared/user-options';
 
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const date = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value));
 const nullableDate = (value: unknown) => value === null || date(value);
+const validNote = (value: unknown) => value === undefined || typeof value === 'string' && [...value].length <= MAX_USER_NOTE_LENGTH;
 const calendarDate = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
   && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 export function isManagedUser(value: unknown): value is ManagedUser {
   return object(value) && typeof value.id === 'string' && typeof value.username === 'string'
+    && validNote(value.note)
     && typeof value.isAdmin === 'boolean' && typeof value.isInvalid === 'boolean' && date(value.createdAt)
     && (value.applicationStatus === null || ['pending', 'approved', 'rejected'].includes(String(value.applicationStatus)));
 }
@@ -22,17 +25,44 @@ export function isUsersPage(value: unknown): value is PageResult<ManagedUser> {
   return isPage(value) && value.items.every(isManagedUser);
 }
 export function isDailyPage(value: unknown): value is DailyTaskPage {
-  return isPage(value) && object(value) && calendarDate(value.date)
+  return isPage(value) && object(value) && value.page === 1 && value.pageSize === 20
+    && value.total === value.items.length && new Set(value.items.map(item => object(item) ? item.id : undefined)).size === value.items.length
+    && calendarDate(value.date)
+    && (value.mainTask === undefined || mainTasks.includes(value.mainTask as MainTask))
     && (value.startDate === undefined || calendarDate(value.startDate))
     && (value.selectedDate === undefined || calendarDate(value.selectedDate) && value.selectedDate <= value.date
       && (value.startDate === undefined || value.selectedDate >= value.startDate))
     && value.timeZone === 'Asia/Shanghai' && value.items.every(item => object(item)
       && typeof item.id === 'string' && typeof item.username === 'string' && date(item.requestedAt)
+      && validNote(item.note) && parseUserOptions(item.userOptions) !== null
+      && (item.mainTask === undefined || mainTasks.includes(item.mainTask as MainTask))
+      && (item.mainTask ?? 'daily') === (value.mainTask ?? 'daily')
       && parseLoginType(item.loginType) !== null
       && nullableDate(item.scannedAt) && nullableDate(item.completedAt)
       && (item.errorCode === undefined || typeof item.errorCode === 'string' && /^[a-z0-9_]{1,64}$/.test(item.errorCode))
       && (item.errorMessage === undefined || typeof item.errorMessage === 'string')
       && typeof item.status === 'string' && Object.hasOwn(dailyStatusLabels, item.status));
+}
+export function isDailyTaskRunPage(value: unknown, ids: readonly string[]): value is DailyTaskRunPage {
+  const statuses = ['queued', 'starting_emulator', 'opening_game', 'preparing_qr', 'waiting_scan',
+    'finishing_login', 'running_daily', 'completed', 'failed', 'interrupted', 'expired'];
+  return object(value) && Array.isArray(value.items) && value.items.length === ids.length
+    && value.items.every((item, index) => object(item) && item.id === ids[index]
+      && (item.run === null || object(item.run) && item.run.taskId === item.id
+        && typeof item.run.status === 'string' && statuses.includes(item.run.status) && nullableDate(item.run.startedAt) && nullableDate(item.run.finishedAt)
+        && (item.run.authorizedAt === undefined || date(item.run.authorizedAt))
+        && (item.run.secretRealmCompletedAt === undefined || date(item.run.secretRealmCompletedAt))
+        && (item.run.errorCode === undefined || typeof item.run.errorCode === 'string' && /^[a-z0-9_]{1,64}$/.test(item.run.errorCode))));
+}
+export function adminTaskStatusLabel(status: DailyStatus, mainTask: MainTask = 'daily') {
+  return status === 'running_daily' && mainTask === 'arena_weekly' ? '刷周胜中' : dailyStatusLabels[status];
+}
+export function canInterruptDailyTask(status: DailyStatus) {
+  return ['starting_emulator', 'opening_game', 'preparing_qr', 'waiting_scan', 'finishing_login', 'running_daily'].includes(status);
+}
+export function isTaskInterruptResponse(value: unknown, taskId: string): value is { taskId: string; status: 'interrupted' } {
+  return object(value) && value.taskId === taskId && value.status === 'interrupted'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(taskId);
 }
 export function isMonthlyStatsPage(value: unknown): value is MonthlyStatsPage {
   const positive = (number: unknown) => Number.isSafeInteger(number) && (number as number) > 0;
@@ -40,6 +70,7 @@ export function isMonthlyStatsPage(value: unknown): value is MonthlyStatsPage {
     && value.timeZone === 'Asia/Shanghai' && ['requests', 'days'].includes(String(value.sort))
     && Number.isSafeInteger(value.totalRequests) && (value.totalRequests as number) >= 0
     && value.items.every(item => object(item) && typeof item.userId === 'string' && typeof item.username === 'string'
+      && validNote(item.note)
       && positive(item.rank) && positive(item.requestCount) && positive(item.requestDays)
       && (item.requestDays as number) <= 31 && (item.requestDays as number) <= (item.requestCount as number));
 }
@@ -58,9 +89,9 @@ export function isDailyTaskFailureDetails(value: unknown): value is DailyTaskFai
 export class AdminRequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
-export async function adminRequest(path: string, signal: AbortSignal, method = 'GET', body?: unknown): Promise<unknown> {
+export async function adminRequest(path: string, signal: AbortSignal, method = 'GET', body?: unknown, timeoutMs = 15_000): Promise<unknown> {
   const response = await fetch(path, { method, credentials: 'same-origin', cache: 'no-store',
-    signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
     ...(method !== 'GET' ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) } : {}) });
   if (response.status === 204) return null;
   const result: unknown = await response.json();

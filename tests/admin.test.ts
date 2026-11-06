@@ -5,7 +5,8 @@ import { ApiError } from '../src/server/errors.js';
 import { UserManagementError, UsernameTakenError, type AdminStore, type DailyEvent, type StoredUser } from '../src/server/database.js';
 import type { User } from '../src/server/auth.js';
 import type { TaskRun } from '../src/server/task-runs.js';
-import type { ManagedUser } from '../src/shared/admin.js';
+import type { DailyTask, ManagedUser } from '../src/shared/admin.js';
+import * as adminTypes from '../src/shared/admin.js';
 import type { UserOptions } from '../src/shared/user-options.js';
 
 const admin: User = { id: '10000000-0000-4000-8000-000000000001', username: 'Admin', isAdmin: true };
@@ -18,7 +19,7 @@ function fixture(overrides: Partial<AdminStore> = {}, runs: Array<TaskRun | null
   const store: AdminStore = { initialize: async () => {}, listUsers: fail, getManagedUser: fail, createUser: fail,
     updateUser: fail, deleteUser: fail, listDailyEvents: fail, listMonthlyStats: fail, ...overrides };
   const service = new AdminService({ store, now: () => clock, runs: {
-    getSummaries: async ids => { calls.push(ids); return runs; }, getFailureDetails: fail, getAdminLogPage: fail,
+    getSummaries: async ids => { calls.push(ids); return runs; }, getFailureDetails: fail, getAdminLogPage: fail, interrupt: fail,
   } });
   return { service, store, calls };
 }
@@ -31,27 +32,26 @@ test('all administrator methods reject ordinary accounts before touching storage
   const normal = { ...admin, isAdmin: false };
   for (const operation of [() => service.listUsers(normal, {}), () => service.getUser(normal, id),
     () => service.createUser(normal, {}), () => service.updateUser(normal, id, {}), () => service.deleteUser(normal, id),
-    () => service.dailyTasks(normal, {}), () => service.monthlyStats(normal, {}), () => service.dailyTaskFailureDetails(normal, id),
-    () => service.dailyTaskLogs(normal, id)]) await assert.rejects(operation(), errorIs(403, 'ADMIN_REQUIRED'));
+    () => service.dailyTasks(normal, {}), () => service.dailyTaskRuns(normal, { ids: id }), () => service.monthlyStats(normal, {}), () => service.dailyTaskFailureDetails(normal, id),
+    () => service.dailyTaskLogs(normal, id), () => service.interruptDailyTask(normal, id)]) await assert.rejects(operation(), errorIs(403, 'ADMIN_REQUIRED'));
 });
 
 test('administrator failure details read the requested task without dispatching jobs or querying a user-owned event', async () => {
   const details = { taskId: id, errorCode: 'daily_failed', errorMessage: '具体错误：未找到挑战按钮', logs: [], truncated: false };
-  const service = new AdminService({ runs: { getSummaries: fail, getAdminLogPage: fail, getFailureDetails: async taskId => {
+  const service = new AdminService({ runs: { getSummaries: fail, getAdminLogPage: fail, interrupt: fail, getFailureDetails: async taskId => {
     assert.equal(taskId, id); return details;
   } } });
   assert.deepEqual(await service.dailyTaskFailureDetails(admin, id), details);
 });
 
-test('administrator log pages forward the snapshot and cursor without owner lookup or summary reads', async () => {
-  const page = { taskId: id, status: 'completed' as const, logs: [], nextCursor: '1-1',
-    snapshotCursor: '1-2', hasMore: true, truncated: false };
+test('administrator log pages forward only the cursor without owner lookup or summary reads', async () => {
+  const page = { taskId: id, status: 'completed' as const, logs: [], nextCursor: '1-1' };
   const calls: unknown[][] = [];
-  const service = new AdminService({ runs: { getSummaries: fail, getFailureDetails: fail,
+  const service = new AdminService({ runs: { getSummaries: fail, getFailureDetails: fail, interrupt: fail,
     getAdminLogPage: async (...args) => { calls.push(args); return page; } } });
   assert.deepEqual(await service.dailyTaskLogs(admin, id), page);
-  assert.deepEqual(await service.dailyTaskLogs(admin, id, '1-1', '1-2'), page);
-  assert.deepEqual(calls, [[id, '0-0', undefined], [id, '1-1', '1-2']]);
+  assert.deepEqual(await service.dailyTaskLogs(admin, id, '1-1'), page);
+  assert.deepEqual(calls, [[id, '0-0'], [id, '1-1']]);
 });
 
 test('user search is validated, trimmed and paginated without silently dropping users', async () => {
@@ -60,7 +60,80 @@ test('user search is validated, trimmed and paginated without silently dropping 
   } });
   assert.deepEqual(await f.service.listUsers(admin, { search: ' Naru_to ', page: '2' }), { items: [user], total: 41, page: 2, pageSize: 20 });
   for (const page of ['0', '-1', '1.1', '01', '1000000', ['1', '2']]) await assert.rejects(f.service.listUsers(admin, { page }), errorIs(400, 'INVALID_PAGE'));
-  for (const search of [['x'], 'x'.repeat(25)]) await assert.rejects(f.service.listUsers(admin, { search }), errorIs(400, 'INVALID_SEARCH'));
+  for (const search of [['x'], 'x'.repeat(101)]) await assert.rejects(f.service.listUsers(admin, { search }), errorIs(400, 'INVALID_SEARCH'));
+});
+
+test('用户状态按是否启用及最新申请互斥分类，启用优先于申请审核状态', () => {
+  assert.deepEqual(adminTypes.userStatusLabels, { enabled: '已启用', pending: '待审核', rejected: '已拒绝', disabled: '已停用' });
+  const cases = [
+    { isInvalid: false, applicationStatus: null, expected: 'enabled' },
+    { isInvalid: false, applicationStatus: 'approved', expected: 'enabled' },
+    { isInvalid: false, applicationStatus: 'pending', expected: 'enabled' },
+    { isInvalid: false, applicationStatus: 'rejected', expected: 'enabled' },
+    { isInvalid: true, applicationStatus: 'pending', expected: 'pending' },
+    { isInvalid: true, applicationStatus: 'rejected', expected: 'rejected' },
+    { isInvalid: true, applicationStatus: null, expected: 'disabled' },
+    { isInvalid: true, applicationStatus: 'approved', expected: 'disabled' },
+  ] as const;
+  for (const { expected, ...value } of cases) assert.equal(adminTypes.getUserStatus(value), expected);
+});
+
+test('用户状态筛选与搜索分页一同传入存储，旧客户端缺省查看全部', async () => {
+  for (const status of [undefined, 'all', 'enabled', 'pending', 'rejected', 'disabled'] as const) {
+    const f = fixture({ listUsers: async (search, offset, limit, selectedStatus) => {
+      assert.equal(search, '群友_小明');
+      assert.equal(offset, 40); assert.equal(limit, 20);
+      assert.equal(selectedStatus, status ?? 'all');
+      return { items: [user], total: 41 };
+    } });
+    assert.deepEqual(await f.service.listUsers(admin, { search: ' 群友_小明 ', page: '3', status }),
+      { items: [user], total: 41, page: 3, pageSize: 20 });
+  }
+});
+
+test('用户状态筛选拒绝非法值，权限和参数校验均先于数据库访问', async () => {
+  const f = fixture({ initialize: fail });
+  for (const status of ['', 'approved', 'active', 'ALL', ' enabled ', "pending' OR 1=1", null, true, 0, ['all'], { status: 'all' }]) {
+    await assert.rejects(f.service.listUsers(admin, { status }), errorIs(400, 'INVALID_USER_STATUS'));
+  }
+  await assert.rejects(f.service.listUsers({ ...admin, isAdmin: false }, { status: 'enabled' }), errorIs(403, 'ADMIN_REQUIRED'));
+});
+
+test('管理员可按一百个 Unicode 字符的备注搜索，去掉两侧空白并保留分页', async () => {
+  const search = '😀'.repeat(100);
+  const f = fixture({ listUsers: async (value, offset, limit) => {
+    assert.equal(value, search); assert.equal(offset, 20); assert.equal(limit, 20);
+    return { items: [user], total: 1 };
+  } });
+  const result = await f.service.listUsers(admin, { search: `  ${search}  `, page: '2' });
+  assert.equal(result.items[0].username, user.username);
+  await assert.rejects(f.service.listUsers(admin, { search: search + '😀' }), errorIs(400, 'INVALID_SEARCH'));
+});
+
+test('管理员新增备注默认空白，编辑省略保留，显式空白清空，备注不替换用户名', async () => {
+  const writes: Array<{ username: string; usernameKey: string; note?: string }> = [];
+  const f = fixture({ createUser: async (_actor, input) => { writes.push(input); return { ...user, note: input.note }; },
+    updateUser: async (_actor, _target, input) => { writes.push(input); return { ...user, note: input.note }; } });
+  const input = { username: ' Naruto ', password: 'fixture-password', isAdmin: false, isInvalid: false };
+  await f.service.createUser(admin, input);
+  await f.service.createUser(admin, { ...input, note: '  群友 小明 😀  ' });
+  await f.service.updateUser(admin, id, input);
+  await f.service.updateUser(admin, id, { ...input, note: ' \t ' });
+  await f.service.updateUser(admin, id, { ...input, note: '😀'.repeat(100) });
+  assert.deepEqual(writes.map(value => value.note), ['', '群友 小明 😀', undefined, '', '😀'.repeat(100)]);
+  assert.equal(Object.hasOwn(writes[2], 'note'), false, '旧客户端没有传备注时不能清空');
+  assert.ok(writes.every(value => value.username === 'Naruto' && value.usernameKey === 'naruto'));
+});
+
+test('非法备注在写数据库前返回明确错误，普通用户没有备注编辑权限', async () => {
+  const f = fixture({ initialize: fail });
+  const input = { username: 'Naruto', password: 'fixture-password', isAdmin: false, isInvalid: false };
+  for (const note of [null, 1, true, [], {}, '汉'.repeat(101), '😀'.repeat(101)]) {
+    await assert.rejects(f.service.createUser(admin, { ...input, note }), errorIs(400, 'INVALID_USER_NOTE'));
+    await assert.rejects(f.service.updateUser(admin, id, { ...input, note }), errorIs(400, 'INVALID_USER_NOTE'));
+  }
+  const ordinary = { ...admin, isAdmin: false };
+  await assert.rejects(f.service.updateUser(ordinary, id, { ...input, note: '越权编辑' }), errorIs(403, 'ADMIN_REQUIRED'));
 });
 
 test('create and edit validate account information; empty edit password preserves the stored password', async () => {
@@ -109,15 +182,15 @@ test('recent history includes today and six previous Beijing dates with an exclu
   const event: DailyEvent = { id, username: user.username, createdAt: '2026-10-08T16:00:00.000Z', expiresAt: '2026-10-08T16:05:00.000Z', status: 'qr_ready' };
   const run: TaskRun = { taskId: id, status: 'completed', updatedAt: '2026-10-08T16:30:00.000Z',
     authorizedAt: '2026-10-08T16:02:00.000Z', startedAt: '2026-10-08T16:03:00.000Z', finishedAt: '2026-10-08T16:30:00.000Z' };
-  const f = fixture({ listDailyEvents: async (start, end, offset, limit) => {
+  const f = fixture({ listDailyEvents: async (start, end, mainTask) => {
     assert.equal(start.toISOString(), '2026-10-02T16:00:00.000Z'); assert.equal(end.toISOString(), '2026-10-09T16:00:00.000Z');
-    assert.equal(offset, 20); assert.equal(limit, 20); return { items: [event], total: 21 };
+    assert.equal(mainTask, 'daily'); return { items: [event], total: 1 };
   } }, [run]);
   assert.deepEqual(await f.service.dailyTasks(admin, { page: '2' }), {
-    items: [{ id, username: user.username, requestedAt: event.createdAt, scannedAt: run.authorizedAt,
-      completedAt: run.finishedAt, status: 'completed', loginType: 'android_qq' }], total: 21, page: 2, pageSize: 20, date: '2026-10-09', startDate: '2026-10-03', timeZone: 'Asia/Shanghai',
+    items: [{ id, username: user.username, note: '', requestedAt: event.createdAt, scannedAt: null,
+      completedAt: null, status: 'waiting_scan', loginType: 'android_qq', mainTask: 'daily', userOptions: { equipmentStamina: true, secretRealmMode: 'all' } }], total: 1, page: 1, pageSize: 20, date: '2026-10-09', startDate: '2026-10-03', mainTask: 'daily', timeZone: 'Asia/Shanghai',
   });
-  assert.deepEqual(f.calls, [[id]]);
+  assert.deepEqual(f.calls, []);
   const beforeMidnight = fixture({ listDailyEvents: async (start, end) => {
     assert.equal(start.toISOString(), '2026-10-01T16:00:00.000Z'); assert.equal(end.toISOString(), '2026-10-08T16:00:00.000Z'); return { items: [], total: 0 };
   } }, [], now - 1);
@@ -133,21 +206,76 @@ test('日常列表显示申请保存的渠道，历史缺失值默认安卓 QQ',
     ['android_qq', 'ios_qq', 'android_wechat', 'ios_wechat', 'android_qq']);
 });
 
-test('daily date filters use one Beijing day and retain pagination across calendar boundaries', async () => {
+test('扫码列表返回账号当前备注，旧记录没有备注时返回空字符串', async () => {
+  const events: DailyEvent[] = ['', '群友 小明'].map((note, index) => ({ id: `${id}-${index}`, username: user.username,
+    createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 1000).toISOString(), status: 'queued',
+    ...(note ? { note } : {}) }));
+  const f = fixture({ listDailyEvents: async () => ({ items: events, total: events.length }) });
+  const result = await f.service.dailyTasks(admin, {});
+  assert.deepEqual(result.items.map(item => item.note), ['', '群友 小明']);
+  assert.ok(result.items.every(item => item.username === user.username));
+});
+
+test('近七天扫码列表按选定主任务全量读取，缺省日常并返回每条申请的任务类型', async () => {
+  for (const selected of [undefined, 'daily', 'arena_weekly'] as const) {
+    const mainTask = selected ?? 'daily';
+    const event: DailyEvent = { id, username: user.username, createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 60_000).toISOString(), status: 'queued',
+      ...(selected ? { userOptions: { mainTask: selected, equipmentStamina: true, secretRealmMode: 'all' } } : {}) };
+    const f = fixture({ listDailyEvents: async (start, end, selectedTask) => {
+      assert.equal(selectedTask, mainTask);
+      assert.equal(start.toISOString(), '2026-10-08T16:00:00.000Z');
+      assert.equal(end.toISOString(), '2026-10-09T16:00:00.000Z');
+      return { items: [event], total: 1 };
+    } });
+    const result = await f.service.dailyTasks(admin, { date: '2026-10-09', page: '2', mainTask: selected });
+    assert.equal(result.mainTask, mainTask);
+    assert.equal(result.items[0].mainTask, mainTask);
+    assert.equal(result.page, 1); assert.equal(result.total, 1);
+    assert.equal(result.selectedDate, '2026-10-09');
+  }
+});
+
+test('近七天扫码列表在访问数据库前拒绝非法任务类型', async () => {
+  const f = fixture({ initialize: fail });
+  for (const mainTask of ['', 'all', 'arena', 'DAILY', "daily' OR 1=1", ['daily'], ['daily', 'arena_weekly'], { mainTask: 'daily' }, 0, null]) {
+    await assert.rejects(f.service.dailyTasks(admin, { mainTask }), errorIs(400, 'INVALID_MAIN_TASK'));
+  }
+});
+
+test('周胜筛选保留真实失败和完成状态，不套用首次秘境完成规则', async () => {
+  const events: DailyEvent[] = ['failed', 'completed'].map((_, index) => ({ id: `${id}-${index}`, username: user.username,
+    createdAt: new Date(now - 5000).toISOString(), expiresAt: new Date(now - 1000).toISOString(), status: 'failed',
+    userOptions: { mainTask: 'arena_weekly', equipmentStamina: true, secretRealmMode: 'all' } }));
+  const runs: TaskRun[] = (['failed', 'completed'] as const).map((status, index) => ({ taskId: events[index].id,
+    status, errorCode: status === 'failed' ? 'arena_weekly_failed' : undefined, updatedAt: new Date(now).toISOString(),
+    startedAt: new Date(now - 4000).toISOString(), secretRealmCompletedAt: new Date(now - 2000).toISOString(),
+    finishedAt: new Date(now).toISOString() }));
+  const f = fixture({ listDailyEvents: async () => ({ items: events, total: events.length }) }, runs);
+  const result = await f.service.dailyTasks(admin, { mainTask: 'arena_weekly' });
+  result.items = result.items.map((task, index) => adminTypes.withDailyTaskRun(task, runs[index]));
+  assert.equal(result.mainTask, 'arena_weekly');
+  assert.deepEqual(result.items.map(item => item.mainTask), ['arena_weekly', 'arena_weekly']);
+  assert.deepEqual(result.items.map(item => item.status), ['failed', 'completed']);
+  assert.deepEqual(result.items.map(item => item.completedAt), [null, runs[1].finishedAt]);
+  assert.equal(result.items[0].errorCode, 'arena_weekly_failed');
+});
+
+test('daily date filters use one Beijing day across calendar boundaries', async () => {
   for (const [clock, selectedDate, startAt, endAt, earliest] of [
     [now, '2026-10-09', '2026-10-08T16:00:00.000Z', '2026-10-09T16:00:00.000Z', '2026-10-03'],
     [now, '2026-10-03', '2026-10-02T16:00:00.000Z', '2026-10-03T16:00:00.000Z', '2026-10-03'],
     [Date.parse('2024-03-02T00:00:00Z'), '2024-02-29', '2024-02-28T16:00:00.000Z', '2024-02-29T16:00:00.000Z', '2024-02-25'],
     [Date.parse('2027-01-02T00:00:00Z'), '2026-12-31', '2026-12-30T16:00:00.000Z', '2026-12-31T16:00:00.000Z', '2026-12-27'],
   ] as const) {
-    const f = fixture({ listDailyEvents: async (start, end, offset, limit) => {
+    const f = fixture({ listDailyEvents: async (start, end, mainTask) => {
       assert.equal(start.toISOString(), startAt); assert.equal(end.toISOString(), endAt);
-      assert.equal(offset, 20); assert.equal(limit, 20);
-      return { items: [], total: 21 };
+      assert.equal(mainTask, 'daily');
+      return { items: [], total: 0 };
     } }, [], clock);
     const result = await f.service.dailyTasks(admin, { date: selectedDate, page: '2' });
     assert.equal(result.selectedDate, selectedDate); assert.equal(result.startDate, earliest);
-    assert.equal(result.page, 2); assert.equal(result.total, 21);
+    assert.equal(result.page, 1); assert.equal(result.total, 0);
   }
 });
 
@@ -172,6 +300,7 @@ test('QR expiration never overrides an executing script and failed/mock runs do 
     startedAt: status === 'completed' ? null : new Date(now - 4000).toISOString(), finishedAt: status === 'running_daily' ? null : new Date(now).toISOString() } : null);
   const f = fixture({ listDailyEvents: async () => ({ items, total: 4 }) }, runs);
   const result = await f.service.dailyTasks(admin, {});
+  result.items = result.items.map((task, index) => adminTypes.withDailyTaskRun(task, runs[index]));
   assert.deepEqual(result.items.map(item => item.status), ['running_daily', 'failed', 'completed', 'unavailable']);
   assert.deepEqual(result.items.map(item => item.completedAt), [null, null, null, null]);
   assert.equal(result.items[3].scannedAt, null);
@@ -190,7 +319,8 @@ test('首次秘境已完成的日常在后续超时、失败、中断或过期�
           secretRealmCompletedAt: markerAt, finishedAt: new Date(now).toISOString() };
         const before = JSON.stringify(run);
         const f = fixture({ listDailyEvents: async () => ({ items: [event], total: 1 }) }, [run]);
-        const [item] = (await f.service.dailyTasks(admin, {})).items;
+        const [base] = (await f.service.dailyTasks(admin, {})).items;
+        const item = adminTypes.withDailyTaskRun(base, run);
         assert.equal(item.status, 'completed');
         assert.equal(item.completedAt, markerAt);
         assert.equal(item.scannedAt, run.authorizedAt);
@@ -219,6 +349,7 @@ test('管理员日常完成判定不影响运行中任务、无效标记、跳�
   const runs = cases.map((value, index) => ({ ...value.run, taskId: events[index].id }));
   const f = fixture({ listDailyEvents: async () => ({ items: events, total: events.length }) }, runs);
   const result = await f.service.dailyTasks(admin, {});
+  result.items = result.items.map((task, index) => adminTypes.withDailyTaskRun(task, runs[index]));
   assert.deepEqual(result.items.map(item => item.status), ['running_daily', 'failed', 'failed', 'failed', 'failed', 'failed', 'failed', 'completed']);
   assert.deepEqual(result.items.map(item => item.completedAt), [null, null, null, null, null, null, null, run.finishedAt]);
 });
@@ -240,6 +371,7 @@ test('daily failures expose each run error with honest fallbacks without adding 
     updatedAt: new Date(now).toISOString(), startedAt: null, finishedAt: null } : null);
   const f = fixture({ listDailyEvents: async () => ({ items, total: items.length }) }, runs);
   const result = await f.service.dailyTasks(admin, {});
+  result.items = result.items.map((task, index) => adminTypes.withDailyTaskRun(task, runs[index]));
   assert.deepEqual(result.items.slice(0, 5).map(({ id, status, errorCode, errorMessage }) => ({ id, status, errorCode, errorMessage })), [
     { id: items[0].id, status: 'failed', errorCode: 'daily_timeout', errorMessage: '日常任务执行超时，请查看执行日志。' },
     { id: items[1].id, status: 'failed', errorCode: 'emulator_start_failed', errorMessage: '模拟器启动失败，请稍后重新申请。' },
@@ -253,7 +385,7 @@ test('daily failures expose each run error with honest fallbacks without adding 
     assert.equal(Object.hasOwn(item, 'errorCode'), false);
     assert.equal(Object.hasOwn(item, 'errorMessage'), false);
   }
-  assert.deepEqual(f.calls, [items.map(item => item.id)]);
+  assert.deepEqual(f.calls, []);
 });
 
 test('monthly rankings use Beijing calendar boundaries including leap years and year rollover', async () => {
@@ -287,4 +419,62 @@ test('monthly statistics reject malformed filters and sanitize database failures
   await assert.rejects(f.service.monthlyStats(admin, { page: '0' }), errorIs(400, 'INVALID_PAGE'));
   const broken = fixture({ listMonthlyStats: async () => { throw new Error('private-db-url'); } });
   await assert.rejects(broken.service.monthlyStats(admin, {}), errorIs(503, 'ADMIN_UNAVAILABLE'));
+});
+
+test('全量列表保留超过一页的申请和已校验选项，不读取执行记录', async () => {
+  const items: DailyEvent[] = Array.from({ length: 41 }, (_, index) => ({ id: `${id}-${index}`, username: user.username,
+    createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 60_000).toISOString(), status: 'queued',
+    userOptions: { equipmentStamina: false, secretRealmMode: 'skip' } }));
+  const f = fixture({ listDailyEvents: async (...args) => {
+    assert.equal(args.length, 3); return { items, total: 41 };
+  } });
+  const result = await f.service.dailyTasks(admin, { page: '2' });
+  assert.equal(result.items.length, 41); assert.equal(result.page, 1); assert.equal(result.pageSize, 20);
+  assert.deepEqual(result.items[40].userOptions, { equipmentStamina: false, secretRealmMode: 'skip' });
+  assert.deepEqual(f.calls, []);
+});
+
+test('执行记录仅批量读取一次，保持请求顺序并只返回允许公开的字段', async () => {
+  const second = '10000000-0000-4000-8000-000000000003';
+  const run = { taskId: id, status: 'failed' as const, startedAt: '2026-10-09T00:00:00Z', finishedAt: null,
+    authorizedAt: '2026-10-08T23:59:00Z', secretRealmCompletedAt: '2026-10-09T00:01:00Z', errorCode: 'daily_failed',
+    updatedAt: 'private-update', workerId: 'private-worker', tokenHash: 'private-token', username: 'private-user', errorMessage: 'private-error' };
+  const f = fixture({ initialize: fail }, [run, null]);
+  assert.deepEqual(await f.service.dailyTaskRuns(admin, { ids: `${id},${second}` }), { items: [
+    { id, run: { taskId: id, status: 'failed', startedAt: run.startedAt, finishedAt: null,
+      authorizedAt: run.authorizedAt, secretRealmCompletedAt: run.secretRealmCompletedAt, errorCode: 'daily_failed' } },
+    { id: second, run: null },
+  ] });
+  assert.deepEqual(f.calls, [[id, second]]);
+  const mismatch = fixture({ initialize: fail }, [{ ...run, taskId: second }]);
+  assert.deepEqual(await mismatch.service.dailyTaskRuns(admin, { ids: id }), { items: [{ id, run: null }] });
+});
+
+test('执行记录在读取前拒绝缺失、重复、非法和超过二十个任务编号', async () => {
+  const f = fixture({ initialize: fail });
+  for (const ids of [undefined, '', 'invalid', ` ${id}`, `${id},`, `${id},${id}`, '10000000-0000-4000-8000-0000000000ab,10000000-0000-4000-8000-0000000000AB',
+    [id], { id }, 42, null, Array.from({ length: 21 }, (_, index) => `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`).join(',')]) {
+    await assert.rejects(f.service.dailyTaskRuns(admin, { ids }), errorIs(400, 'INVALID_TASK_IDS'));
+  }
+  assert.deepEqual(f.calls, []);
+});
+
+test('执行记录支持二十个任务，缺失记录仍按请求返回空值', async () => {
+  const ids = Array.from({ length: 20 }, (_, index) => `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`);
+  const f = fixture({ initialize: fail });
+  assert.deepEqual(await f.service.dailyTaskRuns(admin, { ids: ids.join(',') }), { items: ids.map(id => ({ id, run: null })) });
+  assert.deepEqual(f.calls, [ids]);
+});
+
+test('共享合并返回新对象，空记录保留已知数据，非失败状态清除旧错误且忽略错配任务', () => {
+  const task: DailyTask = { id, username: 'Naruto', requestedAt: '2026-10-09T00:00:00Z', scannedAt: 'known-scan',
+    completedAt: null, status: 'failed', errorCode: 'daily_failed', errorMessage: '旧错误' };
+  const unchanged = adminTypes.withDailyTaskRun(task, null);
+  assert.deepEqual(unchanged, task); assert.notEqual(unchanged, task);
+  const run = { taskId: id, status: 'running_daily' as const, startedAt: '2026-10-09T00:01:00Z', finishedAt: null };
+  const merged = adminTypes.withDailyTaskRun(task, run);
+  assert.equal(merged.status, 'running_daily'); assert.equal(merged.scannedAt, task.scannedAt);
+  assert.equal(Object.hasOwn(merged, 'errorCode'), false); assert.equal(Object.hasOwn(merged, 'errorMessage'), false);
+  assert.equal(task.errorMessage, '旧错误');
+  assert.deepEqual(adminTypes.withDailyTaskRun(task, { ...run, taskId: 'other' }), task);
 });

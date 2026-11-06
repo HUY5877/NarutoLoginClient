@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CalendarCheck, Check, ChevronDown, CircleAlert, ClipboardCheck, LogOut, RefreshCw, ShieldCheck, Trophy, Users, X } from 'lucide-react';
+import { CalendarCheck, Check, ChevronDown, CircleAlert, ClipboardCheck, Cpu, LogOut, RefreshCw, ShieldCheck, Trophy, Users, X } from 'lucide-react';
 import { AdminMonthlyStats } from '@/components/admin-monthly-stats';
 import { AdminDailyTasks } from '@/components/admin-daily-tasks';
 import { AdminUsers } from '@/components/admin-users';
+import { AdminModelChannels } from '@/components/admin-model-channels';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -47,6 +48,7 @@ export function AdminMenu({ userId, refreshAuth, mobileAccount }: {
   const [dailyOpen, setDailyOpen] = useState(false);
   const [monthlyOpen, setMonthlyOpen] = useState(false);
   const [usersOpen, setUsersOpen] = useState(false);
+  const [modelChannelsOpen, setModelChannelsOpen] = useState(false);
   const [filter, setFilter] = useState<Filter>('pending');
   const [applications, setApplications] = useState<RegistrationApplication[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -70,6 +72,7 @@ export function AdminMenu({ userId, refreshAuth, mobileAccount }: {
     setDailyOpen(false);
     setMonthlyOpen(false);
     setUsersOpen(false);
+    setModelChannelsOpen(false);
     setApplications(null);
     setAccessLost(true);
     void refreshAuth();
@@ -194,13 +197,16 @@ export function AdminMenu({ userId, refreshAuth, mobileAccount }: {
             <ClipboardCheck aria-hidden="true" />注册申请审核
           </DropdownMenuItem>
           <DropdownMenuItem className="py-2" onSelect={() => { openingDialogRef.current = true; setDailyOpen(true); }}>
-            <CalendarCheck aria-hidden="true" />近七天刷日常情况
+            <CalendarCheck aria-hidden="true" />近七天扫码情况
           </DropdownMenuItem>
           <DropdownMenuItem className="py-2" onSelect={() => { openingDialogRef.current = true; setMonthlyOpen(true); }}>
             <Trophy aria-hidden="true" />月度排行榜
           </DropdownMenuItem>
           <DropdownMenuItem className="py-2" onSelect={() => { openingDialogRef.current = true; setUsersOpen(true); }}>
             <Users aria-hidden="true" />用户管理
+          </DropdownMenuItem>
+          <DropdownMenuItem className="py-2" onSelect={() => { openingDialogRef.current = true; setModelChannelsOpen(true); }}>
+            <Cpu aria-hidden="true" />大模型渠道
           </DropdownMenuItem>
           {mobileAccount && <>
             <DropdownMenuSeparator className="sm:hidden" />
@@ -279,7 +285,8 @@ export function AdminMenu({ userId, refreshAuth, mobileAccount }: {
       </Dialog>
       {dailyOpen && <AdminDailyTasks open={dailyOpen} onOpenChange={setDailyOpen} onAccessLost={loseAccess} returnFocus={returnFocus} />}
       {monthlyOpen && <AdminMonthlyStats open={monthlyOpen} onOpenChange={setMonthlyOpen} onAccessLost={loseAccess} returnFocus={returnFocus} />}
-      {usersOpen && <AdminUsers open={usersOpen} onOpenChange={setUsersOpen} currentUserId={userId} onAccessLost={loseAccess} refreshAuth={refreshAuth} returnFocus={returnFocus} />}
+      <AdminUsers open={usersOpen} onOpenChange={setUsersOpen} currentUserId={userId} onAccessLost={loseAccess} refreshAuth={refreshAuth} returnFocus={returnFocus} />
+      {modelChannelsOpen && <AdminModelChannels open={modelChannelsOpen} onOpenChange={setModelChannelsOpen} onAccessLost={loseAccess} returnFocus={returnFocus} />}
     </>
   );
 }

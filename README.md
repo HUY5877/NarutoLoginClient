@@ -1,115 +1,58 @@
 # 忍者日常登录中心
 
-React 前端与 TypeScript API 共用一个站点。用户扫码登录后，由配套的 NarutoDailyADB 执行端完成日常任务。
+在网页上扫码登录《火影忍者》手游，自动刷日常或决斗场周胜，并查看任务进度。
 
-## 启动
+使用地址：[进入登录中心](https://huy1.site)
 
-需要 Node.js 22.12+、npm，以及 PostgreSQL、Redis 和 Cloudflare KV。首次安装后，将 `.env.example` 复制为 `.env`，填写环境选择和 Cloudflare 引导配置；已有 `.env` 请保留。
+## 功能
 
-```powershell
-npm ci
-npm run dev
-```
+- 支持安卓 QQ、iOS QQ、安卓微信和 iOS 微信账号扫码登录。
+- 自动刷日常或刷周胜；刷日常时可选择装备栏体力刷取和秘境刷取方式。
+- 查看任务进度和执行记录，二维码失效后可刷新。
+- 绑定 QQ 群身份，在二维码就绪、刷新和任务结束时接收 @ 提醒。
+- 管理员可审核注册、管理账号、查看扫码记录和月度排行榜，以及管理大模型渠道、测试连通性。
 
-页面与 API 共用一个端口，由选定 Cloudflare namespace 的 `PORT` 决定。启动命令在完整加载、验证云配置后，才清理占用此端口的旧进程。
+## 快速使用
 
-## 环境与 Cloudflare 配置
+1. 打开网站，点击「登录 / 注册」。首次使用需注册，并加入 QQ 群 **993904975** 找群主审核，通过后登录。
+2. 选择「日常任务」或「决斗场周胜」，再选择游戏账号对应的登录渠道。刷日常时按需设置体力和秘境选项。
+3. 点击「启动模拟器获取二维码」，等待页面显示二维码。
+4. 用手机 QQ 或微信扫码并确认登录，进入游戏后会自动执行所选任务。
+5. 在页面查看进度和执行记录。日志滚动到底后继续下滑，会继续读取并追加内容；暂时没有新日志时，可以稍后再读。二维码失效时点击「刷新二维码」。
 
-本地 `.env` 和 Vercel 环境变量仅保存环境选择和 Cloudflare 引导信息。`APP_ENV` 只能为 `prod` 或 `test`，缺省 `prod`；两套配置共用 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`，分别设置 `CLOUDFLARE_KV_NAMESPACE_ID_PROD` 和 `CLOUDFLARE_KV_NAMESPACE_ID_TEST`。API Token 需具备选定 namespace 的 KV 读取权限。凭据只由后端读取，不使用 `VITE_` 变量。
+刷新页面时会先恢复任务状态，再决定是否允许申请。执行中、失败和中断的任务继续显示；上次已经成功完成时，显示「待开始」并隐藏上次执行记录。本页刚完成的结果会保留到下次刷新，后台历史仍保留。
 
-正式与测试使用两个独立 namespace，各自保存普通字符串键，键名保持一致，例如 `REDIS_QUEUE_KEY`、`DATABASE_URL`。`APP_ENV=test` 只读取测试 namespace；缺少测试 namespace ID 或配置时，不会读取正式 namespace，也不会回退本地已有的业务环境变量。正式环境优先使用 `CLOUDFLARE_KV_NAMESPACE_ID_PROD`，也兼容旧的 `CLOUDFLARE_KV_NAMESPACE_ID`。环境选择、账号、Token 和 namespace ID 始终只来自本地引导信息，不能被远端业务键覆盖。
+## 统一任务状态升级
 
-`main` 与 `codex/jev-multimodal-test` 使用同一套启动和配置代码，运行时通过 `APP_ENV=prod` / `APP_ENV=test` 选择对应 namespace。分支名不决定运行环境，资源值的差异保存在各自 namespace 中；本地测试需将未提交的 `.env` 中 `APP_ENV` 设为 `test`。
+扫码与脚本执行共用 `${REDIS_QUEUE_KEY}:runs:<任务ID>`，从提交时的 `queued` 一直更新到结束，不再创建独立的 `sessions` key。活动用户索引只保存任务编号，与任务记录一起至少保留 7 天。领取后的 10 分钟仍是扫码期限，已授权任务不受这个期限影响。新申请在 Redis 中原子检查活动任务，并复查保存期内的用户历史；查不清旧任务状态时，保持禁用并提供重试。
 
-本地和 Vercel 入口都先加载所选 namespace 的完整配置，再创建 Redis、数据库与 OSS 依赖。每个进程只加载一次；KV 更新后需重启或重新部署。缺少引导信息、读取失败、配置无效或缺少 `REDIS_QUEUE_KEY`、`OSS_KEY_PREFIX`、`PORT`、`SESSION_COOKIE_NAME`、`STORAGE_DRIVER` 时，启动失败；`local` 模式还必须提供 `LOCAL_OBJECTS_DIR`。缺少数据库、Redis 或 JWT 时，相应接口继续返回未配置错误。
+这次记录格式需要网站和执行服务一起更新。先暂停新申请、等待旧任务和队列清空，再更新全部执行服务，最后发布网站并恢复申请。新版网站不能与旧执行服务混跑；旧服务找不到新的任务记录时会跳过任务。升级不需要清空用户历史或 Redis。
 
-下表列出各 namespace 内的普通业务键名。
+## QQ 群提醒（可选）
 
-| 配置 | 用途 |
-| --- | --- |
-| `DATABASE_URL` | PostgreSQL，保存账号、审批与申请记录 |
-| `JWT_SECRET` | 至少 32 字节的随机签名密钥，同环境保持一致 |
-| `REDIS_URL` | 与 ADB 执行端连接同一实例、同一 DB |
-| `STORAGE_DRIVER` | 必填；线上使用 `oss`，本地模拟可用 `local` |
-| `OSS_REGION`、`OSS_BUCKET` | 二维码所在区域与私有 Bucket |
-| `OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET` | 后端读取 OSS 的凭据 |
-| `REDIS_QUEUE_KEY` | 环境独立的任务队列；会话、锁、刷新指令、执行状态与日志均由此派生 |
-| `OSS_KEY_PREFIX` | 环境独立的二维码对象前缀，必须显式配置 |
-| `SESSION_COOKIE_NAME` | 必填；正式配置 `naruto_session`，同域测试站配置独立名称 |
-| `HOST`、`PORT` | 本地监听地址及端口；`HOST` 缺省 `127.0.0.1`，`PORT` 必填 |
-| `LOCAL_OBJECTS_DIR` | `local` 模式必填的存储根目录，最终路径仍包含 `OSS_KEY_PREFIX` |
-| `REQUEST_TIMEOUT_MS`、`SESSION_TTL_MS` | 依赖请求超时与排队有效期，缺省 5000 / 300000 毫秒 |
-| `OSS_STS_TOKEN`、`ALLOWED_ORIGINS` | 可选的 OSS 临时凭证、逗号分隔的额外允许来源 |
+1. 登录后点击页头「QQ 群提醒」，生成绑定码，再点击「复制命令」。
+2. 在机器人所在的 QQ 群输入 `@`，从列表中选中机器人，再粘贴命令发送。完整消息示例为 `@机器人 绑定 ABCD1234`，其中绑定码以页面显示为准。
+3. 回到网页，确认群消息由你本人发送，再点击「确认绑定」。
 
-客户端与同环境 ADB 执行端的 Redis 实例、Redis DB、`REDIS_QUEUE_KEY`、Bucket 和 `OSS_KEY_PREFIX` 必须一致。PostgreSQL 使用同服务器、同账号上的独立数据库；Redis 可共用 DB 并用配置前缀隔离，或配置独立 DB，两端必须一致。前缀与端口的具体值由 Cloudflare 配置决定，业务代码不拼接测试后缀。测试 Cookie 也应在测试 namespace 中设置独立名称，避免同域不同端口覆盖登录状态。引导示例见 [.env.example](.env.example)，密钥不要提交到 Git。
+复制按钮只复制 `绑定 ABCD1234` 这部分，`@机器人` 需要在 QQ 中选择生成。绑定码 5 分钟内有效，过期后重新生成；需要解绑时，在同一窗口点击「解除绑定」。
 
-当前测试 namespace 的 `OSS_BUCKET` 配置为 `huy1-hyrz-test`，测试客户端与执行端均读取该配置。
+## 大模型渠道（管理员）
 
-正式账号库为 `naruto_login`，测试使用独立的 `naruto_login_test`。数据库由运维预先创建；应用首次使用时自动初始化所选库中的表，不复制正式账号与记录。注册需管理员审核，首个管理员需在对应数据库中指定。当前密码按项目既有约定明文存储，API 不返回密码。
+在管理员菜单打开「大模型渠道」，可启停 OpenAI、DeepSeek，修改模型名及多个 API key。已保存的 key 仅显示脱敏摘要，可以保留、替换或删除；每个 key 都可用当前填写的模型单独测试。测试不会保存配置或推进 worker 的轮询计数，会产生一次上游模型请求；成功表示基本文本请求可达，不代表图片识别和工具调用已验收。
 
-## 使用
+服务商列表默认收起，点击对应行展开编辑。已保存密钥只显示掩码，点击「替换」才出现输入框，取消编辑会保留原值。模型、开关和密钥统一形成草稿，切换服务商仍会保留，点击「保存更改」才写入配置。重新读取前会确认是否丢弃未保存的修改。
 
-- 选择安卓 QQ、iOS QQ、安卓微信或 iOS 微信渠道后，点击「启动模拟器获取二维码」，使用对应的手机 QQ 或微信扫码授权；同一账号复用有效申请，刷新沿用原渠道。
-- 点击「刷新二维码」更新当前实例的二维码。排队默认等待 5 分钟，领取实例后有 10 分钟扫码时间，刷新不续期。
-- 授权后自动进入游戏并执行日常。执行端负责失败后的实例清理和会话释放，网页可查看执行记录。
-- 秘境刷取方式提供三个互斥选项：只刷一次后结束本次日常、刷完所有扫荡券、不刷秘境。默认刷完所有扫荡券；提交后保存首次选择，刷新或复用申请不会改变。
-- 管理员可审批注册、管理用户、查看近七天刷日常情况和月度排行榜。
-- 月榜按新申请统计次数，按北京时间去重统计日常天数；失败和过期也计入，刷新二维码和重复提交不重复计数。
+保存只修改网站当前 `APP_ENV` 对应的 Cloudflare namespace，页面显示正式或测试环境，不能从浏览器切换到另一个 namespace。正式读取 `CLOUDFLARE_KV_NAMESPACE_ID_PROD`（兼容旧 ID），测试必须配置独立的 `CLOUDFLARE_KV_NAMESPACE_ID_TEST`。后端的 `CLOUDFLARE_API_TOKEN` 需要 KV 读写权限，凭据不得放入 `VITE_` 变量或提交仓库。
 
-登录渠道通过顶层 `loginType`（`android_qq`、`ios_qq`、`android_wechat`、`ios_wechat`）随申请、Redis 队列和刷新指令传给执行端，数据库与执行记录保留首次选择；旧申请默认安卓 QQ。需配套更新 NarutoDailyADB 执行端。
+| 渠道 | 模型 | API key 列表 | 启停 |
+| --- | --- | --- | --- |
+| OpenAI | `OPENAI_MODEL` | `OPENAI_API_KEY` | `OPENAI_ENABLED` |
+| DeepSeek | `DEEPSEEK_MODEL` | `DEEPSEEK_API_KEY` | `DEEPSEEK_ENABLED` |
 
-任务设置统一放在 `userOptions` JSON 中，例如 `{ "mainTask": "arena_weekly", "equipmentStamina": true, "secretRealmMode": "all" }`。`mainTask` 可取 `daily`（刷日常）或 `arena_weekly`（决斗场周胜），缺省继续执行原来的刷日常；旧请求和旧记录不会被补写此字段。主任务只随现有 `userOptions` JSON 传递，沿用原队列和所有 Redis key，也不增加 SQL 列。提交后，复用申请、重试投递、刷新二维码和执行记录恢复都保留首次主任务选择。当前已实现客户端选择和协议透传，周胜执行逻辑需由后续 worker 实现。
+每项 key 列表以 JSON 字符串数组写入 KV，例如 `["key-1","key-2"]`，兼容读取原有单 key。每个渠道最多 20 个 key，每个最长 512 个字符；模型名最长 200 个字符。启停写入 `true` / `false`，旧配置缺省时有 key 即启用。OpenAI 固定使用官方 `https://api.openai.com/v1`，模型需支持 worker 使用的 Chat Completions、图片输入和工具调用。
 
-日常设置中的 `secretRealmMode` 可取 `once`、`all`、`skip`，分别对应只刷一次、刷完所有扫荡券、不刷秘境，缺省为 `all`。兼容旧 `secretRealmOnce` 布尔参数：`true` 映射为 `once`，`false` 映射为 `all`；服务响应及新入队数据统一使用模式字段。新旧字段同时提供时必须一致，否则拒绝申请。切换主任务不会清空装备体力和秘境设置，这些选项仍随 `userOptions` 保存，但只对日常任务生效；周胜 worker 接入时应按 `mainTask` 分流，忽略日常专属设置。
+Cloudflare 中尚未配置的渠道也会显示在页面，首次保存时会自动创建对应的 API key、模型和启停字段。只缺部分字段时，也可以保留页面已有的密钥并补齐配置，无需事先手工创建 KV key。
 
-近七天日常列表和月榜仅统计日常申请，缺省主任务的历史记录仍计入日常，周胜申请不计入。列表显示每次申请的登录渠道，可按日期筛选今天及之前六天，也可查看全部七天；月榜读取数据库中的历史申请，不受执行日志过期影响。执行记录默认保留七天，需要配套更新并重启 ADB 服务；已经过期的旧日志无法补回。
+先部署支持列表的新 worker，再保存渠道配置。Cloudflare 同步可能有短暂延迟，保存后需要重启常驻 worker；已运行的任务仍使用启动时配置。
 
-管理员列表的「日志详情」列对所有任务状态开放。打开列表只读取任务摘要；点击「查看日志」才读取首批 100 条，后续点击「加载更多」继续读取，直到显示全部保留的日志，不限制为最近 10 条。详情按打开时的日志快照分页，重新打开详情可读取新增日志；已过期或被裁剪的记录会提示缺失。
-
-### SLS 日志归档
-
-管理员日志详情、失败详情和普通用户实时日志优先读取阿里云 SLS。NarutoDailyADB 的 logger 在 emit 时生成日志 ID，由进程内发布器通过 Python SDK 异步批量直传 SLS，并附带覆盖范围 checkpoint。新日志不再写 Redis；关闭 SLS 时也不会恢复 Redis 日志写入。执行状态、队列、会话与账号锁仍由 Redis 管理，已有 Redis 历史日志保留兼容读取并按原有 TTL 自然过期。
-
-客户端提交申请只写入队列和已有 queued 会话状态，不上传日志。提交后的即时进度由排队状态展示；执行端领取或安全拒绝任务时补发提交/等待领取事件，再记录正式执行或拒绝原因。日志发布缓冲仅在执行端进程内存中保存，不使用 Redis Stream 或本地 SQLite；进程退出、缓冲溢出或长期无法上传可能导致日志缺失，不影响轻量执行状态读取。
-
-以下键放入对应环境的 Cloudflare KV namespace；正式和测试分别使用各自 Project/Logstore 和最小权限凭据，不能把正式凭据填入测试 namespace。目前同一环境的客户端和执行端共用这组配置，因此凭据须具备指定 Logstore 的 `log:GetLogStoreLogs` 读取和 `log:PostLogStoreLogs` 写入权限。若以后需要分别分配读写凭据，须先拆分配置键。不要复用浏览器变量或向前端传递密钥。
-
-| 配置键 | 说明 |
-| --- | --- |
-| `SLS_ENABLED` | `true` 启用 SLS；未配置或 `false` 时新任务不记录执行日志，历史 Redis 日志仍可读取 |
-| `SLS_ENDPOINT` | 区域域名，例如 `cn-hangzhou.log.aliyuncs.com`，可带 `https://`；只使用 HTTPS |
-| `SLS_PROJECT`、`SLS_LOGSTORE` | 当前环境的日志目标 |
-| `SLS_ACCESS_KEY_ID`、`SLS_ACCESS_KEY_SECRET` | 当前环境的服务端 RAM 凭据 |
-| `SLS_STS_TOKEN` | 可选 STS Token；采用临时凭据时到期前需更新配置并重新部署 |
-
-启用后缺配置或配置无效会拒绝启动；不回退其他环境或本地旧业务变量。Cloudflare 配置仍只在进程初始化时读取，更新后须重新部署。使用官方 Node SDK `@alicloud/sls20201230` 的 GetLogsV2，保持现有 `毫秒-序号` 游标及固定快照协议。
-
-日志契约为 `kind=event`、`taskId`、`environment`（`test` / `prod`）、`id`（logger 生成的 `ms-seq`）、`firstId`、`streamMs`、`streamSeq`、`time`、`level`、`message`，可选 `actionIndex`、`actionTotal`。ID 按毫秒和序号数值排序，不能按字符串排序。`kind=checkpoint` 记录当前 producer 的 `firstId`、`throughId`、`entryCount`、`truncated`，其中 `streamMs` / `streamSeq` 对应 `throughId`。事件的 `firstId` 用于隔离当前 producer 的计数，兼容缺少该字段的旧事件；日志页仍包含所有 producer 的历史。重复上传按任务、环境及 `id` 去重后分页。执行状态另保存 `logSource=sls|disabled` 与最新 emit 的 `logCursor`；不含这些字段的旧任务继续兼容 Redis。
-
-Logstore 使用支持 SQL 的 Standard 类型；关闭全文索引，给上述投影及过滤字段建立字段索引并启用统计。`streamMs`、`streamSeq`、`entryCount`、`actionIndex`、`actionTotal` 使用 `long`，其余使用 `text`；文本统计长度至少设为 8192 字节，避免最多 1000 个 Unicode 字符的正文被默认长度截断。标识字段无需分词。保留天数由 Logstore 配置控制；客户端查询最近八天的索引窗口，覆盖管理页面的七天范围。
-
-每次 SLS 读取先 GET Redis 的轻量执行状态，不读取 Stream 内容或边界；检查 checkpoint 的区间去重计数与执行状态的 `logCursor` 水位。重启后的 checkpoint 只证明自身区间，日志分页仍查询整个 `after..snapshot`，保留此前 producer 的历史日志。执行端继承旧游标但失去原内存发布状态时，后续 checkpoint 持续标记 `truncated=true`；客户端也保留已查询到的旧 checkpoint 缺失提示，不把新 producer 的完整区间当作整个任务无缺失。SLS 三次查询共用最多三秒预算，且不超过 `REQUEST_TIMEOUT_MS`；`Incomplete`、计数不匹配或正文缺失均不作为完整结果使用。
-
-旧任务在 SLS 不可用或无归档时回退 Redis。标记为 `logSource=sls` 的新任务没有 Redis 日志可回退：无 checkpoint、索引未追上水位或查询失败时返回 `logsPending`，保留原游标，管理员可手动重试。运行中的实时界面每 1.5 秒读取已完整入索引的日志前缀，不要求先追上不断增长的水位；终态严格等待最终水位，最多再等待 90 秒，仍未就绪则提示稍后重试，避免提前停止而丢掉最后一批日志或零间隔忙刷。`logSource=sls` 暂无 `logCursor` 的拒绝事件发布间隙也按待入库处理。`truncated` 表示发布器明确报告的缺失；纯内存发布无法证明进程崩溃前尚未上传的日志完整性。
-
-## 构建与部署
-
-```powershell
-npm test
-npm run build
-npm start
-```
-
-预览端口遵循选定 namespace 的配置。构建产物位于 `src/frontend/dist` 和 `src/server/dist`，不提交到 Git。测试使用模拟 Cloudflare、数据库和 Redis，不访问真实业务服务。
-
-仓库已关联 Vercel 项目 `sust-acmer/naruto-login-client`，生产分支为 `main`，推送后由 Vercel 自动构建。正式部署设置 `APP_ENV=prod`，`codex/jev-multimodal-test` 的测试部署设置 `APP_ENV=test`，并提供 Cloudflare Token、账号及对应环境的 namespace ID。Cloudflare 凭据只配置在 Vercel 服务端，不能传入前端；旧的业务环境变量不再被读取。修改 KV 或部署变量后重新部署才生效。ADB 执行端独立运行，选择相同环境并重启对应服务。
-
-接口和依赖异常会写入结构化错误日志，可在 Vercel Logs 中用响应头 `X-Request-Id` 关联同一次请求。日志保留失败阶段、错误码及必要耗时，不记录请求正文、Cookie、SQL 参数或连接凭证；正常请求不新增日志。
-
-## 代码位置
-
-- `src/frontend/`：页面、交互和 shadcn/ui 组件。
-- `src/server/`：账号、管理接口、PostgreSQL、Redis 和 OSS。
-- `src/shared/`：前后端共用类型与统计口径。
-- `api/`、`vercel.json`：Vercel 入口与路由。
-- `tests/`：回归测试，使用模拟服务，无需生产凭据。
+鱼玩仅由每台 worker 的本地 `.env` 管理：填写 `YUWAN_API_KEY` 和 `YUWAN_MODEL` 后启用，未配置 key 就关闭，不需要单独的启停变量。客户端管理页面和接口不显示、读写或测试鱼玩配置，Cloudflare 中的鱼玩字段也不会启用或关闭某台机器的鱼玩渠道。JEV 是独立的选择判断渠道，不在此页面管理。

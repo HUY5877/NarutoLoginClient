@@ -1,13 +1,14 @@
 import { parseUserOptions, type UserOptions } from '../../shared/user-options';
 import { parseLoginType, type LoginType } from '../../shared/login-types';
 
-export type RunStatus = 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'waiting_scan' | 'finishing_login'
+export type RunStatus = 'queued' | 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'waiting_scan' | 'finishing_login'
   | 'running_daily' | 'completed' | 'failed' | 'interrupted' | 'expired';
 export interface RunTask { id: string; createdAt: string; expiresAt: string; status: string; userOptions?: UserOptions; loginType?: LoginType }
 export interface TaskRun {
   taskId: string; status: RunStatus; updatedAt: string;
   startedAt: string | null; finishedAt: string | null;
   authorizedAt?: string;
+  scanCapturedAt?: string;
   secretRealmCompletedAt?: string;
   actionIndex?: number; actionTotal?: number; errorCode?: string;
   logSource?: 'sls' | 'disabled'; logCursor?: string;
@@ -24,13 +25,13 @@ export interface RunEvents {
 export interface TaskRunView {
   task: RunTask | null; run: TaskRun | null; logs: RunLog[];
   loading: boolean; polling: boolean; unavailable: boolean; truncated: boolean; error: string;
-  logsPending?: boolean;
+  restored?: boolean;
 }
 export const emptyTaskRun = (): TaskRunView => ({
   task: null, run: null, logs: [], loading: false, polling: false,
-  unavailable: false, truncated: false, error: '',
+  unavailable: false, truncated: false, error: '', restored: false,
 });
-const statuses: RunStatus[] = ['starting_emulator', 'opening_game', 'preparing_qr', 'waiting_scan', 'finishing_login',
+const statuses: RunStatus[] = ['queued', 'starting_emulator', 'opening_game', 'preparing_qr', 'waiting_scan', 'finishing_login',
   'running_daily', 'completed', 'failed', 'interrupted', 'expired'];
 export const isRunTerminal = (status: RunStatus) => ['completed', 'failed', 'interrupted', 'expired'].includes(status);
 const cursorPattern = /^\d+-\d+$/;
@@ -57,6 +58,7 @@ export function parseRunEvents(value: unknown, taskId: string, after: string): R
     || (value.run.startedAt !== null && !date(value.run.startedAt))
     || (value.run.finishedAt !== null && !date(value.run.finishedAt))
     || (value.run.authorizedAt !== undefined && !date(value.run.authorizedAt))
+    || (value.run.scanCapturedAt !== undefined && !date(value.run.scanCapturedAt))
     || (value.run.secretRealmCompletedAt !== undefined && !date(value.run.secretRealmCompletedAt))
     || !action(value.run.actionIndex) || !action(value.run.actionTotal)
     || value.run.logSource !== undefined && !['sls', 'disabled'].includes(String(value.run.logSource))
@@ -72,14 +74,13 @@ export function parseRunEvents(value: unknown, taskId: string, after: string): R
     previous = log.id;
   }
   if (compareCursor(value.nextCursor, previous) < 0
-    || (value.hasMore && compareCursor(value.nextCursor, after) <= 0)
-    || value.logsPending === true && (value.hasMore || value.logs.length > 0 || value.nextCursor !== after)) throw new Error('invalid run cursor');
+    || (value.hasMore && compareCursor(value.nextCursor, after) <= 0)) throw new Error('invalid run cursor');
   return value as unknown as RunEvents;
 }
-export function appendRunLogs(previous: RunLog[], incoming: RunLog[]): { logs: RunLog[]; trimmed: boolean } {
+export function appendRunLogs(previous: RunLog[], incoming: RunLog[]): { logs: RunLog[] } {
   const seen = new Set(previous.map(log => log.id));
   const combined = [...previous, ...incoming.filter(log => !seen.has(log.id) && Boolean(seen.add(log.id)))];
-  return { logs: combined.slice(-2_000), trimmed: combined.length > 2_000 };
+  return { logs: combined };
 }
 export class RunRequestError extends Error {
   constructor(readonly status: number) { super('Task run request failed'); }
@@ -87,10 +88,19 @@ export class RunRequestError extends Error {
 type Read = (path: string, signal: AbortSignal) => Promise<unknown>;
 type Wait = (ms: number, signal: AbortSignal) => Promise<void>;
 async function read(path: string, signal: AbortSignal): Promise<unknown> {
-  const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store',
-    signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]) });
-  if (!response.ok) throw new RunRequestError(response.status);
-  return response.json();
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  signal.addEventListener('abort', onAbort, { once: true });
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
+    if (!response.ok) throw new RunRequestError(response.status);
+    return await response.json();
+  } finally {
+    clearTimeout(timeout);
+    signal.removeEventListener('abort', onAbort);
+  }
 }
 const wait: Wait = (ms, signal) => new Promise((resolve, reject) => {
   if (signal.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
@@ -108,7 +118,7 @@ export class TaskRunTracker {
 
   constructor(private readonly update: (view: TaskRunView) => void,
     private readonly unauthorized: () => void,
-    private readonly request: Read = read, private readonly pause: Wait = wait, private readonly now = Date.now) {}
+    private readonly request: Read = read, private readonly pause: Wait = wait) {}
 
   private emit(patch: Partial<TaskRunView>) {
     this.view = { ...this.view, ...patch };
@@ -135,21 +145,30 @@ export class TaskRunTracker {
   async restore() {
     if (this.disposed) return;
     const controller = this.begin();
-    this.emit({ loading: true, error: '' });
+    this.emit({ ...emptyTaskRun(), loading: true });
     try {
       const body = await this.request('/api/task-runs/latest', controller.signal);
       if (!this.active(controller)) return;
       if (!object(body) || (body.task !== null && !isRunTask(body.task))) throw new Error('invalid latest task');
-      if (body.task === null) { this.emit({ loading: false }); return; }
-      this.follow(body.task as RunTask);
+      if (body.task === null) {
+        if (body.run !== null) throw new Error('invalid latest run');
+        this.emit({ loading: false, restored: true }); return;
+      }
+      const snapshot = parseRunEvents({ ...body, logs: [], nextCursor: '0-0', hasMore: false, truncated: false },
+        (body.task as RunTask).id, '0-0');
+      if (!snapshot.run) throw new Error('missing latest run');
+      // Hide a previous success only during initial restoration. A task followed
+      // in this page keeps its final result and drains its remaining log pages.
+      if (snapshot.run.status === 'completed') { this.emit({ loading: false, restored: true }); return; }
+      this.follow(snapshot.task, snapshot.run);
     } catch (error) { this.fail(error, controller); }
   }
-  follow(task: RunTask) {
+  follow(task: RunTask, snapshot: TaskRun | null = null) {
     if (this.disposed || this.view.task?.id === task.id) return;
     const controller = this.begin();
     this.cursor = '0-0';
     this.view = emptyTaskRun();
-    this.emit({ task, loading: true, polling: true });
+    this.emit({ task, run: snapshot, loading: snapshot === null, polling: true, restored: true });
     void this.poll(task.id, controller);
   }
   retry() {
@@ -166,7 +185,6 @@ export class TaskRunTracker {
     this.view = emptyTaskRun();
   }
   private async poll(taskId: string, controller: AbortController) {
-    let pendingSince: number | undefined;
     try {
       while (this.active(controller)) {
         const body = await this.request(`/api/task-runs/${encodeURIComponent(taskId)}/events?after=${this.cursor}`, controller.signal);
@@ -177,15 +195,11 @@ export class TaskRunTracker {
         const unavailable = events.run === null && (Date.parse(events.task.expiresAt) <= Date.now()
           || ['failed', 'expired'].includes(events.task.status));
         const terminal = unavailable || Boolean(events.run && isRunTerminal(events.run.status));
-        if (terminal && events.logsPending) pendingSince ??= this.now();
-        else pendingSince = undefined;
-        const timedOut = pendingSince !== undefined && this.now() - pendingSince >= 90_000;
-        const done = !events.hasMore && !events.logsPending && terminal;
+        const done = terminal;
         this.emit({ task: events.task, run: events.run, logs: merged.logs, loading: false,
-          polling: !done && !timedOut, unavailable, logsPending: events.logsPending ?? false,
-          truncated: this.view.truncated || events.truncated || merged.trimmed,
-          error: timedOut ? '任务已结束，执行日志仍在上传或暂时不可用。请稍后重试更新。' : '' });
-        if (done || timedOut) return;
+          polling: !done, unavailable,
+          truncated: this.view.truncated || events.truncated, error: '' });
+        if (done) return;
         await this.pause(events.hasMore ? 0 : 1_500, controller.signal);
       }
     } catch (error) { this.fail(error, controller); }

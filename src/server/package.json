@@ -25,6 +25,7 @@
     "redis": "^6.2.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.11",
     "@types/ali-oss": "^6.23.3",
     "@types/express": "^5.0.0",
     "@types/node": "^24.0.0",

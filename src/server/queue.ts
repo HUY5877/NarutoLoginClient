@@ -6,6 +6,7 @@ import { logBackend } from './logging.js';
 import { loginFailure, type TaskFailureCode } from '../shared/task-errors.js';
 import { parseUserOptions, type UserOptions } from '../shared/user-options.js';
 import { DEFAULT_LOGIN_TYPE, parseLoginType, type LoginType } from '../shared/login-types.js';
+import { effectiveRunStatus, RUN_RETENTION_MS, runStatuses, terminalRun, type RunStatus } from './task-state.js';
 
 export type Status = 'queued' | 'starting_emulator' | 'opening_game' | 'preparing_qr' | 'qr_ready' | 'failed' | 'expired';
 export interface Task {
@@ -20,16 +21,26 @@ export interface Task {
   errorCode?: TaskFailureCode;
   loginStartedAt?: string;
   loginAuthorized?: boolean;
+  scanCaptured?: boolean;
   refreshSupported?: boolean;
   refreshRequestId?: string;
   qrRevision?: string;
+  runStatus?: RunStatus;
 }
 export interface Submission {
   id: string; userId: string; accessToken: string; createdAt: string; expiresAt: string;
   userOptions: UserOptions;
   loginType?: LoginType;
 }
-interface StoredTask extends Task { userId?: string; tokenHash: string; loginExpiresAt?: string }
+export function taskOccupiesAccount(task: Task, now: number): boolean {
+  if (task.runStatus) return !terminalRun(task.runStatus);
+  return task.status !== 'failed' && task.status !== 'expired'
+    && (task.loginAuthorized === true || Date.parse(task.expiresAt) > now);
+}
+interface StoredTask extends Omit<Task, 'status'> {
+  status: Status | RunStatus; userId?: string; tokenHash: string; loginExpiresAt?: string;
+  taskId?: string; authorizedAt?: string; startedAt?: string | null; scanCapturedAt?: string;
+}
 type QueueConfig = Pick<Config, 'redisUrl' | 'redisQueueKey' | 'timeoutMs' | 'ossPrefix'>;
 interface EvalOptions { keys: string[]; arguments: string[] }
 export interface RedisDriver {
@@ -64,20 +75,32 @@ if queueType ~= 'none' and queueType ~= 'list' then
 end
 local activeId = redis.call('GET', KEYS[3])
 local previousLockTtl = redis.call('PTTL', KEYS[3])
-if activeId then
-  local activeRaw = redis.call('GET', KEYS[1] .. ':sessions:' .. activeId)
-  if activeRaw then
-    local decoded, active = pcall(cjson.decode, activeRaw)
-    if not decoded or type(active) ~= 'table' or active.id ~= activeId
-        or active.userId ~= submitted.userId or type(active.status) ~= 'string'
-        or type(active.expiresAt) ~= 'string' then
-      return redis.error_reply('Invalid active login session')
-    end
-    if active.status ~= 'failed' and active.status ~= 'expired' and active.expiresAt > ARGV[4] then
-      return -1
-    end
+local function occupied(key, trustedHistory)
+  local activeRaw = redis.call('GET', key)
+  if not activeRaw then return false end
+  local decoded, active = pcall(cjson.decode, activeRaw)
+  if not decoded or type(active) ~= 'table' or type(active.status) ~= 'string' then
+    error('Invalid active task run')
   end
+  if active.userId ~= submitted.userId and not (trustedHistory and active.userId == nil) then
+    error('Invalid active task owner')
+  end
+  if active.status == 'completed' or active.status == 'failed' or active.status == 'interrupted' or active.status == 'expired' then return false end
+  if active.status == 'finishing_login' or active.status == 'running_daily'
+    or active.loginAuthorized == true or type(active.authorizedAt) == 'string' or type(active.startedAt) == 'string' then return true end
+  local deadline = active.loginExpiresAt or active.expiresAt
+  if type(deadline) ~= 'string' then error('Missing active task deadline') end
+  return deadline > ARGV[4]
 end
+if activeId then
+  local activeKey = KEYS[1] .. ':runs:' .. activeId
+  local trusted = false
+  for i = 4, #KEYS do if KEYS[i] == activeKey then trusted = true end end
+  if occupied(activeKey, trusted) then return -1 end
+end
+-- History comes from this authenticated user's durable rows. Check it in the
+-- same transaction, including legacy runs whose short account index expired.
+for i = 4, #KEYS do if occupied(KEYS[i], true) then return -1 end end
 redis.call('SET', KEYS[2], ARGV[1], 'PX', ARGV[2])
 local locked = redis.pcall('SET', KEYS[3], submitted.id, 'PX', ARGV[2])
 if type(locked) == 'table' and locked.err then
@@ -101,7 +124,7 @@ end
 return 1
 `;
 
-const statuses = new Set<Status>(['queued', 'starting_emulator', 'opening_game', 'preparing_qr', 'qr_ready', 'failed', 'expired']);
+const statuses = new Set<string>([...runStatuses, 'qr_ready']);
 // Coalesce clicks across tabs. Only the owning worker acknowledges this command
 // after the replacement image has been uploaded; reads never consume it.
 const refreshScript = `
@@ -109,22 +132,25 @@ local raw = redis.call('GET', KEYS[1])
 if not raw then return -1 end
 local s = cjson.decode(raw)
 if s.id ~= ARGV[1] or s.userId ~= ARGV[2] then return -1 end
-if s.status == 'failed' or s.status == 'expired' then return -2 end
+if s.status == 'failed' or s.status == 'expired' or s.status == 'completed' or s.status == 'interrupted' then return -2 end
+if s.status == 'finishing_login' or s.status == 'running_daily'
+  or s.loginAuthorized == true or type(s.authorizedAt) == 'string' or type(s.startedAt) == 'string' then
+  s.loginAuthorized = true
+  return cjson.encode(s)
+end
 local deadline = s.loginExpiresAt or s.expiresAt
 if deadline <= ARGV[3] or redis.call('PTTL', KEYS[1]) <= 0 then return -2 end
-local runRaw = redis.call('GET', KEYS[3])
-if runRaw then
-  local ok, run = pcall(cjson.decode, runRaw)
-  if ok and type(run) == 'table' and run.taskId == s.id then
-    if run.status == 'failed' or run.status == 'interrupted' or run.status == 'completed' then return -2 end
-    if type(run.authorizedAt) == 'string' or type(run.startedAt) == 'string' or run.status == 'finishing_login' or run.status == 'running_daily' then
-      s.loginAuthorized = true
-    end
-  end
-end
+if type(s.scanCapturedAt) == 'string' then s.scanCaptured = true end
 if s.loginAuthorized == true then return cjson.encode(s) end
+if s.scanCaptured == true then
+  s.refreshRequestId = nil
+  s.status = 'waiting_scan'
+  redis.call('SET', KEYS[1], cjson.encode(s), 'KEEPTTL')
+  redis.call('DEL', KEYS[2])
+  return cjson.encode(s)
+end
 if s.refreshSupported ~= true then return -3 end
-if s.status ~= 'qr_ready' and not s.refreshRequestId then return -4 end
+if s.status ~= 'waiting_scan' and s.status ~= 'qr_ready' and not s.refreshRequestId then return -4 end
 if not redis.call('GET', KEYS[2]) then
   local command = cjson.decode(ARGV[4])
   command.loginType = s.loginType or 'android_qq'
@@ -139,12 +165,21 @@ const hash = (token: string) => createHash('sha256').update(token).digest('hex')
 const missingSession = () => new ApiError(404, '登录申请不存在或已失效，请重新生成二维码。');
 const invalidSession = () => new ApiError(502, '登录申请数据无效，请重新生成二维码。');
 
-function parseSession(raw: string, id: string, userId?: string): StoredTask {
+function parseSession(raw: string, id: string, userId?: string, trusted?: Submission): StoredTask {
   let record: StoredTask;
   try { record = JSON.parse(raw) as StoredTask; }
   catch { throw invalidSession(); }
+  // Old workers only stored a summary. The database proves ownership; do not
+  // write it back while that worker could still publish its legacy snapshots.
+  if (record && record.taskId === id && record.id === undefined && record.userId === undefined
+    && trusted?.id === id && trusted.userId === userId && statuses.has(record.status)) {
+    record = { ...record, id, userId, createdAt: trusted.createdAt, expiresAt: trusted.expiresAt,
+      simulation: true, tokenHash: hash(trusted.accessToken), userOptions: trusted.userOptions,
+      loginType: trusted.loginType ?? DEFAULT_LOGIN_TYPE };
+  }
   if (userId !== undefined && (!record || record.userId !== userId)) throw missingSession();
-  if (!record || record.id !== id || record.simulation !== true || !statuses.has(record.status)
+  if (!record || record.id !== id || record.taskId !== undefined && record.taskId !== id
+    || record.simulation !== true || !statuses.has(record.status)
     || typeof record.tokenHash !== 'string' || !/^[a-f0-9]{64}$/.test(record.tokenHash)
     || typeof record.createdAt !== 'string' || typeof record.expiresAt !== 'string'
     || !Number.isFinite(Date.parse(record.createdAt)) || !Number.isFinite(Date.parse(record.expiresAt))
@@ -234,37 +269,39 @@ export class TaskService {
     }
   }
 
-  async enqueue(task: Submission): Promise<void> {
+  async enqueue(task: Submission, previousTaskIds: readonly string[] = []): Promise<void> {
     const loginType = parseLoginType(task.loginType);
     if (!loginType) throw invalidSession();
     const now = this.now();
     const ttl = Date.parse(task.expiresAt) - now;
     if (!Number.isFinite(ttl) || ttl <= 0) throw new ApiError(410, '登录申请已过期，请重新生成二维码。');
-    const record = JSON.stringify({ id: task.id, userId: task.userId, status: 'queued', createdAt: task.createdAt,
-      expiresAt: task.expiresAt, simulation: true, tokenHash: hash(task.accessToken), userOptions: task.userOptions, loginType });
+    const record = JSON.stringify({ id: task.id, taskId: task.id, userId: task.userId, status: 'queued', createdAt: task.createdAt,
+      expiresAt: task.expiresAt, updatedAt: task.createdAt, startedAt: null, finishedAt: null,
+      simulation: true, tokenHash: hash(task.accessToken), userOptions: task.userOptions, loginType });
     const payload = JSON.stringify({ version: 1, id: task.id, createdAt: task.createdAt,
       expiresAt: task.expiresAt, objectKey: `${this.config.ossPrefix}/${task.id}/qr.png`, userOptions: task.userOptions,
       loginTimeoutSeconds: 600, loginType });
     const result = await this.request((driver, signal) => driver.eval(enqueueScript, {
-      keys: [this.config.redisQueueKey, this.sessionKey(task.id), this.activeKey(task.userId)],
-      arguments: [record, String(ttl), payload, new Date(now).toISOString()],
+      keys: [this.config.redisQueueKey, this.runKey(task.id), this.activeKey(task.userId),
+        ...previousTaskIds.filter(id => id !== task.id).map(id => this.runKey(id))],
+      arguments: [record, String(Math.max(ttl, RUN_RETENTION_MS)), payload, new Date(now).toISOString()],
     }, signal));
-    if (result === -1) throw new ApiError(409, '当前账号已有登录申请，请等待二维码过期或申请失败后重试。', 'ACTIVE_LOGIN_SESSION');
+    if (result === -1) throw new ApiError(409, '当前账号已有任务，请等待任务结束后重试。', 'ACTIVE_LOGIN_SESSION');
     if (result !== 0 && result !== 1) throw new ApiError(502, 'Redis 返回了无效结果，请重新申请。');
   }
 
   async get(id: string, token: string): Promise<Task> {
-    const raw = await this.request((driver, signal) => driver.get(this.sessionKey(id), signal));
+    const raw = await this.request((driver, signal) => driver.get(this.runKey(id), signal));
     if (raw === null) throw missingSession();
     const record = parseSession(raw, id);
     if (!timingSafeEqual(Buffer.from(record.tokenHash, 'hex'), Buffer.from(hash(token), 'hex'))) throw missingSession();
     return this.publicTask(record);
   }
 
-  async getForUser(id: string, userId: string): Promise<Task> {
-    const raw = await this.request((driver, signal) => driver.get(this.sessionKey(id), signal));
+  async getForUser(id: string, userId: string, trusted?: Submission): Promise<Task> {
+    const raw = await this.request((driver, signal) => driver.get(this.runKey(id), signal));
     if (raw === null) throw missingSession();
-    const record = parseSession(raw, id, userId);
+    const record = parseSession(raw, id, userId, trusted);
     return this.publicTask(record);
   }
 
@@ -272,9 +309,13 @@ export class TaskService {
     const active = await this.request(async (driver, signal) => {
       const id = await driver.get(this.activeKey(userId), signal);
       if (id === null) return null;
-      return { id, raw: await driver.get(this.sessionKey(id), signal) };
+      return { id, raw: await driver.get(this.runKey(id), signal) };
     });
     if (active === null || active.raw === null) return null;
+    // Legacy summaries have no account identity; only a trusted database row
+    // can bind them. LoginEventService's history recovery does that separately.
+    try { const value = JSON.parse(active.raw); if (value?.taskId === active.id && value.id === undefined && value.userId === undefined) return null; }
+    catch { throw invalidSession(); }
     const record = parseSession(active.raw, active.id);
     if (record.userId !== userId) return null;
     const task = this.publicTask(record);
@@ -286,7 +327,7 @@ export class TaskService {
   async requestRefresh(id: string, userId: string): Promise<Task> {
     const requestId = randomUUID(), requestedAt = new Date(this.now()).toISOString();
     const result = await this.request((driver, signal) => driver.eval(refreshScript, {
-      keys: [this.sessionKey(id), `${this.config.redisQueueKey}:refresh:${id}`, `${this.config.redisQueueKey}:runs:${id}`],
+      keys: [this.runKey(id), `${this.config.redisQueueKey}:refresh:${id}`],
       arguments: [id, userId, requestedAt, JSON.stringify({ taskId: id, requestId, requestedAt }), requestId],
     }, signal));
     if (result === -1) throw missingSession();
@@ -297,20 +338,25 @@ export class TaskService {
     return this.publicTask(parseSession(result, id, userId));
   }
 
-  private sessionKey(id: string) { return `${this.config.redisQueueKey}:sessions:${id}`; }
+  private runKey(id: string) { return `${this.config.redisQueueKey}:runs:${id}`; }
   private activeKey(userId: string) { return `${this.config.redisQueueKey}:users:${userId}:active`; }
 
   private publicTask(record: StoredTask): Task {
     const expiresAt = record.loginExpiresAt ?? record.expiresAt;
-    return { id: record.id, status: record.status === 'failed' ? 'failed' : this.now() >= Date.parse(expiresAt) ? 'expired' : record.status,
+    const runStatus = effectiveRunStatus(record, this.now());
+    const status: Status = runStatus === 'waiting_scan' || runStatus === 'finishing_login' || runStatus === 'running_daily'
+      ? 'qr_ready' : runStatus === 'completed' ? 'expired' : runStatus === 'interrupted' ? 'failed' : runStatus;
+    return { id: record.id, status, ...(record.taskId ? { runStatus } : {}),
       createdAt: record.createdAt, expiresAt, simulation: true, loginType: record.loginType ?? DEFAULT_LOGIN_TYPE,
       ...(record.loginStartedAt ? { loginStartedAt: record.loginStartedAt } : {}),
-      ...(record.loginAuthorized === true ? { loginAuthorized: true } : {}),
+      ...(record.loginAuthorized === true || runStatus === 'finishing_login' || runStatus === 'running_daily'
+        || record.authorizedAt ? { loginAuthorized: true } : {}),
+      ...(record.scanCaptured === true || record.scanCapturedAt ? { scanCaptured: true } : {}),
       ...(record.refreshSupported === true ? { refreshSupported: true } : {}),
       ...(record.refreshRequestId ? { refreshRequestId: record.refreshRequestId } : {}),
       ...(record.qrRevision ? { qrRevision: record.qrRevision } : {}),
       ...(record.userOptions ? { userOptions: record.userOptions } : {}),
-      ...(record.status === 'failed' ? loginFailure(record.errorCode) : {}) };
+      ...(status === 'failed' ? loginFailure(record.errorCode) : {}) };
   }
 
   close() {

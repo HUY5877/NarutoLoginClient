@@ -100,7 +100,7 @@ function errorIs(status: number, code: string, message?: string) {
 test('注册保存待审申请和原始密码，不生成会话、不返回凭证且忽略提权字段', async () => {
   const { service, store } = fixture();
   const first = await service.register({ username: '  Naruto_01  ', password, isAdmin: true, isInvalid: false,
-    applicationStatus: 'approved', status: 'approved' });
+    applicationStatus: 'approved', status: 'approved', note: '不得写入的管理备注', admin_note: '不得写入的管理备注' });
   const second = await service.register({ username: '佐助账号02', password });
   assert.deepEqual(Object.keys(first).sort(), ['application', 'message']);
   assert.equal(first.application.username, 'Naruto_01');
@@ -115,8 +115,11 @@ test('注册保存待审申请和原始密码，不生成会话、不返回凭�
     assert.equal(user.password, password);
     assert.equal(user.isInvalid, true);
     assert.equal(user.isAdmin, false);
+    assert.equal(Object.hasOwn(user, 'note'), false);
+    assert.equal(Object.hasOwn(user, 'admin_note'), false);
   }
   assert.ok(!JSON.stringify(first).includes(password));
+  assert.ok(!JSON.stringify(first).includes('不得写入的管理备注'));
   assert.ok(!JSON.stringify(second).includes(password));
   assert.equal(rows[0].usernameKey, 'naruto_01');
   assert.equal(Object.hasOwn(first, 'token'), false);

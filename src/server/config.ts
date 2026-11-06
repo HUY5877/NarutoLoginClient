@@ -13,6 +13,7 @@ export interface Config {
   databaseUrl?: string;
   jwtSecret?: string;
   qqAuthorizationEncryptionKey?: string;
+  qqBot?: QqBotConfig;
   redisQueueKey: string;
   localObjectsDir: string;
   sessionTtlMs: number;
@@ -27,6 +28,20 @@ export interface Config {
   allowedOrigins: string[];
   sessionCookieName?: string;
   sls?: SlsConfig;
+}
+
+export interface QqBotConfig { appId: string; appSecret: string; groupOpenid: string }
+
+function qqBotConfig(env: NodeJS.ProcessEnv): QqBotConfig | undefined {
+  const appId = env.QQ_BOT_APP_ID?.trim() ?? '';
+  const appSecret = env.QQ_BOT_APP_SECRET?.trim() ?? '';
+  const groupOpenid = env.QQ_BOT_GROUP_OPENID?.trim() ?? '';
+  if (!appId && !appSecret && !groupOpenid) return undefined;
+  if (!appId || !appSecret) throw new Error('QQ_BOT_APP_ID、QQ_BOT_APP_SECRET 必须成对配置，群标识可以在首次接入时留空');
+  if (!/^[0-9]{1,32}$/.test(appId) || groupOpenid && !/^[A-Za-z0-9_-]{1,128}$/.test(groupOpenid) || Buffer.byteLength(appSecret) > 1024) {
+    throw new Error('QQ_BOT 机器人配置格式不正确');
+  }
+  return { appId, appSecret, groupOpenid };
 }
 
 export interface SlsConfig {
@@ -90,7 +105,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const config: Config = {
     appEnv,
     host: env.HOST ?? '127.0.0.1', port: integer(env, 'PORT', 4300, 1, 65535),
-    redisUrl, redisQueueKey, databaseUrl, jwtSecret,
+    redisUrl, redisQueueKey, databaseUrl, jwtSecret, qqBot: qqBotConfig(env),
     // This optional test feature validates its key lazily; mistakes must not disable the existing website.
     qqAuthorizationEncryptionKey: env.QQ_AUTHORIZATION_ENCRYPTION_KEY?.trim() || undefined,
     localObjectsDir: resolve(env.LOCAL_OBJECTS_DIR ?? resolve(serverRoot, '../../.data/login-objects')),

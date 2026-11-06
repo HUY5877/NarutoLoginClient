@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { RefreshCw, Trophy } from 'lucide-react';
+import { RefreshCw, Tag, Trophy } from 'lucide-react';
 import type { MonthlySort } from '../../shared/admin';
 import { useAdminData } from '@/hooks/use-admin';
 import { isMonthlyStatsPage } from '@/lib/admin';
 import { AdminError, AdminLoading, AdminPagination } from '@/components/admin-common';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -52,19 +53,27 @@ export function AdminMonthlyStats({ open, onOpenChange, onAccessLost, returnFocu
             <Table className="table-fixed">
               <TableCaption className="sr-only">{month} 月度排行榜</TableCaption>
               <TableHeader><TableRow>
-                <TableHead className="w-12 pl-3 text-xs">名次</TableHead><TableHead className="text-xs">用户</TableHead>
-                <TableHead className="w-20 whitespace-normal text-right text-xs">请求总次数</TableHead>
-                <TableHead className="w-[4.5rem] whitespace-normal pr-3 text-right text-xs">日常天数</TableHead>
+                <TableHead className="w-10 pl-3 text-xs sm:w-12">名次</TableHead><TableHead className="text-xs">用户</TableHead>
+                <TableHead className="w-16 whitespace-normal text-right text-xs sm:w-20">请求总次数</TableHead>
+                <TableHead className="w-14 whitespace-normal pr-3 text-right text-xs sm:w-[4.5rem]">日常天数</TableHead>
               </TableRow></TableHeader>
               <TableBody>{result.items.map(user => <TableRow key={user.userId}>
                 <TableCell className={`pl-3 tabular-nums ${user.rank <= 3 ? 'font-semibold text-primary' : 'text-muted-foreground'}`}>{user.rank}</TableCell>
-                <TableCell className="whitespace-normal break-all py-4 text-sm font-medium">{user.username}</TableCell>
+                <TableCell className="py-3 text-sm">
+                  <div className="flex h-5 min-w-0 items-center gap-2">
+                    <span className="min-w-0 max-w-40 truncate font-medium" title={user.username}>{user.username}</span>
+                    {user.note && <Badge variant="outline" title={user.note} aria-label={`备注：${user.note}`}
+                      className="min-w-0 max-w-[50%] shrink-0 rounded-md border-primary/10 bg-primary/5 px-1.5 font-normal text-muted-foreground sm:max-w-40">
+                      <Tag className="shrink-0 opacity-70" aria-hidden="true" /><span className="truncate">{user.note}</span>
+                    </Badge>}
+                  </div>
+                </TableCell>
                 <TableCell className="text-right tabular-nums">{user.requestCount.toLocaleString('zh-CN')}</TableCell>
                 <TableCell className="pr-3 text-right tabular-nums">{user.requestDays} 天</TableCell>
               </TableRow>)}</TableBody>
             </Table>
           </div> : <p role="status" className="py-12 text-center text-sm text-muted-foreground">{result.total ? '本页暂无记录，请返回上一页。' : '这个月还没有日常申请。'}</p>}
-          <p className="mt-3 text-xs leading-5 text-muted-foreground">同分并列排名。刷新二维码、重复提交同一申请不增加次数。</p>
+          <p className="mt-3 text-xs leading-5 text-muted-foreground">次数和天数均相同时，按用户名排序。刷新二维码、重复提交同一申请不增加次数。</p>
         </>}
       </div>
       {result && <AdminPagination page={result.page} pageSize={result.pageSize} total={result.total} disabled={loading} onPageChange={setPage} />}

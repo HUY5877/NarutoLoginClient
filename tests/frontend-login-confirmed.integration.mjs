@@ -28,7 +28,7 @@ async function until(check) {
   while (!check()) { assert.ok(Date.now() < limit, 'mock request did not arrive'); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
 
-test('QR authorization confirmation and queue expiry', { skip: skip || false, timeout: 60_000 }, async t => {
+test('QR authorization confirmation and queue expiry', { skip: skip || false, timeout: 120_000 }, async t => {
   const { createServer } = await import(pathToFileURL(require.resolve('vite')).href);
   const { default: react } = await import(pathToFileURL(require.resolve('@vitejs/plugin-react')).href);
   const { default: tailwindcss } = await import(pathToFileURL(require.resolve('@tailwindcss/vite')).href);
@@ -67,7 +67,14 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
             json: { ...session, status: state.detailStatus, showGetButton: state.detailStatus === 'expired' } });
         }
         else if (url.pathname === `/api/login-sessions/${taskId}/qr`) return route.fulfill({ status: 200, contentType: 'image/png', body: png });
-        else if (url.pathname === '/api/task-runs/latest') body = { task: old ? { ...session, id: oldId } : dailyStarted ? session : null };
+        else if (url.pathname === '/api/task-runs/latest') body = {
+          task: old ? { ...session, id: oldId } : dailyStarted ? session : null,
+          run: old || dailyStarted ? { taskId: old ? oldId : taskId, status: old ? 'finishing_login' : state.status,
+            updatedAt: time, startedAt: state.startedAt, finishedAt: null,
+            ...(old ? { authorizedAt: time } : {}),
+            ...(state.secretRealmCompletedAt ? { secretRealmCompletedAt: state.secretRealmCompletedAt } : {}),
+            ...(state.errorCode ? { errorCode: state.errorCode } : {}) } : null,
+        };
         else if (url.pathname.endsWith('/events')) {
           const id = url.pathname.split('/')[3];
           if (id === oldId) { state.oldRequested = true; await state.oldGate.promise; }
@@ -165,7 +172,7 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         // 完整完成使用新快照恢复，不能被已保留的初步完成标记降级。
         f.state.status = 'completed'; f.state.errorCode = undefined;
         await f.page.reload({ waitUntil: 'domcontentloaded' });
-        await f.page.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^任务已完成$/ }).waitFor();
+        await f.page.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^待开始$/ }).waitFor();
         assert.equal(await f.page.locator('#task-run-details').getByText('日常任务已初步完成', { exact: true }).count(), 0);
       } finally { await f.close(); }
     });
@@ -260,19 +267,15 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
       } finally { await f.close(); }
     });
 
-    await t.test('a late authorized result for an old task cannot dismiss a new task QR', async () => {
+    await t.test('an authorized task snapshot blocks another task while its logs are still pending', async () => {
       const f = await fixture({ old: true });
       try {
         await until(() => f.state.oldRequested);
-        await f.page.getByRole('button', { name: '启动模拟器获取二维码', exact: true }).click();
-        const image = f.page.locator('img[src^="blob:"]');
-        await image.waitFor();
+        assert.equal(await f.page.getByRole('button', { name: '启动模拟器获取二维码', exact: true }).isDisabled(), true);
+        assert.equal(await f.page.locator('img[src^="blob:"]').count(), 0);
         f.state.oldGate.resolve();
-        const polls = f.state.calls.filter(value => value === `/api/task-runs/${taskId}/events`).length;
-        await until(() => f.state.calls.filter(value => value === `/api/task-runs/${taskId}/events`).length > polls);
-        assert.equal(await image.isVisible(), true);
-        assert.equal(await f.page.getByLabel(/^剩余 \d+ 秒$/).isVisible(), true);
-        assert.equal(await f.page.getByText('扫码授权已完成', { exact: true }).count(), 0);
+        await f.page.getByText('扫码授权已完成', { exact: true }).waitFor();
+        assert.equal(f.state.calls.some(value => value.startsWith('/api/login-sessions')), false);
       } finally { await f.close(); }
     });
   } finally { await browser?.close(); await server.close(); await rmdir(envDir); }

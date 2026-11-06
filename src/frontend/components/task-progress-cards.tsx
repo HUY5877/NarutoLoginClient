@@ -60,14 +60,13 @@ export function TaskProgressCards({ progress }: { progress: ReturnType<typeof de
             <AccordionItem value="simulation">
               <AccordionTrigger className="text-sm font-medium">现在可以登录游戏吗？</AccordionTrigger>
               <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                {arena ? '当前可完成客户端任务选择与扫码流程，周胜自动执行仍在接入。'
-                  : '选择安卓或 iOS 的 QQ 区、微信区后获取二维码。QQ 区用手机 QQ，微信区用微信扫码并确认授权。授权完成后系统会继续进入游戏和执行日常脚本。'}
+                选择安卓或 iOS 的 QQ 区、微信区后获取二维码。QQ 区用手机 QQ，微信区用微信扫码并确认授权。授权完成后系统会继续进入游戏和执行{arena ? '决斗场周胜任务' : '日常脚本'}。
               </AccordionContent>
             </AccordionItem>
             <AccordionItem value="account">
               <AccordionTrigger className="text-sm font-medium">多个页面能同时获取二维码吗？</AccordionTrigger>
               <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                同一账户同时只有一个有效申请。每个页面点击「生成登录二维码」后查询并复用已有申请，过期或准备失败后才能重新申请。
+                同一账户同时只有一个有效申请。每个页面点击「启动模拟器获取二维码」后查询并复用已有申请，过期或准备失败后才能重新申请。
               </AccordionContent>
             </AccordionItem>
             <AccordionItem value="scan-status">
@@ -79,7 +78,7 @@ export function TaskProgressCards({ progress }: { progress: ReturnType<typeof de
             <AccordionItem value="expires" className="border-b-0">
               <AccordionTrigger className="text-sm font-medium">二维码过期或生成失败怎么办？</AccordionTrigger>
               <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                过期或准备失败后可点击「重新生成二维码」，服务端会先检查已有申请。网络中断时点击「重试查询」，继续查看本次申请。
+                二维码失效时点击「刷新二维码」；实例占用超时或准备失败后，点击「启动模拟器获取二维码」重新申请。网络中断时，按页面提示重试查询或继续本次申请。
               </AccordionContent>
             </AccordionItem>
           </Accordion>

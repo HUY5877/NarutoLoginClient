@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deriveTaskProgress, hasGameAuthorization, selectProgressRun, type ProgressInput } from '../src/frontend/lib/task-progress';
+import { deriveTaskProgress, hasCapturedScan, hasGameAuthorization, selectProgressRun, type ProgressInput } from '../src/frontend/lib/task-progress';
 import { emptyTaskRun, type RunStatus } from '../src/frontend/lib/task-run';
 import type { Session } from '../src/frontend/hooks/use-login-session';
 import { expireLoginSession } from '../src/frontend/lib/login-expiry';
@@ -27,6 +27,61 @@ test('refresh pending overrides an older waiting_scan snapshot, while authorizat
   assert.equal(deriveTaskProgress(authorized).summary, '正在进入游戏');
 });
 
+test('抓号完成立即显示扫码成功，但不冒充游戏授权或脚本已经开始', () => {
+  for (const source of ['run', 'session'] as const) {
+    const current = input('waiting_scan', { phase: 'qr_ready', qrReady: true,
+      session: { ...session, status: 'qr_ready', refreshRequestId: 'pending' } });
+    if (source === 'run') Object.assign(current.view.run!, { scanCapturedAt: at });
+    else Object.assign(current.session!, { scanCaptured: true });
+    const progress = deriveTaskProgress(current);
+    assert.equal(hasCapturedScan(current), true);
+    assert.equal(hasGameAuthorization(current.view.run), false);
+    assert.deepEqual(progress.steps.map(step => step.state), ['completed', 'completed', 'pending']);
+    assert.equal(progress.summary, '扫码成功');
+    assert.match(progress.steps[1].description, /扫码已完成/);
+    assert.match(progress.steps[2].description, /正在登录游戏/);
+    assert.doesNotMatch(progress.hint, /再次扫码/);
+  }
+});
+
+test('抓号完成后登录失败或超时仍保留扫码成功证据，不显示二维码失败或脚本已执行', () => {
+  for (const status of ['failed', 'expired', 'interrupted'] as const) {
+    const current = input(status, { phase: status === 'interrupted' ? 'idle' : status,
+      session: status === 'interrupted' ? null : { ...session, status } });
+    Object.assign(current.view.run!, { scanCapturedAt: at, errorCode: 'login_failed' });
+    const progress = deriveTaskProgress(current);
+    assert.equal(progress.steps[1].state, 'completed');
+    assert.match(progress.steps[1].description, /扫码已完成/);
+    assert.equal(progress.steps[2].state, 'failed');
+    assert.equal(progress.tone, 'danger');
+    assert.match(progress.summary, /游戏登录/);
+    assert.doesNotMatch(progress.summary, /二维码|脚本/);
+  }
+});
+
+test('旧任务的抓号时间不能让新任务显示扫码成功', () => {
+  const current = input('waiting_scan', { phase: 'qr_ready', qrReady: true });
+  Object.assign(current.view.run!, { taskId: 'previous-task', scanCapturedAt: at });
+  current.view.task = { ...session, id: 'previous-task' };
+  assert.equal(deriveTaskProgress(current).summary, '等待扫码');
+  assert.equal(hasCapturedScan(current), false);
+  current.session = { ...current.session!, scanCaptured: true };
+  for (const phase of ['restoring', 'submitting'] as const) assert.equal(hasCapturedScan({ ...current, phase }), false);
+  assert.equal(hasCapturedScan({ ...current, awaitingSubmission: true }), false);
+});
+
+test('已扫码会话在任务流延迟时仍显示真实失败或到期，未扫码旧协议保持原状', () => {
+  for (const status of ['failed', 'expired'] as const) {
+    const current = input('waiting_scan', { phase: status, session: { ...session, status, scanCaptured: true } });
+    const result = deriveTaskProgress(current);
+    assert.equal(result.steps[1].state, 'completed');
+    assert.equal(result.steps[2].state, 'failed');
+    assert.equal(result.tone, 'danger');
+  }
+  assert.equal(hasCapturedScan(input('waiting_scan')), false);
+  assert.equal(deriveTaskProgress(input('waiting_scan')).summary, '等待扫码');
+});
+
 test('unclaimed expiry reports capacity pressure only without execution evidence for this task', () => {
   const expired = expireLoginSession(session);
   const waiting = input(undefined, { phase: 'expired', session: expired });
@@ -41,6 +96,16 @@ test('unclaimed expiry reports capacity pressure only without execution evidence
   const oldRun = input('running_daily', { phase: 'expired', session: expired });
   oldRun.view.task = { ...session, id: 'old-task' }; oldRun.view.run!.taskId = 'old-task';
   assert.equal(deriveTaskProgress(oldRun).summary, '排队超时');
+});
+
+test('统一运行记录的queued状态仍显示等待领取', () => {
+  assert.equal(deriveTaskProgress(input('queued')).steps[1].description, '申请正在排队，等待执行服务器领取');
+});
+
+test('统一运行记录的排队超时保留服务器容量提示', () => {
+  const expired = input('expired', { phase: 'expired', session: expireLoginSession(session) });
+  expired.view.run!.errorCode = 'queue_timeout';
+  assert.equal(deriveTaskProgress(expired).summary, '排队超时');
 });
 
 test('right-side steps have three fixed titles and progress from submission through QR to script', () => {

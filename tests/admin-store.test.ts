@@ -13,26 +13,28 @@ const changes: UserChanges = { username: 'Naruto_2', usernameKey: 'naruto_2', is
 
 function fixture(t: TestContext) {
   const calls: Array<{ sql: string; values: unknown[] }> = [];
-  let actor = true, missing = false, failure: unknown, userOptions: unknown;
+  let actor = true, missing = false, failure: unknown, userOptions: unknown, note = '';
   async function query(text: string, values: unknown[] = []) {
     const sql = text.replace(/\s+/g, ' ').trim(); calls.push({ sql, values });
     if (sql.includes('FOR SHARE')) return { rows: actor ? [{ id: adminId }] : [] };
     if (sql.startsWith('INSERT INTO naruto_login.users') || sql.startsWith('UPDATE naruto_login.users') || sql.startsWith('DELETE FROM naruto_login.users')) {
       if (failure) throw failure;
-      return { rows: missing ? [] : [{ ...row, username: changes.username }] };
+      if (sql.startsWith('INSERT') && sql.includes('admin_note')) note = String(values[7]);
+      if (sql.startsWith('UPDATE') && sql.includes('admin_note = COALESCE($7, admin_note)') && values[6] !== null) note = String(values[6]);
+      return { rows: missing ? [] : [{ ...row, note, username: changes.username }] };
     }
     if (sql.startsWith('SELECT count(*)')) return { rows: [{ total: 41 }] };
     if (sql.startsWith('SELECT count(DISTINCT user_id)')) return { rows: [{ total: 41, totalRequests: 120 }] };
-    if (sql.startsWith('WITH stats AS')) return { rows: [{ userId: id, username: 'Naruto', requestCount: 9, requestDays: 3, rank: 1, password: 'private-fixture' }] };
-    if (sql.includes('FROM naruto_login.users u')) return { rows: missing ? [] : [{ ...row, password: 'private-fixture' }] };
-    if (sql.includes('FROM naruto_login.login_events e')) return { rows: [{ id, username: row.username, createdAt: now, expiresAt: new Date(now.getTime() + 300000), status: 'qr_ready', userOptions, accessToken: 'private-token' }] };
+    if (sql.startsWith('WITH stats AS')) return { rows: [{ userId: id, username: 'Naruto', note, requestCount: 9, requestDays: 3, rank: 1, password: 'private-fixture' }] };
+    if (sql.includes('FROM naruto_login.users u')) return { rows: missing ? [] : [{ ...row, note, password: 'private-fixture' }] };
+    if (sql.includes('FROM naruto_login.login_events e')) return { rows: [{ id, username: row.username, note, createdAt: now, expiresAt: new Date(now.getTime() + 300000), status: 'qr_ready', userOptions, accessToken: 'private-token' }] };
     return { rows: [] };
   }
   t.mock.method(Pool.prototype, 'connect', async () => ({ query, release() {} }));
   t.mock.method(Pool.prototype, 'query', query);
   const store = new PgAuthStore('postgresql://fixture:fixture@127.0.0.1/fixture'); t.after(() => store.close());
   return { store, calls, setActor(value: boolean) { actor = value; }, setMissing(value: boolean) { missing = value; },
-    setFailure(value: unknown) { failure = value; }, setUserOptions(value: unknown) { userOptions = value; } };
+    setFailure(value: unknown) { failure = value; }, setUserOptions(value: unknown) { userOptions = value; }, setNote(value: string) { note = value; } };
 }
 
 test('admin lists use literal parameterized search, consistent count/page snapshots and public fields', async t => {
@@ -41,8 +43,12 @@ test('admin lists use literal parameterized search, consistent count/page snapsh
   assert.equal(result.total, 41); assert.equal(result.items[0].createdAt, now.toISOString());
   assert.doesNotMatch(JSON.stringify(result), /password|private-fixture/);
   const search = f.calls.find(call => call.sql.includes('ORDER BY u.created_at DESC'))!;
-  assert.match(search.sql, /strpos\(lower\(u.username\), lower\(\$1\)\) > 0/);
-  assert.deepEqual(search.values, ["Naru_to'", 20, 20]);
+  const condition = "(strpos(lower(u.username), lower($1)) > 0 OR strpos(lower(u.admin_note), lower($1)) > 0)";
+  assert.ok(search.sql.includes(`WHERE ${condition}`));
+  const count = f.calls.find(call => call.sql.startsWith('SELECT count(*)') && call.sql.includes('FROM naruto_login.users'))!;
+  assert.ok(count.sql.includes(`WHERE ${condition} AND`));
+  assert.deepEqual(count.values, ["Naru_to'", 'all']);
+  assert.deepEqual(search.values, ["Naru_to'", 'all', 20, 20]);
   assert.ok(!search.sql.includes("Naru_to'"));
   assert.ok(f.calls.some(call => call.sql === 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ'));
   assert.equal((await f.store.getManagedUser(id))?.applicationStatus, 'pending');
@@ -56,7 +62,8 @@ test('create locks live admin privileges, binds role/status/password and maps on
   assert.equal(result.isAdmin, true); assert.equal(result.isInvalid, false); assert.equal(result.applicationStatus, null);
   assert.doesNotMatch(JSON.stringify(result), /password|private-password/);
   const insert = f.calls.find(call => call.sql.startsWith('INSERT INTO naruto_login.users'))!;
-  assert.deepEqual(insert.values, [id, 'Naruto', 'naruto', 'private-password', false, true, now]);
+  assert.deepEqual(insert.values, [id, 'Naruto', 'naruto', 'private-password', false, true, now, '']);
+  assert.equal(result.note, '');
   const lock = f.calls.findIndex(call => call.sql.includes('FOR SHARE'));
   assert.ok(lock >= 0 && lock < f.calls.indexOf(insert));
   f.setFailure({ code: '23505', constraint: 'naruto_login_users_username_key_key' });
@@ -73,12 +80,65 @@ test('activation resolves pending registration in the same transaction; blank pa
   assert.equal(updated.applicationStatus, 'approved');
   const update = f.calls.find(call => call.sql.startsWith('UPDATE naruto_login.users'))!;
   assert.match(update.sql, /password = COALESCE\(\$4, password\)/);
-  assert.deepEqual(update.values, [id, 'Naruto_2', 'naruto_2', null, false, false]);
+  assert.deepEqual(update.values, [id, 'Naruto_2', 'naruto_2', null, false, false, null]);
   const review = f.calls.find(call => call.sql.startsWith('UPDATE naruto_login.registration_applications'))!;
   assert.deepEqual(review.values, [id, now, adminId]); assert.match(review.sql, /status = 'pending'/);
   assert.equal(f.calls.at(-1)?.sql, 'COMMIT');
   f.setFailure(new Error('storage failed'));
   await assert.rejects(f.store.updateUser(adminId, id, changes, now)); assert.equal(f.calls.at(-1)?.sql, 'ROLLBACK');
+});
+
+test('用户状态与姓名备注搜索共同限制总数和分页，并只依据最新申请分类', async t => {
+  const f = fixture(t);
+  for (const status of ['all', 'enabled', 'pending', 'rejected', 'disabled'] as const) {
+    const result = await f.store.listUsers('群友_小明', 40, 20, status);
+    assert.equal(result.total, 41); assert.equal(result.items.length, 1);
+    const count = f.calls.filter(call => call.sql.startsWith('SELECT count(*)') && call.sql.includes('FROM naruto_login.users')).at(-1)!;
+    const page = f.calls.filter(call => call.sql.includes('ORDER BY u.created_at DESC')).at(-1)!;
+    const countFilter = count.sql.split('FROM naruto_login.users u WHERE ')[1];
+    const pageFilter = page.sql.split('FROM naruto_login.users u WHERE ')[1].split(' ORDER BY u.created_at DESC')[0];
+    assert.equal(pageFilter, countFilter, '总数与当前页必须使用同一状态和搜索条件');
+    assert.match(countFilter, /^\(strpos\(lower\(u.username\), lower\(\$1\)\) > 0 OR strpos\(lower\(u.admin_note\), lower\(\$1\)\) > 0\) AND/);
+    assert.match(countFilter, /\(\$2 = 'all' OR CASE WHEN NOT u.is_invalid THEN 'enabled'/);
+    assert.match(countFilter, /WHEN \(SELECT a.status FROM naruto_login.registration_applications a WHERE a.user_id = u.id ORDER BY a.created_at DESC, a.id DESC LIMIT 1\) = 'pending' THEN 'pending'/);
+    assert.match(countFilter, /WHEN \(SELECT a.status FROM naruto_login.registration_applications a WHERE a.user_id = u.id ORDER BY a.created_at DESC, a.id DESC LIMIT 1\) = 'rejected' THEN 'rejected'/);
+    assert.match(countFilter, /ELSE 'disabled' END = \$2\)$/);
+    assert.doesNotMatch(countFilter, /EXISTS\s*\(/);
+    assert.deepEqual(count.values, ['群友_小明', status]);
+    assert.deepEqual(page.values, ['群友_小明', status, 20, 40]);
+    assert.match(page.sql, /LIMIT \$3 OFFSET \$4$/);
+    assert.ok(!page.sql.includes('群友_小明'));
+  }
+});
+
+test('管理员备注独立持久化，省略保持、空串清空，扫码和月榜读取当前备注', async t => {
+  const f = fixture(t);
+  const note = "群友_小明'; DROP TABLE users;--";
+  const created = await f.store.createUser(adminId, { id, username: 'Naruto', usernameKey: 'naruto',
+    password: 'fixture-password', isAdmin: false, isInvalid: false, note }, now);
+  assert.equal(created.note, note);
+  assert.equal(created.username, 'Naruto');
+  assert.equal((await f.store.getManagedUser(id))?.note, note);
+  assert.equal((await f.store.listUsers(note, 0, 20)).items[0].note, note);
+  const input = { ...changes, username: 'Naruto', usernameKey: 'naruto' };
+  assert.equal((await f.store.updateUser(adminId, id, input, now)).note, note);
+  const updated = await f.store.updateUser(adminId, id, { ...input, note: '新备注' }, now);
+  assert.equal(updated.note, '新备注');
+  assert.equal((await f.store.listDailyEvents(now, new Date(now.getTime() + 300000))).items[0].note, '新备注');
+  assert.equal((await f.store.listMonthlyStats(now, new Date(now.getTime() + 300000), 'requests', 0, 20)).items[0].note, '新备注');
+  const taskQuery = f.calls.find(call => call.sql.includes('FROM naruto_login.login_events e'))!;
+  const monthlyQuery = f.calls.find(call => call.sql.startsWith('WITH stats AS'))!;
+  for (const query of [taskQuery, monthlyQuery]) assert.match(query.sql, /u.admin_note AS note/);
+  assert.equal((await f.store.updateUser(adminId, id, { ...input, note: '' }, now)).note, '');
+  assert.equal((await f.store.getManagedUser(id))?.note, '');
+  const mutations = f.calls.filter(call => call.sql.startsWith('UPDATE naruto_login.users'));
+  assert.ok(mutations.every(call => call.values[1] === 'Naruto' && call.values[2] === 'naruto'));
+  assert.ok(f.calls.every(call => !call.sql.includes(note)));
+  f.setActor(false);
+  const before = mutations.length;
+  await assert.rejects(f.store.updateUser(adminId, id, { ...input, note: '越权修改' }, now),
+    error => error instanceof UserManagementError && error.code === 'ADMIN_REQUIRED');
+  assert.equal(f.calls.filter(call => call.sql.startsWith('UPDATE naruto_login.users')).length, before);
 });
 
 test('store defends self mutations and missing targets and deletes through the existing foreign-key cascades', async t => {
@@ -95,19 +155,23 @@ test('store defends self mutations and missing targets and deletes through the e
   }
 });
 
-test('日常列表的总数与分页仅统计日常任务，缺省主任务兼容旧记录且不读取内部凭证', async t => {
+test('扫码列表只执行一次全量查询，按主任务过滤且不读取内部凭证', async t => {
   const f = fixture(t), start = new Date('2026-10-07T16:00:00Z'), end = new Date('2026-10-08T16:00:00Z');
-  const result = await f.store.listDailyEvents(start, end, 20, 20);
-  assert.equal(result.total, 41); assert.equal(result.items[0].createdAt, now.toISOString());
-  assert.doesNotMatch(JSON.stringify(result), /accessToken|private-token/);
-  const query = f.calls.find(call => call.sql.includes('FROM naruto_login.login_events e'))!;
-  const count = f.calls.find(call => call.sql.startsWith('SELECT count(*)') && call.sql.includes('FROM naruto_login.login_events'))!;
-  assert.match(count.sql, /AND COALESCE\(user_options ->> 'mainTask', 'daily'\) = 'daily'/);
-  assert.match(query.sql, /AND COALESCE\(e.user_options ->> 'mainTask', 'daily'\) = 'daily'/);
-  assert.match(query.sql, /e.user_options AS "userOptions"/);
-  assert.match(query.sql, /e.created_at >= \$1 AND e.created_at < \$2/);
-  assert.doesNotMatch(query.sql, /access_token|request_id|password/);
-  assert.deepEqual(query.values, [start, end, 20, 20]);
+  await f.store.initialize();
+  for (const mainTask of [undefined, 'daily', 'arena_weekly'] as const) {
+    f.calls.length = 0;
+    const result = await f.store.listDailyEvents(start, end, mainTask);
+    assert.equal(result.total, 1); assert.equal(result.items[0].createdAt, now.toISOString());
+    assert.doesNotMatch(JSON.stringify(result), /accessToken|private-token/);
+    assert.equal(f.calls.length, 1, 'Only the full SELECT is needed after initialization');
+    const query = f.calls[0];
+    assert.match(query.sql, /AND COALESCE\(e.user_options ->> 'mainTask', 'daily'\) = \$3/);
+    assert.match(query.sql, /e.user_options AS "userOptions"/);
+    assert.match(query.sql, /e.created_at >= \$1 AND e.created_at < \$2/);
+    assert.match(query.sql, /ORDER BY e.created_at DESC, e.id DESC$/);
+    assert.doesNotMatch(query.sql, /access_token|request_id|password|COUNT|LIMIT|OFFSET|BEGIN|COMMIT|SET TRANSACTION/i);
+    assert.deepEqual(query.values, [start, end, mainTask ?? 'daily']);
+  }
 });
 
 test('日常列表读取持久选项供首次完成判定，兼容旧记录且保留跳过秘境选择', async t => {
@@ -119,26 +183,28 @@ test('日常列表读取持久选项供首次完成判定，兼容旧记录且�
     [{ equipmentStamina: true, secretRealmMode: 'skip' }, { equipmentStamina: true, secretRealmMode: 'skip' }],
   ]) {
     f.setUserOptions(saved);
-    const result = await f.store.listDailyEvents(now, new Date(now.getTime() + 300000), 0, 20);
+    const result = await f.store.listDailyEvents(now, new Date(now.getTime() + 300000));
     assert.deepEqual(result.items[0].userOptions, expected);
   }
   f.setUserOptions({ secretRealmMode: 'invalid' });
-  await assert.rejects(f.store.listDailyEvents(now, new Date(now.getTime() + 300000), 0, 20), /Stored daily event user options are invalid/);
+  await assert.rejects(f.store.listDailyEvents(now, new Date(now.getTime() + 300000)), /Stored daily event user options are invalid/);
 });
 
 test('月榜总数与排名只统计日常申请，兼容旧记录并按北京日期去重且保留所有执行状态', async t => {
   const f = fixture(t), start = new Date('2026-09-30T16:00:00Z'), end = new Date('2026-10-31T16:00:00Z');
   for (const sort of ['requests', 'days'] as const) {
     const result = await f.store.listMonthlyStats(start, end, sort, 20, 20);
-    assert.deepEqual(result, { items: [{ userId: id, username: 'Naruto', requestCount: 9, requestDays: 3, rank: 1 }], total: 41, totalRequests: 120 });
+    assert.deepEqual(result, { items: [{ userId: id, username: 'Naruto', note: '', requestCount: 9, requestDays: 3, rank: 1 }], total: 41, totalRequests: 120 });
     const query = f.calls.filter(call => call.sql.startsWith('WITH stats AS')).at(-1)!;
     const count = f.calls.filter(call => call.sql.startsWith('SELECT count(DISTINCT user_id)')).at(-1)!;
     assert.match(count.sql, /AND COALESCE\(user_options ->> 'mainTask', 'daily'\) = 'daily'/);
     assert.match(query.sql, /AND COALESCE\(user_options ->> 'mainTask', 'daily'\) = 'daily'/);
     assert.match(query.sql, /count\(DISTINCT \(created_at AT TIME ZONE 'Asia\/Shanghai'\)::date\)/);
     assert.match(query.sql, /created_at >= \$1 AND created_at < \$2/);
-    assert.match(query.sql, sort === 'days' ? /dense_rank\(\) OVER \(ORDER BY request_days DESC\)/ : /dense_rank\(\) OVER \(ORDER BY request_count DESC\)/);
-    assert.match(query.sql, /s.user_id ASC LIMIT \$3 OFFSET \$4/);
+    assert.match(query.sql, sort === 'days'
+      ? /row_number\(\) OVER \(ORDER BY request_days DESC, request_count DESC, u.username COLLATE "C" ASC\)/
+      : /row_number\(\) OVER \(ORDER BY request_count DESC, request_days DESC, u.username COLLATE "C" ASC\)/);
+    assert.match(query.sql, /u.username COLLATE "C" ASC LIMIT \$3 OFFSET \$4/);
     assert.doesNotMatch(query.sql, /status|access_token|password|dispatched_at/);
     assert.deepEqual(query.values, [start, end, 20, 20]);
   }

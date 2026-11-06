@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { createApp, type Dependencies } from '../src/server/app.js';
 import { loadConfig } from '../src/server/config.js';
 import { ApiError } from '../src/server/errors.js';
-import { parseQqAuthorization, QqAuthorizationCipher, verifyQqAuthorization, validateQqJson } from '../src/server/qq-authorization-data.js';
+import { parseStrictQqAuthorization as parseQqAuthorization, QqAuthorizationCipher, verifyQqAuthorization, validateQqJson } from '../src/server/qq-authorization-data.js';
 import { PgQqAuthorizationStore, QqAuthorizationService, type QqAuthorizationRecord, type QqAuthorizationStore } from '../src/server/qq-authorizations.js';
 
 const start = Date.parse('2026-10-23T02:00:00Z');
@@ -162,6 +162,7 @@ test('PostgreSQL 查询始终带 owner 条件，容量限制不截断也不写�
     async query(sql: string, values?: unknown[]) {
       queries.push({ sql: sql.replace(/\s+/g, ' ').trim(), values });
       if (sql.includes('current_database()')) return { rows: [{ database: 'naruto_login_test' }] };
+      if (sql.includes('information_schema.columns')) return { rows: [] };
       if (sql.includes('CREATE TABLE') || /^(?:BEGIN|COMMIT|ROLLBACK|SELECT pg_advisory)/.test(sql)) return { rows: [] };
       if (mode === 'failure') throw new Error(`sensitive driver ${token}`);
       assert.equal(values?.[0], owner);
@@ -174,7 +175,9 @@ test('PostgreSQL 查询始终带 owner 条件，容量限制不截断也不写�
   const store = new PgQqAuthorizationStore(config, { pool });
   assert.equal((await store.get(owner, row.id))?.id, row.id);
   assert.equal((await store.list(owner)).length, 1); assert.equal(await store.delete(owner, row.id), true);
-  for (const query of queries.filter(item => item.sql.includes('WHERE'))) assert.match(query.sql, /WHERE owner_id = \$1/);
+  for (const query of queries.filter(item => item.sql.includes('naruto_login.qq_authorizations_encrypted') && item.sql.includes('WHERE'))) {
+    assert.match(query.sql, /WHERE owner_id = \$1/);
+  }
   mode = 'capacity'; await assert.rejects(store.upsert(row), errorIs(409, 'QQ_AUTHORIZATION_LIMIT'));
   assert(!queries.some(query => query.sql.startsWith('INSERT'))); assert(queries.some(query => query.sql === 'ROLLBACK'));
   mode = 'overflow'; await assert.rejects(store.list(owner), errorIs(409));

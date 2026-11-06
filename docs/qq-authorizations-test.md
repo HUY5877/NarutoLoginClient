@@ -2,13 +2,17 @@
 
 抓号器通过 HTTPS 上传完整 QQ 授权，上号器列出当前网站用户保存的账号，并在用户选择后读取指定记录。客户端不直接连接 PostgreSQL。网站 Cookie 登录仍使用已有 `/api/auth/login`；新接口不接受独立的全局 API 密钥。
 
+2026-11-06 合并 main 后，旧测试授权与 main 的任务抓号分别保存。旧加密授权使用 `naruto_login.qq_authorizations_encrypted`，main 抓号继续使用 `naruto_login.qq_authorizations`。仅测试环境核对真实数据库名为 `naruto_login_test` 后，在初始化事务内识别旧密文表并改名，保留原记录、ID、密文、索引与用户关联，不解密重写。两服务共用数据库事务锁；遇到未知、混合或冲突结构时回滚并报错，生产环境不会迁移旧密文表。
+
+`GET /api/qq-authorizations` 继续支持 main 的本人抓号历史。测试环境配置旧授权密钥后，同时返回旧加密授权的元数据，按更新时间倒序排列，不返回授权内容。没有旧密钥时只读 main 抓号历史。旧 POST、按 ID 读取及删除仍只在测试环境开放，且只作用于旧加密授权。此次兼容验证仅使用临时数据库和合成数据，未连接真实数据库。
+
 ## 环境与初始化
 
-- 仅 `APP_ENV=test` 提供 `/api/qq-authorizations`。正式环境返回 404，且不会构建或初始化 QQ 授权数据库连接。
+- 仅 `APP_ENV=test` 提供旧授权的 POST、按 ID 读取及删除。正式环境这些接口返回 404，且不会构建或初始化旧授权数据库连接；main 抓号历史列表仍可用。
 - Cloudflare 测试 namespace 须提供 `QQ_AUTHORIZATION_ENCRYPTION_KEY`，值为随机生成的 32 字节密钥的 64 位十六进制字符串。
 - 密钥缺失或格式错误时，新接口返回 503；已有网站接口继续可用。进程环境中的同名业务配置不会覆盖所选 KV namespace。
 - 数据库连接地址须指向 `naruto_login_test`。初始化还会执行 `SELECT current_database()`，实际名称不符就停止，不执行 DDL。
-- 新表是 `naruto_login.qq_authorizations`，外键关联现有 `naruto_login.users(id)`。初始化使用数据库事务与 advisory lock，可重复运行。它不会创建或修改旧用户表。
+- 旧授权表是 `naruto_login.qq_authorizations_encrypted`，外键关联现有 `naruto_login.users(id)`。初始化使用数据库事务与 advisory lock，可重复运行。它不会创建或修改旧用户表。
 - 可用 `new PgQqAuthorizationStore(config).initialize()` 初始化；用完须 `close()`。服务类 `QqAuthorizationService` 也提供这两个方法。
 
 ## 接口
@@ -18,7 +22,7 @@
 | 方法 | 路径 | 结果 |
 | --- | --- | --- |
 | POST | `/api/qq-authorizations` | 201 `{item}`，同一用户的同一个 QQ 账号更新现有记录 |
-| GET | `/api/qq-authorizations` | `{items}`，按更新时间倒序，最多保存 200 个账号 |
+| GET | `/api/qq-authorizations` | `{items}`，按更新时间倒序；测试环境可同时含两种来源的元数据，旧授权仍最多保存 200 个账号 |
 | GET | `/api/qq-authorizations/:id` | `{item,authorization}`；过期返回 410 |
 | DELETE | `/api/qq-authorizations/:id` | 204；不存在或不属于本人均返回 404 |
 
@@ -38,7 +42,7 @@
 
 `item` 仅含 `id`、`label`、`accountHint`、`capturedAt`、`expiresAt`、`updatedAt`、`expired`。时间均为 UTC ISO 8601 字符串；`accountHint` 为 OpenID 最后 6 位小写字符，用于区分账号，不含完整 OpenID。列表不会包含 token、回调或密文。备注为 1–40 个字符，拒绝控制字符、双向控制字符和损坏的 Unicode。
 
-只有这个 POST 接口允许最大 64 KiB 的 JSON，其他接口保留 2 KiB 限制。上传前校验重复 JSON 键、重复回调参数、回调来源、应用编号、token 格式和时间。随后调用固定的 QQ 官方 `/oauth2.0/me` 校验 token 对应的应用与 OpenID；请求不跟随重定向，有超时与响应大小限制。网络校验失败不会写入新授权。
+这个 POST 接口保留最大 64 KiB 的 JSON；main 的抓号上传和模型渠道接口保留各自的请求限制。上传前校验重复 JSON 键、重复回调参数、回调来源、应用编号、token 格式和时间。随后调用固定的 QQ 官方 `/oauth2.0/me` 校验 token 对应的应用与 OpenID；请求不跟随重定向，有超时与响应大小限制。网络校验失败不会写入新授权。
 
 完整回调会保留 `pf`、`pfkey`、`pay_token` 等参数。有效期使用原回调的 `auth_time + expires_in`；缺少 `auth_time` 时使用保存的原始 `captured_at_epoch_ms`。下载不会重置捕获时间或续期。剩余不足 1 秒即视为过期。较早捕获的授权不会覆盖更新的授权。
 

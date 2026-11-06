@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'node:crypto';
 import { ApiError } from './errors.js';
 
 export const QQ_APP_ID = '1104307008';
@@ -69,10 +69,10 @@ export function validateQqJson(input: Buffer | string): void {
   } catch { throw invalid(); }
 }
 
-export function parseQqAuthorization(value: unknown, now: number): ParsedQqAuthorization {
+export function parseQqAuthorization(value: unknown, now: number, { allowExpired = false }: { allowExpired?: boolean } = {}): ParsedQqAuthorization {
   if (!object(value) || Object.keys(value).length !== 4 || value.schema_version !== 1 || value.app_id !== QQ_APP_ID
     || typeof value.captured_at_epoch_ms !== 'number' || !Number.isSafeInteger(value.captured_at_epoch_ms)
-    || value.captured_at_epoch_ms < 0 || value.captured_at_epoch_ms > now || !Number.isSafeInteger(now)
+    || value.captured_at_epoch_ms < 0 || !Number.isSafeInteger(now)
     || typeof value.callback_url !== 'string' || value.callback_url.length > MAX_BYTES) throw invalid();
   const callback = value.callback_url;
   if (!/^[\x21-\x7e]+$/.test(callback) || /[<>"{}|\\^`]/.test(callback)) throw invalid();
@@ -95,20 +95,38 @@ export function parseQqAuthorization(value: unknown, now: number): ParsedQqAutho
     || ['appid', 'app_id'].some(key => fields.has(key) && fields.get(key) !== QQ_APP_ID)) throw invalid();
   const seconds = fields.get('expires_in');
   if (!seconds || !/^\d{1,19}$/.test(seconds) || BigInt(seconds) <= 0n) throw invalid();
-  let lifetimeStart = BigInt(value.captured_at_epoch_ms);
+  // Device and server clocks need not agree. Accept the capture without allowing a fast
+  // device clock to postpone its fallback expiry or supersede later account captures.
+  const capturedAt = Math.min(value.captured_at_epoch_ms, now);
+  let lifetimeStart = BigInt(capturedAt);
   const authTime = fields.get('auth_time');
   if (authTime !== undefined) {
     if (!/^(?:\d{10}|\d{13})$/.test(authTime)) throw invalid();
     lifetimeStart = BigInt(authTime) * (authTime.length === 10 ? 1000n : 1n);
-    if (lifetimeStart < 1000000000000n || lifetimeStart > BigInt(value.captured_at_epoch_ms)) throw invalid();
+    // QQ's original authorization time is independent of the device's capture clock.
+    if (lifetimeStart < 1000000000000n) throw invalid();
   }
   const expiration = lifetimeStart + BigInt(seconds) * 1000n;
   // JavaScript Date's supported range is narrower than the safe-integer range.
   if (expiration > 8640000000000000n) throw invalid();
   const expiresAt = Number(expiration);
-  if (expiresAt - now < 1000) throw qqExpired();
+  if (!allowExpired && expiresAt - now < 1000) throw qqExpired();
   return { authorization: { schema_version: 1, app_id: QQ_APP_ID,
-    captured_at_epoch_ms: value.captured_at_epoch_ms, callback_url: callback }, fields, expiresAt };
+    captured_at_epoch_ms: capturedAt, callback_url: callback }, fields, expiresAt };
+}
+
+export function qqAccountFingerprint(ownerId: string, openid: string): string {
+  return createHash('sha256').update(`huy:qq-account:v2\0${ownerId}\0${QQ_APP_ID}\0${openid.toLowerCase()}`).digest('hex');
+}
+
+/** The original test-only upload contract requires capture and authorization clocks to agree. */
+export function parseStrictQqAuthorization(value: unknown, now: number): ParsedQqAuthorization {
+  if (object(value) && typeof value.captured_at_epoch_ms === 'number' && value.captured_at_epoch_ms > now) throw invalid();
+  const parsed = parseQqAuthorization(value, now, { allowExpired: true });
+  const authTime = parsed.fields.get('auth_time');
+  if (authTime !== undefined && BigInt(authTime) * (authTime.length === 10 ? 1000n : 1n) > BigInt(parsed.authorization.captured_at_epoch_ms)) throw invalid();
+  if (parsed.expiresAt - now < 1000) throw qqExpired();
+  return parsed;
 }
 
 export interface QqEncryptedAuthorization { ciphertext: Buffer; nonce: Buffer; authTag: Buffer }

@@ -24,9 +24,10 @@ export function hasGameAuthorization(run: TaskRun | null): boolean {
   return Boolean(run && (run.authorizedAt || run.startedAt || ['finishing_login', 'running_daily'].includes(run.status)));
 }
 export function isUnclaimedQueueTimeout(session: Session | null, run: TaskRun | null): boolean {
-  // A run snapshot proves the worker started, even if session polling missed it.
+  // A claimed snapshot overrides a stale queue timeout; an authoritative queued
+  // run may itself expire before a worker ever starts it.
   return session?.status === 'expired' && session.errorCode === 'queue_timeout'
-    && (!run || run.taskId !== session.id);
+    && (!run || run.taskId !== session.id || run.status === 'expired' && run.errorCode === 'queue_timeout');
 }
 export function selectProgressRun({ phase, session, view, awaitingSubmission }: ProgressInput): TaskRunView {
   // A previous task may still be polling while the user submits another request.
@@ -34,6 +35,12 @@ export function selectProgressRun({ phase, session, view, awaitingSubmission }: 
   if (awaitingSubmission || phase === 'restoring' || phase === 'submitting'
     || session && view.task?.id !== session.id) return emptyTaskRun();
   return view;
+}
+export function hasCapturedScan(input: ProgressInput): boolean {
+  if (input.awaitingSubmission || ['restoring', 'submitting'].includes(input.phase)) return false;
+  const view = selectProgressRun(input);
+  return input.session?.scanCaptured === true
+    || Boolean(view.run?.scanCapturedAt && view.run.taskId === view.task?.id);
 }
 export function deriveTaskProgress(input: ProgressInput) {
   const { phase, qrReady, awaitingSubmission } = input;
@@ -58,7 +65,7 @@ export function deriveTaskProgress(input: ProgressInput) {
   let hint = '点击「启动模拟器获取二维码」后才加载二维码；执行记录可独立恢复。';
   if (!task) {
     if (phase === 'expired') {
-      steps[0].state = 'failed'; steps[0].description = '本次申请确认已超时，请点击重新生成二维码';
+      steps[0].state = 'failed'; steps[0].description = '本次申请确认已超时，请点击「启动模拟器获取二维码」重试';
       summary = '申请确认超时'; tone = 'danger'; hint = '重新操作时会先检查服务器上的有效申请。';
     }
     return { steps, summary, tone, hint, taskId: null, mainTask };
@@ -100,6 +107,19 @@ export function deriveTaskProgress(input: ProgressInput) {
     qr.state = 'completed'; qr.description = '扫码授权已完成';
     script.state = 'active'; script.description = arena ? '正在进入游戏并准备执行周胜任务' : '正在进入游戏并准备执行日常';
     summary = '正在进入游戏'; hint = '授权已经完成，无需再次扫码。';
+  } else if (hasCapturedScan(input)) {
+    qr.state = 'completed'; qr.description = '扫码已完成，授权信息已收到';
+    const failed = run && ['failed', 'interrupted', 'expired'].includes(run.status)
+      || ['failed', 'expired'].includes(task.status) || ['failed', 'expired'].includes(phase);
+    if (failed) {
+      script.state = 'failed';
+      summary = run?.status === 'expired' || phase === 'expired' || task.status === 'expired' ? '游戏登录超时' : '游戏登录未完成';
+      script.description = '扫码已完成，但游戏登录未完成，脚本尚未开始，请重新申请。';
+      tone = 'danger'; hint = script.description;
+    } else {
+      script.description = `正在登录游戏，登录成功后开始执行${taskName}`;
+      summary = '扫码成功'; hint = '扫码结果已收到，正在登录游戏，请稍候。';
+    }
   } else if (isUnclaimedQueueTimeout(session, run)) {
     qr.state = 'failed'; qr.description = taskFailureMessage('queue_timeout');
     script.description = '申请排队超时，脚本尚未开始';
@@ -136,7 +156,7 @@ export function deriveTaskProgress(input: ProgressInput) {
     summary = '等待扫码'; hint = '扫码登录成功后，第三阶段会显示脚本执行进度。';
   } else {
     qr.state = 'active';
-    qr.description = task.status === 'queued' && !run ? '申请正在排队，等待执行服务器领取'
+    qr.description = task.status === 'queued' && (!run || run.status === 'queued') ? '申请正在排队，等待执行服务器领取'
       : run?.status === 'opening_game' || task.status === 'opening_game' ? '正在打开游戏并准备登录'
         : run?.status === 'preparing_qr' || task.status === 'preparing_qr' ? '正在获取登录二维码'
           : '正在准备游戏环境并获取二维码';

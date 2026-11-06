@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { createApp, type Dependencies } from '../src/server/app.js';
 import { AuthService, type AuthSession, type User } from '../src/server/auth.js';
 import { loadConfig } from '../src/server/config.js';
+import { AdminService } from '../src/server/admin.js';
 import { ApiError } from '../src/server/errors.js';
 import type { Task } from '../src/server/queue.js';
 import type { AuthStore } from '../src/server/database.js';
@@ -52,6 +53,23 @@ test('四个渠道透传创建服务，旧请求默认安卓 QQ，非法渠道�
   });
 });
 
+test('刷新遇到未投递意图时恢复原申请并重读完整 run，不创建新申请', async () => {
+  let reads = 0, resumes = 0;
+  const task = { ...baseTask, status: 'queued' as const,
+    userOptions: { equipmentStamina: true, secretRealmMode: 'all' as const } };
+  const run = { taskId: id, status: 'queued' as const, updatedAt: task.createdAt, startedAt: null, finishedAt: null };
+  await withApi({ events: events({ create: async () => assert.fail('must not create another request'),
+    getActive: async () => { resumes++; return task; } }), runs: {
+    getLatest: async () => ({ task, run: ++reads === 1 ? null : run }),
+    getEvents: async () => assert.fail('no log polling in the restoration endpoint'),
+  } }, async base => {
+    const response = await fetch(`${base}/api/task-runs/latest`, { headers });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { task, run });
+    assert.equal(reads, 2); assert.equal(resumes, 1);
+  });
+});
+
 function events(overrides: Partial<Dependencies['events']> = {}): Dependencies['events'] {
   return { create: async () => ({ ...baseTask, status: 'queued' }), getForUser: async () => ({ ...baseTask }),
     getActive: async () => null, recordStatus: async () => {}, ...overrides };
@@ -92,7 +110,7 @@ test('刷新接口使用 Cookie 账户与路径任务 ID，拒绝匿名、跨站
 });
 
 test('刷新上传未确认、授权完成时不使用 OSS 旧图，读取期间发生刷新也不能返回旧图', async () => {
-  for (const flags of [{ refreshRequestId: requestId }, { loginAuthorized: true }]) {
+  for (const flags of [{ refreshRequestId: requestId }, { loginAuthorized: true }, { scanCaptured: true }]) {
     await withApi({ events: events({ getForUser: async () => ({ ...baseTask, ...flags }) }),
       storage: { exists: async () => assert.fail('must not HEAD old QR'), read: async () => assert.fail('must not read old QR') },
     }, async base => {
@@ -109,27 +127,39 @@ test('刷新上传未确认、授权完成时不使用 OSS 旧图，读取期间
   });
 });
 
+test('二维码读取期间收到扫码结果时不再发送旧二维码', async () => {
+  let captured = false;
+  await withApi({ events: events({ getForUser: async () => ({ ...baseTask, scanCaptured: captured }) }),
+    storage: { exists: async () => true, read: async () => { captured = true; return png; } },
+  }, async base => {
+    const response = await fetch(`${base}/api/login-sessions/${id}/qr`, { headers });
+    assert.equal(response.status, 409); assert.equal((await response.json()).code, 'QR_CHANGED');
+  });
+});
+
 test('user management and daily task APIs enforce admin identity, JSON and same-origin before invoking services', async () => {
   const calls: unknown[][] = [];
   const managed = { ...user, isInvalid: false, createdAt: new Date(start).toISOString(), applicationStatus: null };
   const adminService: NonNullable<Dependencies['admin']> = {
+    interruptDailyTask: async () => assert.fail('unexpected interruption'),
     listUsers: async (actor, query) => { calls.push(['list', actor.id, query]); return { items: [managed], total: 1, page: 1, pageSize: 20 }; },
     getUser: async (actor, target) => { calls.push(['get', actor.id, target]); return { user: managed }; },
     createUser: async (actor, body) => { calls.push(['create', actor.id, body]); return { user: managed }; },
     updateUser: async (actor, target, body) => { calls.push(['update', actor.id, target, body]); return { user: managed }; },
     deleteUser: async (actor, target) => { calls.push(['delete', actor.id, target]); },
+    dailyTaskRuns: async () => assert.fail('unexpected run request'),
     dailyTasks: async (actor, query) => { calls.push(['daily', actor.id, query]); return { items: [], total: 0, page: 1, pageSize: 20, date: '2026-10-08', timeZone: 'Asia/Shanghai' }; },
     monthlyStats: async (actor, query) => { calls.push(['monthly', actor.id, query]); return { items: [], total: 0, totalRequests: 0, page: 1, pageSize: 20, month: '2026-10', sort: 'requests', timeZone: 'Asia/Shanghai' }; },
     dailyTaskFailureDetails: async (actor, taskId) => { calls.push(['failure', actor.id, taskId]); return {
       taskId, errorCode: 'daily_failed', errorMessage: '具体错误：未找到挑战按钮', logs: [], truncated: false,
     }; },
-    dailyTaskLogs: async (actor, taskId, after, snapshot) => { calls.push(['logs', actor.id, taskId, after, snapshot]); return {
-      taskId, status: 'completed', logs: [], nextCursor: after ?? '0-0', snapshotCursor: snapshot ?? '0-0', hasMore: false, truncated: false,
+    dailyTaskLogs: async (actor, taskId, after) => { calls.push(['logs', actor.id, taskId, after]); return {
+      taskId, status: 'completed', logs: [], nextCursor: after ?? '0-0',
     }; },
   };
   await withApi({ admin: adminService }, async base => {
-    const routes = [{ path: '/api/admin/users', method: 'GET' }, { path: `/api/admin/users/${user.id}`, method: 'GET' },
-      { path: '/api/admin/daily-tasks?date=2026-10-07&page=2', method: 'GET' }, { path: '/api/admin/users', method: 'POST' },
+    const routes = [{ path: '/api/admin/users?search=group&page=2&status=pending', method: 'GET' }, { path: `/api/admin/users/${user.id}`, method: 'GET' },
+      { path: '/api/admin/daily-tasks?date=2026-10-07&page=2&mainTask=arena_weekly', method: 'GET' }, { path: '/api/admin/users', method: 'POST' },
       { path: `/api/admin/users/${user.id}`, method: 'PATCH' }, { path: `/api/admin/users/${user.id}`, method: 'DELETE' },
       { path: `/api/admin/daily-tasks/${id}/failure-details`, method: 'GET' },
       { path: `/api/admin/daily-tasks/${id}/logs`, method: 'GET' },
@@ -140,7 +170,7 @@ test('user management and daily task APIs enforce admin identity, JSON and same-
       assert.equal(response.status, attempt.status); assert.equal(response.headers.get('cache-control'), 'no-store');
     }
     assert.deepEqual(calls, []);
-    const mutation = { username: 'new-user', password: 'password', isAdmin: false, isInvalid: false, adminId: 'forged' };
+    const mutation = { username: 'new-user', password: 'password', isAdmin: false, isInvalid: false, note: '群友备注', adminId: 'forged' };
     for (const route of routes) {
       const options = { method: route.method, headers: { ...adminHeaders, ...jsonHeaders }, ...(route.method === 'GET' ? {} : { body: JSON.stringify(mutation) }) };
       if (route.method !== 'GET') {
@@ -156,26 +186,27 @@ test('user management and daily task APIs enforce admin identity, JSON and same-
     }
     assert.equal(calls.length, 9);
     assert.ok(calls.every(call => call[1] === admin.id));
+    assert.deepEqual({ ...(calls[0][2] as object) }, { search: 'group', page: '2', status: 'pending' });
     assert.equal(calls[2][0], 'daily');
-    assert.deepEqual({ ...(calls[2][2] as object) }, { date: '2026-10-07', page: '2' });
+    assert.deepEqual({ ...(calls[2][2] as object) }, { date: '2026-10-07', page: '2', mainTask: 'arena_weekly' });
     assert.deepEqual(calls[3], ['create', admin.id, mutation]);
     assert.deepEqual(calls[4], ['update', admin.id, user.id, mutation]);
     assert.deepEqual(calls[5], ['delete', admin.id, user.id]);
     assert.deepEqual(calls[6], ['failure', admin.id, id]);
-    assert.deepEqual(calls[7], ['logs', admin.id, id, '0-0', undefined]);
+    assert.deepEqual(calls[7], ['logs', admin.id, id, '0-0']);
     assert.equal(calls[8][0], 'monthly');
     assert.equal(calls[8][1], admin.id);
     assert.deepEqual({ ...(calls[8][2] as object) }, { month: '2026-10', sort: 'days', page: '2' });
     assert.equal((await fetch(`${base}/api/admin/daily-tasks/invalid/failure-details`, { headers: adminHeaders })).status, 400);
     for (const query of ['after=1-0&after=2-0', 'after[x]=1-0', 'after=18446744073709551616-0',
-      'snapshot=invalid', 'snapshot=1-0&snapshot=2-0', 'snapshot[x]=1-0', 'after=2-0&snapshot=1-0']) {
+      'snapshot=1-0', 'snapshot=invalid', 'snapshot=1-0&snapshot=2-0', 'snapshot[x]=1-0', 'after=2-0&snapshot=1-0']) {
       assert.equal((await fetch(`${base}/api/admin/daily-tasks/${id}/logs?${query}`, { headers: adminHeaders })).status, 400, query);
     }
     assert.equal((await fetch(`${base}/api/admin/daily-tasks/invalid/logs`, { headers: adminHeaders })).status, 400);
     assert.equal(calls.length, 9);
-    const page = await fetch(`${base}/api/admin/daily-tasks/${id}/logs?after=1-0&snapshot=3-0`, { headers: adminHeaders });
+    const page = await fetch(`${base}/api/admin/daily-tasks/${id}/logs?after=1-0`, { headers: adminHeaders });
     assert.equal(page.status, 200);
-    assert.deepEqual(calls.at(-1), ['logs', admin.id, id, '1-0', '3-0']);
+    assert.deepEqual(calls.at(-1), ['logs', admin.id, id, '1-0']);
   });
   await withApi({ admin: adminService, auth: auth({ getUser: async () => ({ ...admin, isAdmin: false }) }) }, async base => {
     assert.equal((await fetch(`${base}/api/admin/users`, { headers: adminHeaders })).status, 403);
@@ -610,10 +641,11 @@ test('任务日志接口使用 Cookie 身份，独立于二维码过期且不调
   const calls: unknown[][] = [];
   const task = { id, status: 'expired' as const, createdAt: baseTask.createdAt, expiresAt: baseTask.createdAt,
     userOptions: { equipmentStamina: false, secretRealmMode: 'once' as const } };
-  const result = { task, run: null, logs: [], nextCursor: '123-4', hasMore: false, truncated: false };
+  const run = { taskId: id, status: 'running_daily' as const, updatedAt: task.createdAt, startedAt: task.createdAt, finishedAt: null };
+  const result = { task, run, logs: [], nextCursor: '123-4', hasMore: false, truncated: false };
   await withApi({ events: events({ create: unexpected, getForUser: unexpected, getActive: unexpected, recordStatus: unexpected }),
     storage: { exists: unexpected, read: unexpected }, runs: {
-      async getLatest(userId) { calls.push(['latest', userId]); return { task }; },
+      async getLatest(userId) { calls.push(['latest', userId]); return { task, run }; },
       async getEvents(taskId, userId, after) { calls.push(['events', taskId, userId, after]); return result; },
     } }, async base => {
     for (const route of ['/api/task-runs/latest', `/api/task-runs/${id}/events`]) {
@@ -623,7 +655,7 @@ test('任务日志接口使用 Cookie 身份，独立于二维码过期且不调
     }
     const latest = await fetch(`${base}/api/task-runs/latest`, { headers });
     assert.equal(latest.status, 200);
-    assert.deepEqual(await latest.json(), { task });
+    assert.deepEqual(await latest.json(), { task, run });
     const response = await fetch(`${base}/api/task-runs/${id}/events?after=123-4&userId=forged`, { headers });
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('cache-control'), 'no-store');
@@ -720,5 +752,33 @@ test('主任务通过 userOptions 传入日常或周胜，缺省保持旧请求�
       assert.equal((await response.json() as { code: string }).code, 'INVALID_USER_OPTIONS');
     }
     assert.equal(received.length, 3, 'invalid main tasks must not reserve or dispatch a task');
+  });
+});
+
+
+test('管理员批量执行记录接口鉴权、校验编号并且禁止缓存', async () => {
+  const calls: string[][] = [];
+  const unexpected = async (): Promise<never> => assert.fail('Only batched summary reads are allowed');
+  const adminService = new AdminService({ runs: {
+    getSummaries: async ids => { calls.push(ids); return [null]; },
+    getFailureDetails: unexpected, getAdminLogPage: unexpected, interrupt: unexpected,
+  } });
+  await withApi({ admin: adminService }, async base => {
+    const path = `/api/admin/daily-tasks/runs?ids=${id}`;
+    for (const attempt of [{ headers: {}, status: 401 }, { headers, status: 403 }]) {
+      const response = await fetch(`${base}${path}`, { headers: attempt.headers });
+      assert.equal(response.status, attempt.status);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+    }
+    for (const query of ['', 'ids=', 'ids=invalid', `ids=${id}&ids=${requestId}`, `ids=${id},${id}`,
+      `ids=${id}%0A`, `ids[x]=${id}`, `ids=${Array(21).fill(id).join(',')}`]) {
+      assert.equal((await fetch(`${base}/api/admin/daily-tasks/runs?${query}`, { headers: adminHeaders })).status, 400, query);
+    }
+    assert.deepEqual(calls, []);
+    const response = await fetch(`${base}${path}`, { headers: adminHeaders });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await response.json(), { items: [{ id, run: null }] });
+    assert.deepEqual(calls, [[id]]);
   });
 });

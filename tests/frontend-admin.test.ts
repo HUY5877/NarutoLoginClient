@@ -1,8 +1,27 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isMonthlyStatsPage, isDailyPage, isDailyTaskFailureDetails, isUserResponse, isUsersPage, formatAdminDate } from '../src/frontend/lib/admin.js';
+import { isMonthlyStatsPage, isDailyPage, isDailyTaskRunPage, isDailyTaskFailureDetails, isUserResponse, isUsersPage, formatAdminDate } from '../src/frontend/lib/admin.js';
 
 const user = { id: 'user', username: 'Naruto', isAdmin: false, isInvalid: false, createdAt: '2026-10-08T16:00:00.000Z', applicationStatus: null };
+
+test('管理员备注兼容旧记录并拒绝非文本或超长返回', () => {
+  const scan = { id: 'task', username: 'Naruto', requestedAt: user.createdAt, scannedAt: null, completedAt: null, status: 'completed' };
+  const monthly = { userId: 'user', username: 'Naruto', rank: 1, requestCount: 3, requestDays: 2 };
+  const page = { page: 1, pageSize: 20, total: 1, timeZone: 'Asia/Shanghai' };
+  for (const note of [undefined, '', '群昵称：小鸣人', '<img src=x onerror=alert(1)>', '😀'.repeat(100)]) {
+    const managed = { ...user, note };
+    assert.ok(isUserResponse({ user: managed }));
+    assert.ok(isUsersPage({ ...page, items: [managed] }));
+    assert.ok(isDailyPage({ ...page, date: '2026-10-09', items: [{ ...scan, note }] }));
+    assert.ok(isMonthlyStatsPage({ ...page, month: '2026-10', sort: 'requests', totalRequests: 3, items: [{ ...monthly, note }] }));
+  }
+  for (const note of [null, {}, [], 1, true, '备'.repeat(101)]) {
+    assert.equal(isUserResponse({ user: { ...user, note } }), false);
+    assert.equal(isUsersPage({ ...page, items: [{ ...user, note }] }), false);
+    assert.equal(isDailyPage({ ...page, date: '2026-10-09', items: [{ ...scan, note }] }), false);
+    assert.equal(isMonthlyStatsPage({ ...page, month: '2026-10', sort: 'requests', totalRequests: 3, items: [{ ...monthly, note }] }), false);
+  }
+});
 test('administrator responses validate timestamps, roles, pagination and known task states', () => {
   assert.ok(isUserResponse({ user }));
   assert.ok(isUsersPage({ items: [user], page: 1, pageSize: 20, total: 1 }));
@@ -47,6 +66,22 @@ test('daily pages validate the selected calendar date within the available histo
   assert.equal(isDailyPage({ ...page, startDate: '2026-02-25', date: '2026-03-02', selectedDate: '2026-02-30' }), false);
 });
 
+test('扫码列表校验任务筛选并拒绝混入另一种任务，旧记录仍按日常处理', () => {
+  const item = { id: 'task', username: 'Naruto', requestedAt: user.createdAt,
+    scannedAt: null, completedAt: null, status: 'running_daily' };
+  const page = { items: [item], total: 1, page: 1, pageSize: 20, date: '2026-10-09', timeZone: 'Asia/Shanghai' };
+  assert.ok(isDailyPage(page));
+  assert.ok(isDailyPage({ ...page, mainTask: 'daily' }));
+  assert.ok(isDailyPage({ ...page, mainTask: 'arena_weekly', items: [{ ...item, mainTask: 'arena_weekly' }] }));
+  assert.ok(isDailyPage({ ...page, mainTask: 'arena_weekly', items: [], total: 0 }));
+  for (const mainTask of ['other', '', null, ['daily'], 1]) {
+    assert.equal(isDailyPage({ ...page, mainTask }), false);
+    assert.equal(isDailyPage({ ...page, items: [{ ...item, mainTask }] }), false);
+  }
+  assert.equal(isDailyPage({ ...page, mainTask: 'arena_weekly' }), false);
+  assert.equal(isDailyPage({ ...page, mainTask: 'daily', items: [{ ...item, mainTask: 'arena_weekly' }] }), false);
+});
+
 test('monthly leaderboard accepts both rankings and rejects malformed counts, days and filters', () => {
   const item = { userId: 'user', username: 'Naruto', rank: 1, requestCount: 9, requestDays: 3 };
   const page = { items: [item], total: 1, page: 1, pageSize: 20, month: '2026-10', sort: 'requests', totalRequests: 9, timeZone: 'Asia/Shanghai' };
@@ -56,4 +91,30 @@ test('monthly leaderboard accepts both rankings and rejects malformed counts, da
   for (const invalid of [{ ...page, month: '2026-13' }, { ...page, sort: 'other' }, { ...page, totalRequests: -1 },
     { ...page, items: [{ ...item, requestDays: 10 }] }, { ...page, items: [{ ...item, requestCount: 1.5 }] },
     { ...page, items: [{ ...item, rank: 0 }] }]) assert.equal(isMonthlyStatsPage(invalid), false);
+});
+
+
+test('当前页状态必须逐项对应请求 ID，拒绝缺失、重复、串页和无效状态', () => {
+  const ids = ['task-a', 'task-b'];
+  const run = { taskId: ids[0], status: 'running_daily', startedAt: user.createdAt, finishedAt: null };
+  const valid = { items: [{ id: ids[0], run }, { id: ids[1], run: null }] };
+  assert.ok(isDailyTaskRunPage(valid, ids));
+  for (const items of [valid.items.slice(0, 1), [...valid.items].reverse(), [valid.items[0], valid.items[0]],
+    [...valid.items, { id: 'other', run: null }], [{ id: ids[0], run: { ...run, taskId: ids[1] } }, valid.items[1]],
+    [{ id: ids[0], run: { ...run, status: 'unavailable' } }, valid.items[1]],
+    [{ id: ids[0], run: { ...run, startedAt: 'broken' } }, valid.items[1]],
+    [{ id: ids[0], run: { ...run, finishedAt: undefined } }, valid.items[1]],
+    [{ id: ids[0], run: { ...run, authorizedAt: null } }, valid.items[1]],
+    [{ id: ids[0], run: { ...run, errorCode: {} } }, valid.items[1]]]) {
+    assert.equal(isDailyTaskRunPage({ items }, ids), false);
+  }
+});
+
+test('全量申请列表拒绝分页残片、重复 ID 和无效用户选项', () => {
+  const item = { id: 'task', username: 'Naruto', requestedAt: user.createdAt, scannedAt: null, completedAt: null, status: 'queued' };
+  const page = { items: [item], total: 1, page: 1, pageSize: 20, date: '2026-10-09', timeZone: 'Asia/Shanghai' };
+  for (const invalid of [{ ...page, total: 45 }, { ...page, page: 2 }, { ...page, pageSize: 40 },
+    { ...page, total: 2, items: [item, item] }, { ...page, items: [{ ...item, userOptions: { secretRealmMode: 'bad' } }] }]) {
+    assert.equal(isDailyPage(invalid), false);
+  }
 });

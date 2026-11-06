@@ -4,10 +4,11 @@ import { UserManagementError, UsernameTakenError, type AdminStore, type UserChan
 import { ApiError } from './errors.js';
 import { logBackend } from './logging.js';
 import type { TaskRunService } from './task-runs.js';
-import type { DailyTask, DailyTaskFailureDetails, DailyTaskLogPage, DailyTaskPage, ManagedUser, PageResult, MonthlyStatsPage } from '../shared/admin.js';
+import type { DailyTask, DailyTaskFailureDetails, DailyTaskLogPage, DailyTaskPage, DailyTaskRun, DailyTaskRunPage, ManagedUser, PageResult, MonthlyStatsPage } from '../shared/admin.js';
+import { MAX_USER_NOTE_LENGTH, userStatusLabels, type UserStatusFilter } from '../shared/admin.js';
 import { DEFAULT_LOGIN_TYPE } from '../shared/login-types.js';
 import { taskFailureMessage } from '../shared/task-errors.js';
-import { getDailyMilestoneAt } from '../shared/daily-completion.js';
+import { DEFAULT_USER_OPTIONS, getMainTask } from '../shared/user-options.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const pageSize = 20;
@@ -31,14 +32,22 @@ function userInput(body: unknown, creating: boolean): UserChanges {
   if (typeof input.isAdmin !== 'boolean' || typeof input.isInvalid !== 'boolean') {
     throw new ApiError(400, '请选择用户角色和账号状态。', 'INVALID_USER');
   }
+  let note: string | undefined;
+  if (input.note !== undefined) {
+    if (typeof input.note !== 'string' || [...input.note.trim()].length > MAX_USER_NOTE_LENGTH) {
+      throw new ApiError(400, `备注最多为 ${MAX_USER_NOTE_LENGTH} 个字符。`, 'INVALID_USER_NOTE');
+    }
+    note = input.note.trim();
+  } else if (creating) note = '';
   return { username: parsed.username, usernameKey: parsed.usernameKey, isAdmin: input.isAdmin, isInvalid: input.isInvalid,
+    ...(note === undefined ? {} : { note }),
     ...(keepPassword ? {} : { password: parsed.password }) };
 }
 
 export class AdminService {
   private readonly now: () => number;
   constructor(private readonly options: {
-    store?: AdminStore; runs: Pick<TaskRunService, 'getSummaries' | 'getFailureDetails' | 'getAdminLogPage'>; now?: () => number;
+    store?: AdminStore; runs: Pick<TaskRunService, 'getSummaries' | 'getFailureDetails' | 'getAdminLogPage' | 'interrupt'>; now?: () => number;
   }) { this.now = options.now ?? Date.now; }
 
   private async database<T>(run: (store: AdminStore) => Promise<T>): Promise<T> {
@@ -60,13 +69,18 @@ export class AdminService {
       throw new ApiError(503, '管理数据暂时不可用，请稍后重试。', 'ADMIN_UNAVAILABLE');
     }
   }
-  async listUsers(admin: User, query: { search?: unknown; page?: unknown }): Promise<PageResult<ManagedUser>> {
+  async listUsers(admin: User, query: { search?: unknown; page?: unknown; status?: unknown }): Promise<PageResult<ManagedUser>> {
     requireAdmin(admin);
-    if (query.search !== undefined && (typeof query.search !== 'string' || [...query.search].length > 24)) {
-      throw new ApiError(400, '搜索内容最多为 24 个字符。', 'INVALID_SEARCH');
+    if (query.search !== undefined && (typeof query.search !== 'string' || [...query.search.trim()].length > MAX_USER_NOTE_LENGTH)) {
+      throw new ApiError(400, `搜索内容最多为 ${MAX_USER_NOTE_LENGTH} 个字符。`, 'INVALID_SEARCH');
+    }
+    const status = query.status === undefined ? 'all' : query.status;
+    if (typeof status !== 'string' || status !== 'all' && !Object.hasOwn(userStatusLabels, status)) {
+      throw new ApiError(400, '请选择有效的账号状态。', 'INVALID_USER_STATUS');
     }
     const page = pageNumber(query.page);
-    return { ...await this.database(store => store.listUsers(typeof query.search === 'string' ? query.search.trim() : '', (page - 1) * pageSize, pageSize)), page, pageSize };
+    return { ...await this.database(store => store.listUsers(typeof query.search === 'string' ? query.search.trim() : '',
+      (page - 1) * pageSize, pageSize, status as UserStatusFilter)), page, pageSize };
   }
   async getUser(admin: User, id: string) {
     requireAdmin(admin); userId(id);
@@ -93,9 +107,13 @@ export class AdminService {
     if (id === admin.id) throw new ApiError(409, '不能删除当前登录的管理员账号。', 'USER_SELF_PROTECTED');
     await this.database(store => store.deleteUser(admin.id, id));
   }
-  async dailyTasks(admin: User, query: { page?: unknown; date?: unknown }): Promise<DailyTaskPage> {
+  async dailyTasks(admin: User, query: { page?: unknown; date?: unknown; mainTask?: unknown }): Promise<DailyTaskPage> {
     requireAdmin(admin);
-    const page = pageNumber(query.page), now = this.now();
+    const mainTask = query.mainTask === undefined ? 'daily' : query.mainTask;
+    if (mainTask !== 'daily' && mainTask !== 'arena_weekly') {
+      throw new ApiError(400, '请选择日常任务或决斗场周胜。', 'INVALID_MAIN_TASK');
+    }
+    const now = this.now();
     const date = new Date(now + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const midnight = new Date(`${date}T00:00:00+08:00`).getTime();
     const dates = Array.from({ length: 7 }, (_, index) => new Date(midnight + 8 * 60 * 60 * 1000 - index * 24 * 60 * 60 * 1000).toISOString().slice(0, 10));
@@ -106,34 +124,49 @@ export class AdminService {
     const startDate = dates[6];
     const start = new Date(`${selectedDate ?? startDate}T00:00:00+08:00`);
     const end = new Date((selectedDate ? start.getTime() : midnight) + 24 * 60 * 60 * 1000);
-    const events = await this.database(store => store.listDailyEvents(start, end, (page - 1) * pageSize, pageSize));
-    const summaries = await this.options.runs.getSummaries(events.items.map(event => event.id));
-    const items: DailyTask[] = events.items.map((event, index) => {
-      const run = summaries[index];
-      const milestoneAt = getDailyMilestoneAt(run, event.userOptions);
-      const milestoneCompleted = Boolean(milestoneAt && run && ['failed', 'interrupted', 'expired'].includes(run.status));
-      const status: DailyTask['status'] = milestoneCompleted ? 'completed' : run?.status ?? (event.status === 'failed' ? 'failed'
-        : Date.parse(event.expiresAt) <= now ? 'unavailable' : event.status === 'qr_ready' ? 'waiting_scan' : event.status);
+    const events = await this.database(store => store.listDailyEvents(start, end, mainTask));
+    const items: DailyTask[] = events.items.map(event => {
+      const status: DailyTask['status'] = event.status === 'failed' ? 'failed'
+        : Date.parse(event.expiresAt) <= now ? 'unavailable' : event.status === 'qr_ready' ? 'waiting_scan' : event.status;
       return { id: event.id, username: event.username, requestedAt: event.createdAt, loginType: event.loginType ?? DEFAULT_LOGIN_TYPE,
-        scannedAt: run?.authorizedAt ?? null,
-        // A later sweep failure cannot erase an already recorded daily milestone.
-        completedAt: run?.status === 'completed' && run.startedAt ? run.finishedAt : milestoneCompleted ? milestoneAt : null,
-        status,
-        ...(status === 'failed' ? {
-          ...(run?.errorCode ? { errorCode: run.errorCode } : {}),
-          errorMessage: taskFailureMessage(run?.errorCode, '未记录具体错误原因。'),
-        } : {}) };
+        note: event.note ?? '', mainTask: getMainTask(event.userOptions), userOptions: event.userOptions ?? { ...DEFAULT_USER_OPTIONS },
+        scannedAt: null, completedAt: null, status,
+        ...(status === 'failed' ? { errorMessage: taskFailureMessage(undefined, '未记录具体错误原因。') } : {}) };
     });
-    return { items, total: events.total, page, pageSize, date, startDate,
+    return { items, total: events.total, page: 1, pageSize, date, startDate, mainTask,
       ...(selectedDate ? { selectedDate } : {}), timeZone: 'Asia/Shanghai' };
+  }
+  async dailyTaskRuns(admin: User, query: { ids?: unknown }): Promise<DailyTaskRunPage> {
+    requireAdmin(admin);
+    const ids = typeof query.ids === 'string' ? query.ids.split(',') : [];
+    if (ids.length < 1 || ids.length > pageSize || ids.some(id => id !== id.trim() || !uuid.test(id))
+      || new Set(ids.map(id => id.toLowerCase())).size !== ids.length) {
+      throw new ApiError(400, '请选择一至二十个不重复的有效任务编号。', 'INVALID_TASK_IDS');
+    }
+    const summaries = await this.options.runs.getSummaries(ids);
+    return { items: ids.map((id, index) => {
+      const summary = summaries[index];
+      if (!summary || summary.taskId !== id) return { id, run: null };
+      const run: DailyTaskRun = { taskId: summary.taskId, status: summary.status,
+        startedAt: summary.startedAt, finishedAt: summary.finishedAt,
+        ...(summary.authorizedAt === undefined ? {} : { authorizedAt: summary.authorizedAt }),
+        ...(summary.secretRealmCompletedAt === undefined ? {} : { secretRealmCompletedAt: summary.secretRealmCompletedAt }),
+        ...(summary.errorCode === undefined ? {} : { errorCode: summary.errorCode }) };
+      return { id, run };
+    }) };
   }
   async dailyTaskFailureDetails(admin: User, taskId: string): Promise<DailyTaskFailureDetails> {
     requireAdmin(admin);
     return await this.options.runs.getFailureDetails(taskId);
   }
-  async dailyTaskLogs(admin: User, taskId: string, after = '0-0', snapshot?: string): Promise<DailyTaskLogPage> {
+  async interruptDailyTask(admin: User, taskId: string) {
     requireAdmin(admin);
-    return await this.options.runs.getAdminLogPage(taskId, after, snapshot);
+    if (taskId !== taskId.trim() || !uuid.test(taskId)) throw new ApiError(400, '无效的任务编号。');
+    return await this.options.runs.interrupt(taskId);
+  }
+  async dailyTaskLogs(admin: User, taskId: string, after = '0-0'): Promise<DailyTaskLogPage> {
+    requireAdmin(admin);
+    return await this.options.runs.getAdminLogPage(taskId, after);
   }
   async monthlyStats(admin: User, query: { month?: unknown; sort?: unknown; page?: unknown }): Promise<MonthlyStatsPage> {
     requireAdmin(admin);

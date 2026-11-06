@@ -67,7 +67,7 @@ test('实例租期独立于排队期限，刷新状态只暴露公开字段', as
 
 test('刷新写入绑定任务与账户，返回相同任务，执行服务器不支持或已结束时明确拒绝', async () => {
   const service = new TaskService(config, () => driver({ eval: async (_script, options) => {
-    assert.deepEqual(options.keys, [`${config.redisQueueKey}:sessions:${task.id}`, `${config.redisQueueKey}:refresh:${task.id}`, `${config.redisQueueKey}:runs:${task.id}`]);
+    assert.deepEqual(options.keys, [`${config.redisQueueKey}:runs:${task.id}`, `${config.redisQueueKey}:refresh:${task.id}`]);
     assert.deepEqual(options.arguments.slice(0, 3), [task.id, task.userId, new Date(now).toISOString()]);
     const command = JSON.parse(options.arguments[3]);
     assert.equal(command.taskId, task.id); assert.equal(command.requestId, options.arguments[4]);
@@ -85,6 +85,25 @@ function driver(overrides: Partial<RedisDriver> = {}): RedisDriver {
     get: async () => JSON.stringify(stored), destroy() {}, ...overrides };
 }
 
+test('扫码接收标记可从会话恢复，刷新在扫码后清理已有请求且不延长租期', async () => {
+  let script = '';
+  const service = new TaskService(config, () => driver({
+    get: async () => JSON.stringify({ ...stored, scanCaptured: true }),
+    eval: async value => { script = value; return JSON.stringify({ ...stored, scanCaptured: true, status: 'qr_ready' }); },
+  }), () => now);
+  assert.equal((await service.getForUser(task.id, task.userId) as unknown as Record<string, unknown>).scanCaptured, true);
+  const refreshed = await service.requestRefresh(task.id, task.userId);
+  assert.equal((refreshed as unknown as Record<string, unknown>).scanCaptured, true);
+  assert.equal(refreshed.loginAuthorized, undefined);
+  const captureGuard = script.slice(script.indexOf('if s.scanCaptured == true then'), script.indexOf('if s.refreshSupported'));
+  assert.match(script, /type\(s.scanCapturedAt\) == 'string'/);
+  assert.match(captureGuard, /s.refreshRequestId = nil/);
+  assert.match(captureGuard, /redis.call\('DEL', KEYS\[2\]\)/);
+  assert.match(captureGuard, /'KEEPTTL'/);
+  assert.match(captureGuard, /return cjson.encode\(s\)/);
+  assert.doesNotMatch(captureGuard, /loginAuthorized\s*=|EXPIRE|LPUSH/);
+});
+
 test('未配置 Redis 时返回明确 503，不创建连接', async () => {
   const service = new TaskService({ ...config, redisUrl: undefined }, () => { assert.fail('must not connect'); }, () => now);
   for (const request of [() => service.enqueue(task), () => service.get(task.id, task.accessToken),
@@ -93,12 +112,13 @@ test('未配置 Redis 时返回明确 503，不创建连接', async () => {
   }
 });
 
-test('原子提交会话与 LPUSH 任务，队列不含浏览器凭证，TTL 只保留剩余有效期', async () => {
+test('原子提交 runs 与 LPUSH 任务，队列不含浏览器凭证，留存期独立于扫码期限', async () => {
   const service = new TaskService(config, () => driver({ eval: async (_script, options, signal) => {
-    assert.deepEqual(options.keys, [config.redisQueueKey, `${config.redisQueueKey}:sessions:${task.id}`,
+    assert.deepEqual(options.keys, [config.redisQueueKey, `${config.redisQueueKey}:runs:${task.id}`,
       `${config.redisQueueKey}:users:${task.userId}:active`]);
-    assert.deepEqual(JSON.parse(options.arguments[0]), { ...stored, userOptions: task.userOptions, loginType: 'android_qq' });
-    assert.equal(options.arguments[1], '119000');
+    assert.deepEqual(JSON.parse(options.arguments[0]), { ...stored, taskId: task.id, updatedAt: task.createdAt,
+      startedAt: null, finishedAt: null, userOptions: task.userOptions, loginType: 'android_qq' });
+    assert.equal(options.arguments[1], '604800000');
     assert.deepEqual(JSON.parse(options.arguments[2]), { version: 1, id: task.id, createdAt: task.createdAt,
       expiresAt: task.expiresAt, objectKey: `login/${task.id}/qr.png`, userOptions: task.userOptions, loginTimeoutSeconds: 600, loginType: 'android_qq' });
     assert.equal(options.arguments[3], new Date(now + 1000).toISOString());
@@ -146,8 +166,8 @@ test('刷新二维码沿用三种秘境选择，旧会话默认为全部刷取�
   for (const equipmentStamina of [true, false]) for (const secretRealmMode of ['once', 'all', 'skip'] as const) {
     const userOptions = { equipmentStamina, secretRealmMode };
     const service = new TaskService(config, () => driver({ eval: async (script, options) => {
-      assert.deepEqual(options.keys, [`${config.redisQueueKey}:sessions:${task.id}`,
-        `${config.redisQueueKey}:refresh:${task.id}`, `${config.redisQueueKey}:runs:${task.id}`]);
+      assert.deepEqual(options.keys, [`${config.redisQueueKey}:runs:${task.id}`,
+        `${config.redisQueueKey}:refresh:${task.id}`]);
       assert.doesNotMatch(script, /s\.userOptions\s*=/);
       assert.equal(Object.hasOwn(JSON.parse(options.arguments[3]), 'userOptions'), false);
       return JSON.stringify({ ...stored, userOptions, status: 'preparing_qr', refreshRequestId: task.id });
@@ -187,7 +207,7 @@ test('周胜主任务沿用原队列和 Redis key，提交、会话恢复及刷�
   const service = new TaskService(config, () => driver({
     eval: async (_script, options) => {
       if (options.keys[0] === config.redisQueueKey) {
-        assert.deepEqual(options.keys, [config.redisQueueKey, `${config.redisQueueKey}:sessions:${task.id}`,
+        assert.deepEqual(options.keys, [config.redisQueueKey, `${config.redisQueueKey}:runs:${task.id}`,
           `${config.redisQueueKey}:users:${task.userId}:active`]);
         const payload = JSON.parse(options.arguments[2]);
         assert.deepEqual(payload.userOptions, userOptions);
@@ -195,8 +215,8 @@ test('周胜主任务沿用原队列和 Redis key，提交、会话恢复及刷�
         assert.deepEqual(JSON.parse(options.arguments[0]).userOptions, userOptions);
         return 1;
       }
-      assert.deepEqual(options.keys, [`${config.redisQueueKey}:sessions:${task.id}`,
-        `${config.redisQueueKey}:refresh:${task.id}`, `${config.redisQueueKey}:runs:${task.id}`]);
+      assert.deepEqual(options.keys, [`${config.redisQueueKey}:runs:${task.id}`,
+        `${config.redisQueueKey}:refresh:${task.id}`]);
       assert.equal(Object.hasOwn(JSON.parse(options.arguments[3]), 'userOptions'), false);
       return JSON.stringify({ ...stored, userOptions, status: 'preparing_qr' });
     },
@@ -249,7 +269,7 @@ test('账号已有有效申请返回明确 409，保持 Redis 连接可用', asy
   }, () => now);
   await assert.rejects(service.enqueue(task), {
     status: 409, code: 'ACTIVE_LOGIN_SESSION',
-    message: '当前账号已有登录申请，请等待二维码过期或申请失败后重试。',
+    message: '当前账号已有任务，请等待任务结束后重试。',
   });
   await service.enqueue({ ...task, id: '123e4567-e89b-42d3-a456-426614174001' });
   assert.equal(factories, 1);
@@ -275,7 +295,7 @@ test('并发请求复用一次 Redis 连接', async () => {
 
 test('会话读取验证凭证，只返回客户端可见字段', async () => {
   const service = new TaskService(config, () => driver({ get: async key => {
-    assert.equal(key, `${config.redisQueueKey}:sessions:${task.id}`);
+    assert.equal(key, `${config.redisQueueKey}:runs:${task.id}`);
     return JSON.stringify({ ...stored, privateInternalError: 'secret' });
   } }), () => now);
   assert.deepEqual(await service.get(task.id, task.accessToken), { id: task.id, status: 'queued',
@@ -287,7 +307,7 @@ test('会话读取验证凭证，只返回客户端可见字段', async () => {
 
 test('Cookie 身份只可读取自己的申请，响应不暴露内部字段', async () => {
   const service = new TaskService(config, () => driver({ get: async key => {
-    assert.equal(key, `${config.redisQueueKey}:sessions:${task.id}`);
+    assert.equal(key, `${config.redisQueueKey}:runs:${task.id}`);
     return JSON.stringify({ ...stored, workerId: 'private-worker', privateInternalError: 'secret' });
   } }), () => now);
   assert.deepEqual(await service.getForUser(task.id, task.userId), { id: task.id, status: 'queued',
@@ -310,7 +330,7 @@ test('有效账号锁可恢复处理中及 qr_ready 申请，查询只读且不�
     }, eval: async () => assert.fail('active lookup must not mutate locks') }), () => now);
     assert.deepEqual(await service.getActive(task.userId), { id: task.id, status,
       createdAt: task.createdAt, expiresAt: task.expiresAt, simulation: true, loginType: 'android_qq' });
-    assert.deepEqual(keys, [`${config.redisQueueKey}:users:${task.userId}:active`, `${config.redisQueueKey}:sessions:${task.id}`]);
+    assert.deepEqual(keys, [`${config.redisQueueKey}:users:${task.userId}:active`, `${config.redisQueueKey}:runs:${task.id}`]);
   }
 });
 

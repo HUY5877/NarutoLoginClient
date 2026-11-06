@@ -7,11 +7,8 @@ export interface TaskLogView {
   logs: Log[];
   loading: boolean;
   error: string;
-  hasMore: boolean;
-  truncated: boolean;
-  logsPending?: boolean;
 }
-export const emptyTaskLogs = (): TaskLogView => ({ status: null, logs: [], loading: false, error: '', hasMore: true, truncated: false });
+export const emptyTaskLogs = (): TaskLogView => ({ status: null, logs: [], loading: false, error: '' });
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const date = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value));
 const cursor = (value: unknown): value is string => typeof value === 'string'
@@ -22,20 +19,13 @@ function compare(left: string, right: string) {
   return lm < rm ? -1 : lm > rm ? 1 : ls < rs ? -1 : ls > rs ? 1 : 0;
 }
 const invalid = () => new Error('日志返回信息异常，请重试。');
-export function parseTaskLogPage(value: unknown, taskId: string, after: string, snapshot: string | null): DailyTaskLogPage {
+export function parseTaskLogPage(value: unknown, taskId: string, after: string): DailyTaskLogPage {
   if (!object(value) || value.taskId !== taskId || !Array.isArray(value.logs) || value.logs.length > 100
     || value.status !== null && (typeof value.status !== 'string' || !Object.hasOwn(dailyStatusLabels, value.status))
-    || !cursor(value.nextCursor) || !cursor(value.snapshotCursor) || !cursor(after)
-    || snapshot !== null && value.snapshotCursor !== snapshot
-    || typeof value.hasMore !== 'boolean' || typeof value.truncated !== 'boolean'
-    || value.logsPending !== undefined && typeof value.logsPending !== 'boolean'
-    || compare(value.nextCursor, after) < 0 || compare(value.nextCursor, value.snapshotCursor) > 0
-    || value.hasMore && (compare(value.nextCursor, after) <= 0 || compare(value.nextCursor, value.snapshotCursor) >= 0)
-    || !value.hasMore && value.logsPending !== true && value.nextCursor !== value.snapshotCursor
-    || value.logsPending === true && (value.hasMore || value.logs.length > 0 || value.nextCursor !== after)) throw invalid();
-  let previous = after;
+    || !cursor(value.nextCursor) || !cursor(after) || compare(value.nextCursor, after) < 0) throw invalid();
+  let previous = '0-0';
   for (const log of value.logs) {
-    if (!object(log) || !cursor(log.id) || compare(log.id, previous) <= 0 || compare(log.id, value.nextCursor) > 0
+    if (!object(log) || !cursor(log.id) || compare(log.id, previous) < 0 || compare(log.id, value.nextCursor) > 0
       || !date(log.time) || !['INFO', 'WARNING', 'ERROR'].includes(String(log.level))
       || typeof log.message !== 'string' || !log.message.length || [...log.message].length > 1000
       || !(log.actionIndex === undefined && log.actionTotal === undefined
@@ -48,11 +38,10 @@ export function parseTaskLogPage(value: unknown, taskId: string, after: string, 
 }
 
 type Read = (path: string, signal: AbortSignal) => Promise<unknown>;
-/** One finite snapshot, read only on explicit open/load-more; never polls or trims retained pages. */
+/** Read once per open or user gesture; empty reads remain refreshable. */
 export class TaskLogPager {
   private view = emptyTaskLogs();
   private after = '0-0';
-  private snapshot: string | null = null;
   private controller: AbortController | null = null;
   private disposed = false;
   constructor(private readonly taskId: string, private readonly update: (view: TaskLogView) => void,
@@ -62,25 +51,23 @@ export class TaskLogPager {
     if (!this.disposed) this.update(this.view);
   }
   async load() {
-    if (this.disposed || this.controller || !this.view.hasMore && !this.view.logsPending) return;
+    if (this.disposed || this.controller) return;
     const controller = new AbortController();
     this.controller = controller;
     const active = () => !this.disposed && this.controller === controller && !controller.signal.aborted;
     this.emit({ loading: true, error: '' });
     try {
-      const value = await this.read(`/api/admin/daily-tasks/${encodeURIComponent(this.taskId)}/logs?after=${this.after}`
-        + (this.snapshot !== null ? `&snapshot=${this.snapshot}` : ''), controller.signal);
+      const value = await this.read(`/api/admin/daily-tasks/${encodeURIComponent(this.taskId)}/logs?after=${this.after}`, controller.signal);
       if (!active()) return;
-      const page = parseTaskLogPage(value, this.taskId, this.after, this.snapshot);
+      const page = parseTaskLogPage(value, this.taskId, this.after);
       this.after = page.nextCursor;
-      // If a source is announced before its first event, retry must still discover its initial watermark.
-      if (!page.logsPending || page.snapshotCursor !== '0-0') this.snapshot = page.snapshotCursor;
-      this.emit({ status: page.status, logs: [...this.view.logs, ...page.logs], hasMore: page.hasMore,
-        truncated: this.view.truncated || page.truncated, logsPending: page.logsPending ?? false, error: '' });
+      const seen = new Set(this.view.logs.map(log => log.id));
+      const incoming = page.logs.filter(log => !seen.has(log.id) && Boolean(seen.add(log.id)));
+      this.emit({ status: page.status, logs: [...this.view.logs, ...incoming].sort((left, right) => compare(left.id, right.id)), error: '' });
     } catch (caught) {
       if (!active()) return;
       if (caught instanceof AdminRequestError && [401, 403].includes(caught.status)) {
-        this.emit({ ...emptyTaskLogs(), hasMore: false });
+        this.emit(emptyTaskLogs());
         this.dispose();
         this.accessLost();
         return;

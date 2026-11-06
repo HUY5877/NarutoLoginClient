@@ -80,6 +80,8 @@ async function expectStages(page, expected) {
 }
 
 test('QR sessions load only after an explicit click', { skip: unavailable || false, timeout: 120_000 }, async t => {
+  const run = (name, body) => t.test(name, { skip: process.env.FRONTEND_TEST_PATTERN
+    ? !new RegExp(process.env.FRONTEND_TEST_PATTERN).test(name) : false }, body);
   const { createServer } = await import(pathToFileURL(frontendRequire.resolve('vite')).href);
   const { default: react } = await import(pathToFileURL(frontendRequire.resolve('@vitejs/plugin-react')).href);
   const { default: tailwindcss } = await import(pathToFileURL(frontendRequire.resolve('@tailwindcss/vite')).href);
@@ -100,7 +102,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       const context = await browser.newContext(options);
       const state = { user: firstUser, calls: [], errors: [], active: () => ({ session: null, showGetButton: true }),
         submit: () => session('queued'), submitStatus: 200, detail: () => session(), afterQr: null, qrResponse: null,
-        latest: () => ({ task: { ...session('expired', Date.now() - 60_000), id: latestId } }),
+        latest: () => ({ task: null, run: null }),
         events: (taskId, url) => {
           const now = new Date().toISOString();
           return { task: { ...session('expired', Date.now() - 60_000), id: taskId },
@@ -128,6 +130,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           return route.fulfill({ status: 200, contentType: 'image/png', body: png }).catch(() => {});
         } else if (url.pathname === '/api/task-runs/latest') {
           body = await state.latest();
+          if (!('run' in body)) body.run = body.task ? (await state.events(body.task.id, new URL(`${origin}/events?after=0-0`))).run : null;
         } else if (/^\/api\/task-runs\/[^/]+\/events$/.test(url.pathname)) {
           const taskId = url.pathname.split('/')[3];
           body = await state.events(taskId, url);
@@ -144,7 +147,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         async close() { await context.close(); assert.deepEqual(state.errors, []); } };
     }
 
-    await t.test('channel and secret realm menus keep page scrolling, background and layout stable on desktop and touch screens', async () => {
+    await run('channel and secret realm menus keep page scrolling, background and layout stable on desktop and touch screens', async () => {
       for (const width of [1280, 390]) {
         const touch = width === 390;
         const f = await fixture({ viewport: { width, height: 844 }, hasTouch: touch });
@@ -182,10 +185,13 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           assert.equal(await selector.evaluate(element => document.activeElement === element), true);
           await selector.press('ArrowDown');
           await f.page.getByRole('menu').waitFor();
+          await f.page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitemradio');
           await f.page.keyboard.press('ArrowDown');
-          await f.page.keyboard.press('Enter');
+          await waitFor(() => f.page.getByRole('menuitemradio', { name: 'iOS QQ 区', exact: true })
+            .evaluate(element => document.activeElement === element), 'Keyboard navigation focuses the next login channel');
+          await f.page.getByRole('menuitemradio', { name: 'iOS QQ 区', exact: true }).press('Enter');
           await f.page.getByRole('menu').waitFor({ state: 'hidden' });
-          assert.equal(await selector.locator('strong').innerText(), 'iOS QQ 区');
+          await waitFor(async () => (await selector.locator('strong').innerText()) === 'iOS QQ 区', 'Keyboard selection updates the login channel');
           assert.deepEqual(await readLayout(), before);
           const realm = secretRealmTrigger(f.page);
           await realm.scrollIntoViewIfNeeded();
@@ -210,7 +216,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
 
     for (const [loginType, label, app] of [['android_qq', '安卓 QQ 区', 'QQ'], ['ios_qq', 'iOS QQ 区', 'QQ'],
       ['android_wechat', '安卓微信区', '微信'], ['ios_wechat', 'iOS 微信区', '微信']]) {
-      await t.test(`${label} persists through submission, page recovery and refresh`, async () => {
+      await run(`${label} persists through submission, page recovery and refresh`, async () => {
         const f = await fixture();
         try {
           const activeTask = { ...session(), loginType, userOptions: { equipmentStamina: true, secretRealmMode: 'once' } };
@@ -247,7 +253,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       });
     }
 
-    await t.test('initial visit, reload, new tab, focus and storage do not request QR sessions; logs keep polling', async () => {
+    await run('without a task, initial visit, reload, new tab, focus and storage do not request QR sessions', async () => {
       const f = await fixture();
       try {
         await f.open();
@@ -266,15 +272,14 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           window.dispatchEvent(new StorageEvent('storage', { key: `naruto-login:pending:${userId}`, newValue: value }));
           window.dispatchEvent(new StorageEvent('storage', { key: 'naruto-login:session-changed', newValue: `${userId}:${now}` }));
         }, { userId: firstUser.id, pendingId });
-        const logsBefore = f.state.calls.filter(call => call.path.endsWith('/events')).length;
-        await waitFor(() => f.state.calls.filter(call => call.path.endsWith('/events')).length > logsBefore, 'Execution logs should continue polling');
+        assert.equal(f.state.calls.filter(call => call.path.endsWith('/events')).length, 0);
         assert.deepEqual(callsToLogin(f.state.calls), []);
         assert.equal(await generate(f.page).isEnabled(), true);
         assert.ok(f.state.calls.some(call => call.path === '/api/auth/me'));
       } finally { await f.close(); }
     });
 
-    await t.test('click queries active first and restores an existing QR without POST', async () => {
+    await run('click queries active first and restores an existing QR without POST', async () => {
       const f = await fixture();
       try {
         f.state.active = () => ({ session: session(), showGetButton: false });
@@ -288,7 +293,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
     });
 
     for (const enabled of [true, false]) {
-      await t.test(`equipment stamina selection submits ${enabled} inside userOptions`, async () => {
+      await run(`equipment stamina selection submits ${enabled} inside userOptions`, async () => {
         const f = await fixture();
         try {
           f.state.submit = request => ({ ...session('queued'), userOptions: request.postDataJSON().userOptions });
@@ -318,7 +323,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
     }
 
     for (const mode of ['once', 'all', 'skip']) {
-      await t.test(`secret realm ${mode} selection submits in the complete options JSON`, async () => {
+      await run(`secret realm ${mode} selection submits in the complete options JSON`, async () => {
         const mobile = mode !== 'all';
         const f = await fixture({ viewport: { width: mobile ? 390 : 1280, height: 844 }, hasTouch: mobile });
         try {
@@ -349,7 +354,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       });
     }
 
-    await t.test('secret realm menu supports keyboard selection with reduced motion', async () => {
+    await run('secret realm menu supports keyboard selection with reduced motion', async () => {
       const f = await fixture({ viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
       try {
         await f.open();
@@ -373,7 +378,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       } finally { await f.close(); }
     });
 
-    await t.test('an existing session replaces the new selection with its actual saved options', async () => {
+    await run('an existing session replaces the new selection with its actual saved options', async () => {
       const f = await fixture();
       try {
         f.state.active = () => ({ session: { ...session(), userOptions: { equipmentStamina: false } }, showGetButton: false });
@@ -390,7 +395,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       } finally { await f.close(); }
     });
 
-    await t.test('legacy boolean choices restore as once or all without creating another task', async () => {
+    await run('legacy boolean choices restore as once or all without creating another task', async () => {
       for (const legacy of [true, false]) {
         const f = await fixture();
         try {
@@ -406,7 +411,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       }
     });
 
-    await t.test('pending intent stores selection atomically and restores it locked after reload', async () => {
+    await run('pending intent stores selection atomically and restores it locked after reload', async () => {
       const f = await fixture();
       const gate = deferred();
       try {
@@ -443,7 +448,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       } finally { gate.resolve(); await f.close(); }
     });
 
-    await t.test('automatic and manual retries keep the original options and request ID', async () => {
+    await run('automatic and manual retries keep the original options and request ID', async () => {
       const f = await fixture();
       try {
         f.state.submitStatus = 503;
@@ -472,7 +477,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       } finally { await f.close(); }
     });
 
-    await t.test('click with no active session creates once and polls until its QR is ready', async () => {
+    await run('click with no active session creates once and polls until its QR is ready', async () => {
       const f = await fixture();
       try {
         let details = 0;
@@ -490,7 +495,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       } finally { await f.close(); }
     });
 
-    await t.test('reload with a saved pending intent stays idle; clicking reuses the same requestId', async () => {
+    await run('reload with a saved pending intent stays idle; clicking reuses the same requestId', async () => {
       const f = await fixture();
       try {
         await f.open();
@@ -509,7 +514,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       } finally { await f.close(); }
     });
 
-    await t.test('QR expiry checks once for a claimed occupancy lease before ending', async () => {
+    await run('QR expiry checks once for a claimed occupancy lease before ending', async () => {
       const f = await fixture();
       try {
         const expiring = session('qr_ready');
@@ -529,7 +534,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       } finally { await f.close(); }
     });
 
-    await t.test('switching account cancels the old active query and does not fetch the previous account QR', async () => {
+    await run('switching account cancels the old active query and does not fetch the previous account QR', async () => {
       const f = await fixture();
       const gate = deferred();
       try {
@@ -557,7 +562,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       } finally { gate.resolve(); await f.close(); }
     });
 
-    await t.test('fixed stages follow QR preparation and script execution, survive QR expiry and lazy reload, then complete', async () => {
+    await run('fixed stages follow QR preparation and script execution, survive QR expiry and lazy reload, then complete', async () => {
       const f = await fixture();
       try {
         let created;
@@ -654,7 +659,51 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       } finally { await f.close(); }
     });
 
-    await t.test('restoring a failed script leaves submission and QR completed and marks only execution failed', async () => {
+    await run('terminal task logs refresh empty pages and read only one batch per downward gesture', async () => {
+      const f = await fixture({ hasTouch: true, reducedMotion: 'reduce' });
+      try {
+        const failedTask = { ...session('expired', Date.now() - 60_000), id: latestId };
+        const time = new Date().toISOString();
+        const run = { taskId: latestId, status: 'failed', updatedAt: time, startedAt: time, finishedAt: time,
+          logSource: 'sls', logCursor: '999-0', errorCode: 'daily_failed' };
+        let ready = false;
+        f.state.latest = () => ({ task: failedTask, run });
+        f.state.events = (_taskId, url) => {
+          const after = url.searchParams.get('after');
+          const logs = !ready ? [] : after === '0-0' ? [{ id: '1-0', time, level: 'INFO', message: '已有日志' }]
+            : after === '1-0' ? [{ id: '2-0', time, level: 'INFO', message: '任务结束后追加的日志' }] : [];
+          return { task: failedTask, run, logs, nextCursor: logs.at(-1)?.id || after,
+            hasMore: logs[0]?.id === '1-0', truncated: false };
+        };
+        await f.open(); await expandRecords(f.page).click();
+        const area = f.page.getByRole('log', { name: '任务执行日志' });
+        await area.waitFor();
+        const reads = () => f.state.calls.filter(call => call.path.endsWith('/events'));
+        assert.equal(reads().length, 1);
+        await area.scrollIntoViewIfNeeded();
+        const box = await area.boundingBox();
+        const cdp = await f.context.newCDPSession(f.page);
+        const x = box.x + box.width / 2, y = box.y + box.height / 2;
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y - 20 }] });
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+        await cdp.detach();
+        await waitFor(() => reads().length === 2, 'Empty terminal logs must be refreshable');
+        await f.page.waitForTimeout(850);
+        ready = true; await area.hover(); await f.page.mouse.wheel(0, 100);
+        await area.getByText('已有日志', { exact: true }).waitFor();
+        await f.page.waitForTimeout(850);
+        assert.equal(reads().length, 3, 'hasMore does not automatically drain a finished task');
+        assert.equal(await area.getByText('任务结束后追加的日志', { exact: true }).count(), 0);
+        await area.focus(); await f.page.keyboard.press('PageDown');
+        await area.getByText('任务结束后追加的日志', { exact: true }).waitFor();
+        assert.equal(await area.getByText('已有日志', { exact: true }).count(), 1);
+        assert.deepEqual(reads().map(call => call.query), ['?after=0-0', '?after=0-0', '?after=0-0', '?after=1-0']);
+        await f.page.waitForTimeout(850); assert.equal(reads().length, 4);
+      } finally { await f.close(); }
+    });
+
+    await run('restoring a failed script leaves submission and QR completed and marks only execution failed', async () => {
       const f = await fixture();
       try {
         const failedTask = { ...session('expired', Date.now() - 60_000), id: latestId };
@@ -682,7 +731,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       } finally { await f.close(); }
     });
 
-    await t.test('an accepted session keeps its execution records visible when reading the QR image fails', async () => {
+    await run('an accepted session keeps its execution records visible when reading the QR image fails', async () => {
       const f = await fixture();
       try {
         f.state.latest = () => ({ task: null });
@@ -705,7 +754,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       } finally { await f.close(); }
     });
 
-    await t.test('worker clock failure is visible in QR and ERROR logs, survives expiry, and restores logs after reload', async () => {
+    await run('worker clock failure is visible in QR and ERROR logs, survives expiry, and restores logs after reload', async () => {
       const f = await fixture();
       try {
         let created;
@@ -758,7 +807,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       } finally { await f.close(); }
     });
 
-    await t.test('failed run exposes its clock error code even when no log entries remain', async () => {
+    await run('failed run exposes its clock error code even when no log entries remain', async () => {
       const f = await fixture();
       try {
         const failedTask = { ...session('failed', Date.now() - 60_000), id: latestId };
