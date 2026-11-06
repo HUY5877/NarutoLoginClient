@@ -19,6 +19,7 @@ import { QqCaptureService } from './qq-captures.js';
 import { QqBindingService } from './qq-binding.js';
 import { QqGroupDiscoveryService } from './qq-group-discovery.js';
 import { ModelChannelService } from './model-channels.js';
+import { McpQqBindingService } from './mcp-qq-bindings.js';
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const serverRoot = existsSync(resolve(moduleDir, 'package.json')) ? moduleDir : resolve(moduleDir, '..');
@@ -35,6 +36,7 @@ try {
 const tasks = new TaskService(config);
 const store = config.databaseUrl ? new PgAuthStore(config.databaseUrl, config.timeoutMs) : undefined;
 const auth = new AuthService(config, { store });
+const mcpBindings = new McpQqBindingService(config, { beforeInitialize: () => auth.initialize() });
 const events = new LoginEventService(config, { store, tasks });
 const runs = new TaskRunService(config, { store });
 const admin = new AdminService({ store, runs });
@@ -43,7 +45,7 @@ const qqCaptures = new QqCaptureService(config);
 const qqGroups = new QqGroupDiscoveryService(config);
 const qqBindings = new QqBindingService(config, { initializeUsers: () => auth.initialize(),
   observeGroup: (appId, groupOpenid) => qqGroups.record(appId, groupOpenid) });
-const app = createApp(config, { events, auth, runs, admin, qqAuthorizations, qqCaptures, qqBindings,
+const app = createApp(config, { events, auth, runs, admin, qqAuthorizations, qqCaptures, qqBindings, mcpBindings,
   modelChannels: new ModelChannelService(), storage: createObjectReader(config) });
 const server = createServer(app);
 let vite: import('vite').ViteDevServer | undefined;
@@ -86,6 +88,8 @@ async function shutdown() {
   server.closeIdleConnections();
   setTimeout(() => server.closeAllConnections(), 5000).unref();
   await vite?.close();
+  await app.locals.closeHyrzMcp();
+  await mcpBindings.close();
   await auth.close();
   await qqAuthorizations.close();
   await qqCaptures.close();

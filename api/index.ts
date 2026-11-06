@@ -12,14 +12,17 @@ import { QqCaptureService } from '../src/server/qq-captures.js';
 import { QqBindingService } from '../src/server/qq-binding.js';
 import { QqGroupDiscoveryService } from '../src/server/qq-group-discovery.js';
 import { ModelChannelService } from '../src/server/model-channels.js';
+import { McpQqBindingService } from '../src/server/mcp-qq-bindings.js';
 
 const config = await loadRuntimeConfig();
 const store = config.databaseUrl ? new PgAuthStore(config.databaseUrl, config.timeoutMs) : undefined;
 const tasks = new TaskService(config);
 const runs = new TaskRunService(config, { store });
 const auth = new AuthService(config, { store });
+const mcpBindings = new McpQqBindingService(config, { beforeInitialize: () => auth.initialize() });
 const qqGroups = new QqGroupDiscoveryService(config);
 const app = createApp(config, {
+  mcpBindings,
   events: new LoginEventService(config, { store, tasks }),
   runs,
   qqAuthorizations: createQqAuthorizationService(config),

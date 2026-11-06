@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { AuthDialog } from '@/components/auth-dialog';
 import { QqBindingDialog } from '@/components/qq-binding-dialog';
+import { McpBindingDialog } from '@/components/mcp-binding-dialog';
 import { AdminMenu } from '@/components/admin-menu';
 import { VillageParticles } from '@/components/village-particles';
 import { ChakraSeal } from '@/components/chakra-seal';
@@ -583,6 +584,8 @@ export default function App() {
         </div>
         </MainTaskSwitch>
       </main>
+      <McpBindingDialog user={auth.user} authLoading={auth.loading} loginOpen={authOpen}
+        onLogin={openLogin} onUnauthorized={auth.handleUnauthorized} />
       <AuthDialog open={authOpen} onOpenChange={setAuthOpen} busy={auth.busy}
         error={auth.error} clearError={auth.clearError} authenticate={auth.authenticate} />
       {auth.user && <QqBindingDialog key={auth.user.id} userId={auth.user.id} open={qqBindingOpen}

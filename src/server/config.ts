@@ -14,6 +14,8 @@ export interface Config {
   jwtSecret?: string;
   qqAuthorizationEncryptionKey?: string;
   qqBot?: QqBotConfig;
+  hyrzMcpToken?: string;
+  hyrzPublicUrl?: string;
   redisQueueKey: string;
   localObjectsDir: string;
   sessionTtlMs: number;
@@ -102,10 +104,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const sessionCookieName = env.SESSION_COOKIE_NAME ?? 'naruto_session';
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(sessionCookieName)) throw new Error('SESSION_COOKIE_NAME 格式不正确');
   const sls = slsConfig(env);
+  const hyrzMcpToken = env.HYRZ_MCP_TOKEN?.trim() || undefined;
+  if (hyrzMcpToken && (Buffer.byteLength(hyrzMcpToken) < 32 || /\s/.test(hyrzMcpToken))) {
+    throw new Error('HYRZ_MCP_TOKEN 至少需要 32 字节且不能包含空白');
+  }
+  let hyrzPublicUrl: string | undefined;
+  if (env.HYRZ_PUBLIC_URL?.trim()) {
+    const url = new URL(env.HYRZ_PUBLIC_URL.trim());
+    if (url.username || url.password || url.search || url.hash || url.pathname !== '/'
+      || url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) {
+      throw new Error('HYRZ_PUBLIC_URL 必须为网站 HTTPS 根地址，本机开发允许 localhost HTTP');
+    }
+    hyrzPublicUrl = url.origin;
+  }
   const config: Config = {
     appEnv,
     host: env.HOST ?? '127.0.0.1', port: integer(env, 'PORT', 4300, 1, 65535),
     redisUrl, redisQueueKey, databaseUrl, jwtSecret, qqBot: qqBotConfig(env),
+    hyrzMcpToken, hyrzPublicUrl,
     // This optional test feature validates its key lazily; mistakes must not disable the existing website.
     qqAuthorizationEncryptionKey: env.QQ_AUTHORIZATION_ENCRYPTION_KEY?.trim() || undefined,
     localObjectsDir: resolve(env.LOCAL_OBJECTS_DIR ?? resolve(serverRoot, '../../.data/login-objects')),

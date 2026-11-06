@@ -171,9 +171,26 @@ export class LoginEventService {
     return taskOccupiesAccount(task, this.now()) ? task : null;
   }
 
-  async getForUser(id: string, userId: string): Promise<Task> {
+  async getForUser(id: string, userId: string, options: { requireLive?: boolean } = {}): Promise<Task> {
     const event = await this.database(store => store.getEvent(id, userId));
     if (!event) throw new ApiError(404, '登录申请不存在或不属于当前账号。');
+    if (options.requireLive) {
+      // Signed QR results require Redis's current scan/refresh/version state.
+      // Never dispatch or substitute the website's durable recovery summary.
+      let current: Task;
+      try { current = await this.options.tasks.getForUser(id, userId, event); }
+      catch (error) {
+        if (error instanceof ApiError && error.status === 404) {
+          throw new ApiError(503, '暂时无法确认任务状态，请稍后重试查询。', 'TASK_STATE_UNAVAILABLE');
+        }
+        throw error;
+      }
+      if (event.status === 'failed' || current.status === 'failed') {
+        const { error: _error, errorCode, ...publicFields } = current;
+        return { ...publicFields, status: 'failed', ...loginFailure(current.status === 'failed' ? errorCode : undefined) };
+      }
+      return current;
+    }
     return await this.resume(event);
   }
 

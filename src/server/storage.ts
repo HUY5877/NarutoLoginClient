@@ -8,6 +8,7 @@ import { logBackend } from './logging.js';
 export interface ObjectReader {
   exists(id: string): Promise<boolean>;
   read(id: string): Promise<Buffer | null>;
+  signUrl?(id: string, expiresSeconds: number): Promise<string>;
 }
 
 export function objectKey(config: Pick<Config, 'ossPrefix'>, id: string): string {
@@ -64,6 +65,20 @@ export function createObjectReader(config: Config): ObjectReader {
     accessKeySecret: config.ossAccessKeySecret!, stsToken: config.ossStsToken, secure: true, timeout: config.timeoutMs,
   });
   return {
+    async signUrl(id, expiresSeconds) {
+      const key = objectKey(config, id);
+      if (!Number.isFinite(expiresSeconds) || Math.floor(expiresSeconds) <= 0) {
+        throw new ApiError(410, '二维码已过期，请重新申请。');
+      }
+      try {
+        const url = client.signatureUrl(key, { expires: Math.min(60, Math.floor(expiresSeconds)), method: 'GET' });
+        if (new URL(url).protocol !== 'https:') throw unavailable();
+        return url;
+      } catch {
+        // SDK signing errors can carry credentials or a complete signed URL; do not log them.
+        throw unavailable();
+      }
+    },
     async exists(id) {
       const key = objectKey(config, id);
       try { await client.head(key); return true; }

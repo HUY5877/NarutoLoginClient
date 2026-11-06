@@ -17,6 +17,8 @@ import type { QqAuthorizationService } from './qq-authorizations.js';
 import { validateQqJson } from './qq-authorization-data.js';
 import type { QqBindingService } from './qq-binding.js';
 import type { ModelChannelService } from './model-channels.js';
+import type { McpQqBindingService } from './mcp-qq-bindings.js';
+import { createHyrzMcpHandler } from './hyrz-mcp.js';
 
 export interface Dependencies {
   events: Pick<LoginEventService, 'create' | 'getForUser' | 'getActive' | 'recordStatus'> & Partial<Pick<LoginEventService, 'refresh'>>;
@@ -28,6 +30,7 @@ export interface Dependencies {
   qqAuthorizations?: Pick<QqAuthorizationService, 'upload' | 'list' | 'get' | 'delete'> & Partial<Pick<QqAuthorizationService, 'isConfigured'>>;
   qqBindings?: Pick<QqBindingService, 'getStatus' | 'createChallenge' | 'confirm' | 'unbind' | 'handleWebhook'>;
   modelChannels?: Pick<ModelChannelService, 'list' | 'update' | 'test'>;
+  mcpBindings?: Pick<McpQqBindingService, 'create' | 'preview' | 'confirm' | 'resolve' | 'unbind' | 'assertActiveUser'>;
   now?: () => number;
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -54,7 +57,7 @@ function logPath(req: Request): string {
     ? path : '/api/unknown';
 }
 
-export function createApp(config: Config, { events, auth, storage, runs, admin, qqAuthorizations, qqCaptures, qqBindings, modelChannels, now = Date.now }: Dependencies) {
+export function createApp(config: Config, { events, auth, storage, runs, admin, qqAuthorizations, qqCaptures, qqBindings, modelChannels, mcpBindings, now = Date.now }: Dependencies) {
   const app = express();
   const cookieName = config.sessionCookieName ?? 'naruto_session';
   app.disable('x-powered-by');
@@ -67,6 +70,10 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
     res.set('X-Request-Id', requestId);
     requestLogContext.run({ requestId, method: req.method, path: logPath(req), ...(vercelRequestId ? { vercelRequestId } : {}) }, next);
   });
+  const hyrz = createHyrzMcpHandler(config, { events, storage, mcpBindings, qqCaptures, now });
+  app.locals.closeHyrzMcp = () => hyrz.close();
+  // MCP owns its protocol body parser and backend authentication, independent of website cookies.
+  app.all('/api/mcp', (req, res) => hyrz.handle(req, res));
   const bindingService = () => {
     if (!qqBindings) throw new ApiError(503, 'QQ 群提醒绑定尚未配置。', 'QQ_BINDING_DISABLED');
     return qqBindings;
@@ -115,6 +122,24 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
   app.post('/api/auth/logout', (req, res) => {
     res.clearCookie(cookieName, cookieOptions(req));
     res.status(204).end();
+  });
+
+  app.post(['/api/mcp-bindings/preview', '/api/mcp-bindings/confirm'], async (req, res) => {
+    const user = await auth.getUser(sessionToken(req, cookieName));
+    if (!user) throw new ApiError(401, '请先登录网站账号，再确认 QQ 号绑定。', 'AUTH_REQUIRED');
+    if (!mcpBindings) throw new ApiError(503, 'QQ 号绑定服务尚未配置。', 'HYRZ_BINDINGS_UNAVAILABLE');
+    const confirming = req.path.endsWith('/confirm');
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length !== (confirming ? 2 : 1)
+      || typeof req.body.token !== 'string' || /^[A-Za-z0-9_-]{43}$/.exec(req.body.token)?.[0] !== req.body.token
+      || confirming && (typeof req.body.expectedUserId !== 'string' || uuid.exec(req.body.expectedUserId)?.[0] !== req.body.expectedUserId)) {
+      throw new ApiError(400, '绑定链接无效，请重新获取。', 'INVALID_BINDING_TOKEN');
+    }
+    // The displayed account is only a precondition; the authenticated Cookie
+    // remains the authority, and a mismatch must not consume the challenge.
+    if (confirming && req.body.expectedUserId.toLowerCase() !== user.id.toLowerCase()) {
+      throw new ApiError(409, '登录账号已变化，请重新登录并核对后确认绑定。', 'MCP_BINDING_ACCOUNT_CHANGED');
+    }
+    res.json(confirming ? await mcpBindings.confirm(user.id, req.body.token) : await mcpBindings.preview(req.body.token));
   });
 
   app.use('/api/qq-binding', async (req, res, next) => {
