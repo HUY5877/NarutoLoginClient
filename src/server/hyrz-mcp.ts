@@ -44,13 +44,10 @@ export function createHyrzMcpHandler(config: Config, dependencies: McpDependenci
     if (server) return server;
     const tools = {
       bind_qq: createTool({
-        id: 'bind_qq', description: '为 QQ 号生成一次性网站绑定链接。请把链接交给该 QQ 用户，由其登录网站并明确确认；返回链接不代表已绑定。',
+        id: 'bind_qq', description: '用真实消息发送者的数字 QQ 号直接创建普通用户并绑定，无需登录网站。已有有效绑定时复用原用户，返回 qq 和 userId；停用账号不会自动恢复。',
         inputSchema: z.object({ qq }).strict(),
-        outputSchema: z.object({ qq: z.string(), bindingUrl: z.string(), expiresAt: z.string() }).or(failure),
-        execute: async (input, context) => safely(() => {
-          const auth = context?.mcp?.extra.authInfo as { extra?: { publicOrigin?: string } } | undefined;
-          return bindings().create(input.qq, auth?.extra?.publicOrigin);
-        }),
+        outputSchema: z.object({ qq: z.string(), userId: uuid }).or(failure),
+        execute: async input => safely(() => bindings().bind(input.qq)),
       }),
       unbind_qq: createTool({
         id: 'unbind_qq', description: '解除指定网站用户的数字 QQ 号绑定。保留原有 QQ 官方机器人 openid 群提醒绑定。',
@@ -63,7 +60,7 @@ export function createHyrzMcpHandler(config: Config, dependencies: McpDependenci
         }),
       }),
       qq_to_userid: createTool({
-        id: 'qq_to_userid', description: '把已确认绑定的数字 QQ 号转换成有效网站用户的 userId。后续二维码工具使用这个 userId；未绑定时先调用 bind_qq。',
+        id: 'qq_to_userid', description: '查询数字 QQ 号已绑定的有效网站用户 userId，不创建用户。后续二维码工具使用这个 userId；未绑定时先调用 bind_qq。',
         inputSchema: z.object({ qq }).strict(),
         outputSchema: z.object({ qq: z.string(), userId: z.string() }).or(failure),
         execute: async input => safely(() => bindings().resolve(input.qq)),
@@ -101,7 +98,7 @@ export function createHyrzMcpHandler(config: Config, dependencies: McpDependenci
     };
     server = new MCPServer({ id: 'hyrz', name: 'hyrz', version: '1.0.0', legacy: 'stateless', tools,
       description: '忍者日常 QQ 号绑定与登录二维码申请。',
-      instructions: '仅供可信机器人后台调用。先确认数字 QQ 绑定，再用 qq_to_userid 获得 userId。申请和查询使用 userId，不要把数字 QQ 号或 QQ openid 当作 userId。',
+      instructions: '仅供可信机器人后台调用。QQ 号必须来自可信消息发送者。bind_qq 直接创建或复用账号并返回 userId，无需网页登录；qq_to_userid 只查询已有绑定。申请和查询使用返回的 userId，不要把数字 QQ 号或 QQ openid 当作 userId。',
       toolResult: { modelOutput: false, transform: ({ output, result }) => {
         if (output && typeof output === 'object' && 'status' in output && output.status === 'error') return { ...result, isError: true };
         return result;

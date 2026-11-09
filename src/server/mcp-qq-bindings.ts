@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import type { Config } from './config.js';
 import { ApiError } from './errors.js';
@@ -13,6 +13,7 @@ type BindingConfig = Pick<Config, 'databaseUrl' | 'timeoutMs'> & { hyrzPublicUrl
 export interface McpQqNumberBinding { qq: string; userId: string; boundAt: string }
 export interface McpQqBindingStore {
   initialize(): Promise<void>;
+  bind(qq: string, now: Date): Promise<{ qq: string; userId: string }>;
   create(qq: string, tokenHash: string, now: Date, expiresAt: Date): Promise<void>;
   preview(tokenHash: string, now: Date): Promise<{ qq: string; expiresAt: string }>;
   confirm(userId: string, tokenHash: string, now: Date): Promise<McpQqNumberBinding>;
@@ -56,7 +57,7 @@ CREATE TABLE IF NOT EXISTS naruto_login.qq_number_binding_requests (
 CREATE INDEX IF NOT EXISTS qq_number_binding_requests_qq_idx ON naruto_login.qq_number_binding_requests(qq_number);
 CREATE INDEX IF NOT EXISTS qq_number_binding_requests_expires_idx ON naruto_login.qq_number_binding_requests(expires_at);`;
 
-/** Owns only the numeric QQ tables; the existing openid tables are never read or changed. */
+/** Manages numeric QQ bindings and their users; existing openid tables are never read or changed. */
 export class PgMcpQqBindingStore implements McpQqBindingStore {
   private pool?: McpQqBindingPool;
   private initialization?: Promise<void>;
@@ -112,6 +113,28 @@ export class PgMcpQqBindingStore implements McpQqBindingStore {
   private async activeUser(client: McpQqBindingClient, userId: string): Promise<void> {
     const result = await client.query('SELECT id FROM naruto_login.users WHERE id = $1 AND is_invalid = false FOR SHARE', [userId]);
     if (!result.rows.length) throw inactive();
+  }
+  async bind(qq: string, now: Date): Promise<{ qq: string; userId: string }> {
+    validateQq(qq);
+    return this.transaction(async client => {
+      await this.lockBindings(client);
+      const existing = (await client.query('SELECT user_id FROM naruto_login.qq_number_bindings WHERE qq_number = $1', [qq])).rows[0];
+      let userId: string;
+      if (existing) {
+        userId = existing.user_id as string;
+        await this.activeUser(client, userId);
+      } else {
+        userId = randomUUID();
+        // Independent random credentials cannot identify or take over an existing website account.
+        const username = randomBytes(12).toString('hex');
+        const password = randomBytes(32).toString('base64url');
+        await client.query(`INSERT INTO naruto_login.users(id, username, username_key, password, is_invalid, is_admin, created_at)
+          VALUES ($1, $2, $2, $3, false, false, $4)`, [userId, username, password, now]);
+        await client.query('INSERT INTO naruto_login.qq_number_bindings(user_id, qq_number, bound_at) VALUES ($1, $2, $3)', [userId, qq, now]);
+      }
+      await client.query("UPDATE naruto_login.qq_number_binding_requests SET status = 'revoked' WHERE qq_number = $1 AND status = 'pending'", [qq]);
+      return { qq, userId };
+    });
   }
   async create(qq: string, tokenHash: string, now: Date, expiresAt: Date): Promise<void> {
     await this.transaction(async client => {
@@ -219,6 +242,9 @@ export class McpQqBindingService {
         || url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) throw unavailable();
       return url.origin;
     } catch { throw unavailable(); }
+  }
+  async bind(qq: string): Promise<{ qq: string; userId: string }> {
+    validateQq(qq); return this.run(() => this.store.bind(qq, new Date(this.now())));
   }
   async create(qq: string, requestOrigin?: string): Promise<{ qq: string; bindingUrl: string; expiresAt: string }> {
     validateQq(qq); const origin = this.origin(requestOrigin);

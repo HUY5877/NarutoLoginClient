@@ -11,9 +11,9 @@
 | 键 | 含义 |
 | --- | --- |
 | `HYRZ_MCP_TOKEN` | 必填；不含空白的共享 Token，服务器和可信客户端配置同一个值，不限制最短长度 |
-| `HYRZ_PUBLIC_URL` | 可选；仅需固定绑定域名时填写 HTTPS 根地址，本机开发允许 localhost HTTP。默认使用本次 MCP 连接的网站地址 |
+| `HYRZ_PUBLIC_URL` | 可选；仅供保留的旧网站绑定链接流程固定域名，HTTPS 根地址，本机开发允许 localhost HTTP。`bind_qq` 直接绑定不使用此配置 |
 
-请求头设置 `Authorization: Bearer <HYRZ_MCP_TOKEN>`。Token 不一致或缺失时返回 401，服务端未配置时返回 503，网站其他功能继续工作。不要把共享 Token 放进仓库、网页、工具参数或日志。绑定链接使用本次连接的地址、数据库和已有网站登录；返回 OSS 链接使用网站既有 OSS 配置。仅修改源码不会自动配置 KV 或发布。
+请求头设置 `Authorization: Bearer <HYRZ_MCP_TOKEN>`。Token 不一致或缺失时返回 401，服务端未配置时返回 503，网站其他功能继续工作。不要把共享 Token 放进仓库、网页、工具参数或日志。`bind_qq` 使用当前环境的数据库直接保存关联，无需网站 Cookie 或登录会话；返回 OSS 链接使用网站既有 OSS 配置。仅修改源码不会自动配置 KV 或发布。
 
 Codex 客户端在 `~/.codex/config.toml`（Windows 为 `%USERPROFILE%\.codex\config.toml`）中加入以下内容，把网址和 Token 替换成实际值即可：
 
@@ -25,17 +25,15 @@ http_headers = { Authorization = "Bearer 与服务器一致的Token" }
 
 这里的 `http_headers` 会随每次 MCP HTTP 请求发送，写法见 [OpenAI 官方配置说明](https://learn.chatgpt.com/docs/config-file/config-reference)。只需地址和 Token，无需 OAuth 或单独配置站点根地址。修改后在客户端重新连接该 MCP。
 
-绑定链接默认按当前请求的站点域名生成，不直接采用 `X-Forwarded-Host`。Vercel 入口已信任平台的一层反代，能识别 HTTPS；自行部署反代时应正确传递站点 Host 并在受信任入口启用反代协议识别，或使用可选的 `HYRZ_PUBLIC_URL` 固定 HTTPS 域名。每次调用的地址通过独立请求上下文传递，并发连接不会互相覆盖。
-
 使用支持 Streamable HTTP 的客户端连接本站 `/api/mcp`。当前协议每个请求的元信息和方法头由原生 MCP SDK 填写，建议使用 SDK，不手写不完整的 JSON-RPC 请求。旧协议下 Mastra 可能把联合结果放在 `structuredContent.result`，以其工具发现返回的输出结构为准。
 
 ## 工具
 
 | 名称 | 参数 | 结果 |
 | --- | --- | --- |
-| `bind_qq` | `qq`，数字字符串 | `qq, bindingUrl, expiresAt`，只创建待确认链接 |
+| `bind_qq` | `qq`，无前导零的数字字符串 | `{qq,userId}`，直接创建或返回数字 QQ 关联 |
 | `unbind_qq` | `userId` | `{userId,status:"unbound"}`，仅解除数字 QQ 关联 |
-| `qq_to_userid` | `qq` | `{qq,userId}`，只返回已确认且未停用的网站账号 |
+| `qq_to_userid` | `qq` | `{qq,userId}`，只读查询已绑定且未停用的网站账号，不创建用户 |
 | `request_qrcode` | `userId, requestId, loginType, userOptions?` | 返回实际 `taskId`、渠道、任务选项及建议查询间隔 |
 | `get_qrcode_status` | `userId, taskId` | `running`、`error` 或 `success`，成功时有 `url,expiresAt` |
 
@@ -60,15 +58,16 @@ http_headers = { Authorization = "Bearer 与服务器一致的Token" }
 
 ## QQ 绑定
 
-1. 可信机器人后台用真实消息中的数字 QQ 号调用 `bind_qq`，把一次性链接回复给该用户。
-2. 用户打开链接，在网站登录自己的账号。页面明确显示 QQ 号与网站账号，点击「确认绑定」后才保存关联。
-3. 后台用 `qq_to_userid` 查询用户 ID，之后申请和查询二维码都传这个 ID。
+1. 可信机器人后台从已核验的真实消息上下文取得数字 QQ 号，在已有授权范围内调用 `bind_qq({qq})`。
+2. 未绑定时，服务器在同一事务内创建已启用的普通网站用户并保存数字 QQ 关联，成功直接返回 `{qq,userId}`。新账号密码为随机值，不返回给客户端或用户，不写入日志。
+3. 已绑定且账号有效时，返回现有 `userId`。相同 QQ 的重复或并发调用保持幂等，不重复创建账号；已有账号停用时拒绝操作，不重新启用，不另建账号绕过停用，也不转移已有绑定。
+4. 后续可用 `qq_to_userid({qq})` 只读查询有效关联。该查询不会注册用户；未找到有效关联时仍按实际错误返回。申请和查询二维码传网站 `userId`，不能把 QQ 号当作用户 ID。
 
-链接五分钟有效，只在数据库保存随机令牌的 SHA-256 摘要。令牌位于 URL fragment，页面仅在 POST 正文提交，不保存到浏览器持久存储。生成新链接使同 QQ 的旧待确认链接失效；解绑和更换 QQ 后，旧链接不能重新恢复绑定。同 QQ 已属于另一个网站账号时拒绝接管。
+`bind_qq` 不创建待确认链接，不返回 `bindingUrl` 或 `expiresAt`，不要求先登录网站或点击确认。共享 Bearer token 认证可信客户端；QQ 号参数本身不能证明调用人身份，后台仍须保持主人核验和普通用户的既有权限。QQ 专用部署以 `enabled_tools = ["bind_qq"]` 仅开放此工具，其余工具的服务端能力保持，但不在该渠道开放。修改配置和源码不代表已发布或完成真实业务验证。
 
-确认请求同时提交 `token` 与页面正在展示的 `expectedUserId`。后端只按已验证的网站 Cookie 身份绑定，并先比较两个账号是否一致；不一致返回 `409 / MCP_BINDING_ACCOUNT_CHANGED`，不写入、不消费链接，页面要求重新核对账号后再次明确确认。生成新链接时会清理已过期请求，保留仍有效的重试记录和当前 QQ 绑定。
+数字关联保存在 `naruto_login.qq_number_bindings`，新用户保存在已有的 `naruto_login.users`。数据库写入失败时整个创建与绑定事务回滚，不能留下无关联的新账号。保留的 `qq_number_binding_requests`、旧网站链接预览及确认路由只服务旧流程，不是 MCP `bind_qq` 的前置步骤；旧待确认请求不得覆盖直接绑定后的关联。
 
-新增数据仅在 `naruto_login.qq_number_bindings` 与 `naruto_login.qq_number_binding_requests`。首个请求在已有用户表初始化后，以事务建表；现有 QQ 官方机器人的 `qq_bindings`、openid 字段和群提醒流程都保留。两种标识通过同一网站用户关联，不调用猜测 QQ 号与 openid 对应关系的接口，也不伪造官方机器人回调。
+现有 QQ 官方机器人的 `qq_bindings`、openid 字段和群提醒流程保留。数字 QQ 绑定与群提醒是两种独立标识，不猜测 QQ 号与 openid 的对应关系，不伪造官方机器人回调。`unbind_qq` 仅解除个人数字 QQ 关联，不解除官方群提醒。
 
 ## 二维码结果
 
@@ -86,6 +85,6 @@ node src/server/node_modules/tsx/dist/cli.mjs --test --test-concurrency=2 tests/
 npm run build
 ```
 
-独立确认页面的浏览器测试为 `node --test tests/frontend-mcp-binding.integration.mjs`。可用 `PLAYWRIGHT_MODULE` 指定已有 Playwright 的模块路径，用 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` 指定浏览器程序。所有测试使用虚构账号、临时数据库和受控网络，不发送真实 QQ 消息，不连接真实 Cloudflare/Redis/OSS 或生产数据库。
+保留的旧网站确认页面浏览器测试为 `node --test tests/frontend-mcp-binding.integration.mjs`。可用 `PLAYWRIGHT_MODULE` 指定已有 Playwright 的模块路径，用 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` 指定浏览器程序。所有测试使用虚构账号、临时数据库和受控网络，不发送真实 QQ 消息，不连接真实 Cloudflare/Redis/OSS 或生产数据库。
 
 协议与框架参考：[Mastra MCPServer](https://mastra.ai/reference/tools/mcp-server)、[MCP 规范](https://modelcontextprotocol.io/specification/2026-07-28)。
