@@ -70,10 +70,10 @@ export function createHyrzMcpHandler(config: Config, dependencies: McpDependenci
         execute: async input => safely(() => bindings().resolveRobot(input.qq)),
       }),
       request_qrcode: createTool({
-        id: 'request_qrcode', description: '以 userId 提交游戏登录二维码申请。提供登录渠道和任务选项；同一次申请重试必须保留同一 UUID requestId，新的申请才换 ID。已有活动任务会返回其实际渠道和选项。省略选项时采用网页默认设置。',
+        id: 'request_qrcode', description: '以 userId 提交游戏登录二维码申请，然后只调用一次 get_qrcode_status 获取结果，由获取工具内部等待最多2分钟。提供登录渠道和任务选项；同一次申请重试必须保留同一 UUID requestId，新的申请才换 ID。已有活动任务会返回其实际渠道和选项。省略选项时采用网页默认设置。',
         inputSchema: z.object({ userId: uuid, requestId: uuid, loginType: z.enum(loginTypes), userOptions: userOptions.optional() }).strict(),
         outputSchema: z.object({ status: z.literal('running'), taskId: z.string(), loginType: z.enum(loginTypes),
-          userOptions, expiresAt: z.string(), pollAfterMs: z.number() }).or(failure),
+          userOptions, expiresAt: z.string() }).or(failure),
         execute: async input => safely(async () => {
           const userId = input.userId.toLowerCase();
           await bindings().assertActiveUser(userId);
@@ -85,24 +85,22 @@ export function createHyrzMcpHandler(config: Config, dependencies: McpDependenci
             return { status: 'error' as const, taskId: task.id, code: 'QR_REQUEST_ENDED', message: '这次申请已结束。重新申请时请使用新的 requestId。' };
           }
           return { status: 'running' as const, taskId: task.id, loginType: task.loginType ?? input.loginType,
-            userOptions: task.userOptions ?? options, expiresAt: task.expiresAt, pollAfterMs: 1000 };
+            userOptions: task.userOptions ?? options, expiresAt: task.expiresAt };
         }),
       }),
       get_qrcode_status: createTool({
-        id: 'get_qrcode_status', description: '查询该网站用户自己的二维码申请。准备中返回 running，失败/过期/已扫码返回 error，图片就绪返回 success 与短期阿里云 OSS URL。success 只代表二维码就绪。',
+        id: 'get_qrcode_status', description: '获取该网站用户自己的二维码。每次申请只需调用一次；工具内部等待图片就绪，最多2分钟。就绪返回 success 与短期阿里云 OSS URL；2分钟未出码返回 QR_TIMEOUT 错误，失败/过期/已扫码立即返回 error。不返回准备中状态，不需要调用方轮询。success 只代表二维码就绪。',
         inputSchema: z.object({ userId: uuid, taskId: uuid }).strict(),
-        outputSchema: z.object({ status: z.literal('running'), taskId: z.string(), pollAfterMs: z.number() })
-          .or(z.object({ status: z.literal('success'), taskId: z.string(), url: z.string(), expiresAt: z.string() })).or(failure),
+        outputSchema: z.object({ status: z.literal('success'), taskId: z.string(), url: z.string(), expiresAt: z.string() }).or(failure),
         execute: async input => safely(async () => {
           const userId = input.userId.toLowerCase();
-          await bindings().assertActiveUser(userId);
-          return qr.get(userId, input.taskId.toLowerCase());
+          return qr.wait(userId, input.taskId.toLowerCase(), () => bindings().assertActiveUser(userId));
         }),
       }),
     };
     server = new MCPServer({ id: 'hyrz', name: 'hyrz', version: '1.0.0', legacy: 'stateless', tools,
       description: '忍者日常 QQ 号绑定与登录二维码申请。',
-      instructions: '仅供可信机器人后台调用。QQ 号必须来自可信消息发送者。用户发送网站绑定码时，bind_qq 必须携带 bindingCode，将该 QQ 绑定到码所属网站账号；失败不得省略代码重试注册。无代码的明确注册绑定请求仍可创建或复用账号。qq_to_userid 只查询已有绑定。申请和查询使用返回的 userId，不要把数字 QQ 号或 QQ openid 当作 userId。',
+      instructions: '仅供可信机器人后台调用。QQ 号必须来自可信消息发送者。用户发送网站绑定码时，bind_qq 必须携带 bindingCode，将该 QQ 绑定到码所属网站账号；失败不得省略代码重试注册。无代码的明确注册绑定请求仍可创建或复用账号。qq_to_userid 只查询已有绑定。申请和查询使用返回的 userId，不要把数字 QQ 号或 QQ openid 当作 userId。二维码流程只需提交一次 request_qrcode，再调用一次 get_qrcode_status；获取工具内部最多等待2分钟，未出码返回 QR_TIMEOUT，不要循环调用或自动重复提交。',
       toolResult: { modelOutput: false, transform: ({ output, result }) => {
         if (output && typeof output === 'object' && 'status' in output && output.status === 'error') return { ...result, isError: true };
         return result;

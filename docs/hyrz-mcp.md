@@ -34,8 +34,8 @@ http_headers = { Authorization = "Bearer 与服务器一致的Token" }
 | `bind_qq` | `qq`，无前导零的数字字符串；可选 `bindingCode`，网页生成的 24 字符码 | `{qq,userId}`；有码关联生成码的现有账号，无码创建或复用账号 |
 | `unbind_qq` | `userId` | `{userId,status:"unbound"}`，仅解除数字 QQ 关联 |
 | `qq_to_userid` | `qq` | `{qq,userId}`，只读查询已绑定且未停用的网站账号，不创建用户 |
-| `request_qrcode` | `userId, requestId, loginType, userOptions?` | 返回实际 `taskId`、渠道、任务选项及建议查询间隔 |
-| `get_qrcode_status` | `userId, taskId` | `running`、`error` 或 `success`，成功时有 `url,expiresAt` |
+| `request_qrcode` | `userId, requestId, loginType, userOptions?` | 返回实际 `taskId`、渠道和任务选项，之后调用一次获取工具 |
+| `get_qrcode_status` | `userId, taskId` | 内部最多等待 120 秒，只返回 `error` 或 `success`，成功时有 `url,expiresAt` |
 
 `userId`、`taskId`、`requestId` 使用 UUID v4。`requestId` 由调用方生成，同一次申请重试保持不变；新的申请才换 ID。网站已有活动任务时复用原任务，返回的是原任务实际设置。不会绕过网站服务直接创建 Redis 任务。
 
@@ -91,7 +91,9 @@ QQ 端当前部署不设置 `enabled_tools`、`disabled_tools` 或逐工具审�
 
 ## 二维码结果
 
-`running` 表示二维码仍在准备或刷新，可以按返回间隔查询；`error` 提供安全的 `code,message`。只有图片真实存在、PNG 头有效、本次二维码尚可扫码且版本没有变化时才返回 `success`。`success` 只代表二维码就绪，不代表扫码或游戏任务完成。
+`request_qrcode` 的 `running` 表示申请已提交。随后只调用一次 `get_qrcode_status`：获取工具内部每秒检查，最多等待 120 秒；未出码返回 `status:error, code:QR_TIMEOUT`，底层读取或账号核验卡住也受同一个期限约束。等待期间每次检查都重新核验账号有效性；失败、过期、已扫码及其他错误立即结束。调用方无需轮询，也不要自动重新提交申请。MCP 客户端调用超时应大于 120 秒（QQ 端设置为 150 秒），为网络传输留余量；服务端出码等待上限仍是固定 120 秒。
+
+`error` 提供安全的 `code,message`。只有图片真实存在、PNG 头有效、本次二维码尚可扫码且版本没有变化时才返回 `success`。`success` 只代表二维码就绪，不代表扫码或游戏任务完成。
 
 签名前后的查询都必须取得 Redis 中的实时任务状态。记录丢失或不可读时返回查询不可用，不使用网页恢复时的数据库副本签发图片链接；网页原有的任务恢复行为不变。
 

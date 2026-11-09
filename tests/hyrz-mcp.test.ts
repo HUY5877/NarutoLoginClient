@@ -312,6 +312,8 @@ test('hyrz 用户ID工具每次核对有效账号，拒绝停用后继续调用�
 
 test('hyrz 并发查询仍使用各自的用户ID和任务，不能读取他人二维码', async t => {
   const deps = dependencies();
+  deps.storage.read = async () => Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  deps.storage.signUrl = async id => `https://fixture.example/${id}.png`;
   deps.events.getForUser = async (id, owner) => {
     await new Promise(resolve => setImmediate(resolve));
     if (owner !== userId && owner !== otherUserId || id !== owner) throw new ApiError(404, '申请不存在。');
@@ -319,7 +321,8 @@ test('hyrz 并发查询仍使用各自的用户ID和任务，不能读取他人�
   };
   const base = await fixture(t, deps);
   const results = await Promise.all([userId, otherUserId].map(id => call(base, 'get_qrcode_status', { userId: id, taskId: id })));
-  assert.deepEqual(results.map(result => [result.taskId, result.status]), [[userId, 'running'], [otherUserId, 'running']]);
+  assert.deepEqual(results.map(result => [result.taskId, result.status]), [[userId, 'success'], [otherUserId, 'success']]);
+  assert.deepEqual(results.map(result => result.url), [`https://fixture.example/${userId}.png`, `https://fixture.example/${otherUserId}.png`]);
   const foreign = await call(base, 'get_qrcode_status', { userId, taskId });
   assert.equal(foreign.status, 'error');
 });
@@ -327,10 +330,42 @@ test('hyrz 并发查询仍使用各自的用户ID和任务，不能读取他人�
 test('hyrz 接受大写UUID但以同一规范用户和任务身份查询', async t => {
   const id = 'abcdef00-abcd-4bcd-abcd-abcdef123456';
   const deps = dependencies();
+  deps.storage.read = async () => Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  deps.storage.signUrl = async () => 'https://fixture.example/qr.png';
   deps.mcpBindings!.assertActiveUser = async owner => { assert.equal(owner, id); };
   deps.events.getForUser = async (requested, owner) => { assert.equal(requested, id); assert.equal(owner, id); return { ...task, id } as never; };
   const base = await fixture(t, deps);
-  assert.equal((await call(base, 'get_qrcode_status', { userId: id.toUpperCase(), taskId: id.toUpperCase() })).status, 'running');
+  assert.equal((await call(base, 'get_qrcode_status', { userId: id.toUpperCase(), taskId: id.toUpperCase() })).status, 'success');
+});
+
+test('hyrz 单次获取内部等到二维码就绪，不向调用方返回准备中', async t => {
+  const deps = dependencies(); let reads = 0;
+  deps.storage.read = async () => ++reads < 2 ? null : Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  deps.storage.signUrl = async () => 'https://fixture.example/ready.png';
+  const base = await fixture(t, deps);
+  const result = await call(base, 'get_qrcode_status', { userId, taskId });
+  assert.equal(result.status, 'success');
+  assert.equal(result.url, 'https://fixture.example/ready.png');
+  assert.equal(reads, 2);
+});
+
+test('hyrz 两分钟未出码返回MCP超时错误，工具声明不再包含running结果', async t => {
+  const deps = dependencies();
+  let observed!: () => void;
+  const firstRead = new Promise<void>(resolve => { observed = resolve; });
+  deps.storage.read = async () => { observed(); return null; };
+  const base = await fixture(t, deps);
+  const catalog = await payload(await rpc(base, 'tools/list'));
+  const tool = catalog.result.tools.find((value: { name: string }) => value.name === 'get_qrcode_status');
+  assert(!JSON.stringify(tool.outputSchema).includes('running'));
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const response = rpc(base, 'tools/call', { name: 'get_qrcode_status', arguments: { userId, taskId } });
+  await firstRead;
+  t.mock.timers.tick(120_000);
+  const body = await payload(await response);
+  assert.equal(body.result.isError, true);
+  const output = body.result.structuredContent ?? JSON.parse(body.result.content[0].text);
+  assert.equal((output.result ?? output).code, 'QR_TIMEOUT');
 });
 
 test('数字QQ确认必须使用网站登录身份和明确确认，不依赖MCP传userId', async t => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { loadConfig } from '../src/server/config.js';
 import { ApiError } from '../src/server/errors.js';
 import type { LoginEvent, LoginEventStore } from '../src/server/database.js';
@@ -263,4 +263,161 @@ test('真实事件服务仅活跃扫码任务能签名，读取和签名期间�
     assert.notEqual(result.status, 'success');
     assert.doesNotMatch(JSON.stringify(result), /Signature=/);
   }
+});
+
+function waitingFixture(t: TestContext) {
+  const startedAt = Date.parse('2026-11-06T01:00:00.000Z');
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: startedAt });
+  const f = fixture();
+  f.task.expiresAt = new Date(startedAt + 600_000).toISOString();
+  return { ...f, service: new QrTaskResultService({ events: f.events, storage: f.storage }) };
+}
+
+async function flushPendingWork() {
+  await new Promise<void>(resolve => setImmediate(resolve));
+}
+
+test('单次等待可以经过五次以上轮询才返回二维码，成功后停止轮询', async t => {
+  const f = waitingFixture(t);
+  let reads = 0, checks = 0, signs = 0, settled = false;
+  f.storage.read = async () => ++reads === 8 ? png : null;
+  f.storage.signUrl = async () => { signs++; return signedUrl; };
+  const pending = f.service.wait(userId, taskId, async () => { checks++; });
+  void pending.then(() => { settled = true; });
+  await flushPendingWork();
+  assert.equal(reads, 1);
+  for (let poll = 2; poll <= 8; poll++) {
+    t.mock.timers.tick(1000);
+    await flushPendingWork();
+    assert.equal(reads, poll);
+    assert.equal(settled, poll === 8);
+  }
+  assert.deepEqual(await pending, { status: 'success', taskId, url: signedUrl,
+    expiresAt: '2026-11-06T01:01:07.000Z' });
+  assert.equal(checks, 8);
+  assert.equal(signs, 1);
+  t.mock.timers.tick(120_000);
+  await flushPendingWork();
+  assert.equal(reads, 8);
+  assert.equal(signs, 1);
+});
+
+test('持续准备时在完整两分钟的精确截止点返回安全超时，此后不再轮询', async t => {
+  const f = waitingFixture(t);
+  let reads = 0, checks = 0, settled = false;
+  f.storage.read = async () => { reads++; return null; };
+  const pending = f.service.wait(userId, taskId, async () => { checks++; });
+  void pending.then(() => { settled = true; });
+  await flushPendingWork();
+  for (let second = 1; second < 120; second++) {
+    t.mock.timers.tick(1000);
+    await flushPendingWork();
+  }
+  t.mock.timers.tick(999);
+  await flushPendingWork();
+  assert.equal(settled, false);
+  assert.equal(reads, 120);
+  t.mock.timers.tick(1);
+  assert.deepEqual(await pending, { status: 'error', taskId, code: 'QR_TIMEOUT',
+    message: '二维码生成超时（2 分钟内未出码），请稍后重新申请。' });
+  assert.equal(checks, 120);
+  t.mock.timers.tick(120_000);
+  await flushPendingWork();
+  assert.equal(reads, 120);
+  assert.equal(checks, 120);
+});
+
+for (const phase of ['auth', 'initial', 'read', 'recheck', 'sign', 'record'] as const) {
+  test(`${phase} 依赖挂起仍按两分钟超时，迟到结果不能读取或签发新链接`, async t => {
+    const f = waitingFixture(t);
+    let release!: () => void;
+    const stalled = new Promise<void>(resolve => { release = resolve; });
+    let checks = 0, eventReads = 0, imageReads = 0, signs = 0, records = 0;
+    const getForUser = f.events.getForUser;
+    f.events.getForUser = async (...args) => {
+      eventReads++;
+      if ((phase === 'initial' && eventReads === 1) || (phase === 'recheck' && eventReads === 2)) await stalled;
+      return getForUser(...args);
+    };
+    f.storage.read = async () => {
+      imageReads++;
+      if (phase === 'read') await stalled;
+      return phase === 'record' ? null : png;
+    };
+    f.storage.signUrl = async () => { signs++; if (phase === 'sign') await stalled; return signedUrl; };
+    f.events.recordStatus = async () => { records++; if (phase === 'record') await stalled; };
+    if (phase === 'record') f.task.status = 'qr_ready';
+    let settled = false;
+    const pending = f.service.wait(userId, taskId, async () => { checks++; if (phase === 'auth') await stalled; });
+    void pending.then(() => { settled = true; });
+    await flushPendingWork();
+    t.mock.timers.tick(119_999);
+    await flushPendingWork();
+    assert.equal(settled, false);
+    t.mock.timers.tick(1);
+    assert.deepEqual(await pending, { status: 'error', taskId, code: 'QR_TIMEOUT',
+      message: '二维码生成超时（2 分钟内未出码），请稍后重新申请。' });
+    const countsAtTimeout = { checks, eventReads, imageReads, signs, records };
+    release();
+    await flushPendingWork();
+    t.mock.timers.tick(120_000);
+    await flushPendingWork();
+    assert.deepEqual({ checks, eventReads, imageReads, signs, records }, countsAtTimeout);
+  });
+}
+
+test('终止错误立即结束等待，不再重试或泄露依赖异常', async t => {
+  const f = waitingFixture(t);
+  let checks = 0, reads = 0;
+  f.storage.read = async () => { reads++; throw new Error('OSS credential secret Signature=private'); };
+  const result = await f.service.wait(userId, taskId, async () => { checks++; });
+  assert.deepEqual(result, { status: 'error', taskId, code: 'QR_RESULT_UNAVAILABLE',
+    message: '二维码查询暂时不可用，请稍后重试。' });
+  t.mock.timers.tick(120_000);
+  await flushPendingWork();
+  assert.equal(checks, 1);
+  assert.equal(reads, 1);
+});
+
+test('等待期间每次查询前重新鉴权，账号停用后不读取二维码', async t => {
+  const f = waitingFixture(t);
+  let checks = 0, reads = 0;
+  f.storage.read = async () => { reads++; return null; };
+  const rejected = assert.rejects(f.service.wait(userId, taskId, async () => {
+    if (++checks === 2) throw new ApiError(403, '账号已停用。');
+  }), { status: 403, message: '账号已停用。' });
+  await flushPendingWork();
+  t.mock.timers.tick(1000);
+  await rejected;
+  assert.equal(reads, 1);
+  t.mock.timers.tick(120_000);
+  await flushPendingWork();
+  assert.equal(reads, 1);
+  assert.equal(checks, 2);
+});
+
+test('同一服务的并发等待分别计时，首个超时不取消后启动的调用', async t => {
+  const f = waitingFixture(t);
+  f.storage.read = async () => null;
+  const first = f.service.wait(userId, taskId);
+  await flushPendingWork();
+  t.mock.timers.tick(30_000);
+  await flushPendingWork();
+  let secondSettled = false;
+  const second = f.service.wait(userId, taskId);
+  void second.then(() => { secondSettled = true; });
+  await flushPendingWork();
+  t.mock.timers.tick(89_999);
+  await flushPendingWork();
+  assert.equal(secondSettled, false);
+  t.mock.timers.tick(1);
+  const timedOut = await first;
+  assert.equal(timedOut.status, 'error');
+  if (timedOut.status === 'error') assert.equal(timedOut.code, 'QR_TIMEOUT');
+  assert.equal(secondSettled, false);
+  f.storage.read = async () => png;
+  t.mock.timers.tick(1000);
+  await flushPendingWork();
+  assert.deepEqual(await second, { status: 'success', taskId, url: signedUrl,
+    expiresAt: '2026-11-06T01:03:01.000Z' });
 });
