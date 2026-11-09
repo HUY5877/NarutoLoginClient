@@ -42,12 +42,20 @@
 ## Task 3：QQ 部署
 
 - [x] 同步 QQ 项目技能和本机技能的绑定说明。
-- [ ] 备份现有配置，将 QQ 的 MCP override 改为只开放 `bind_qq`。
-- [ ] 核对线上测试站工具 schema，重启空闲 cc-connect。
-- [ ] 验证工具发现、QQ 在线和历史保留，记录实际部署结果。
+- [x] 备份现有配置，将 QQ 的 MCP override 改为只开放 `bind_qq`。
+- [x] 核对线上测试站工具 schema，重启空闲 cc-connect。
+- [x] 验证工具发现、QQ 在线和历史保留，记录实际部署结果。
 
 ## 实现验证记录
 
 2026-11-09：绑定服务测试 26/26，真实 HTTP MCP 测试 18/18，类型检查和前后端构建通过。独立审查及本地原生 MCP SDK schema 验证通过。
 
 限并发全量测试 514/515 通过；唯一失败为 `tests/port.test.ts` 的 Windows tsx watch 父进程退出测试。在未修改的 `219c9343fb0fa71fe79b0b7f3f7aaafea222b711` 隔离快照上单独运行同一用例，也以相同错误退出 1。本次未修改端口实现和测试，不将全量报告为全部通过。
+
+## 测试站与 QQ 部署验证
+
+实现提交 `899541d9943d2ec94ea6e285a7f7000f7f36def7` 已推送 `origin/test`，Vercel 发布成功；`https://test.huy1.site/api/mcp` 的线上工具声明确认 `bind_qq` 返回 `userId`，不再返回绑定链接。
+
+QQ 专用配置已备份后改为 `hyrz.enabled=true` 且 `hyrz.enabled_tools=["bind_qq"]`，只重载空闲的 cc-connect，保留 NapCat、身份校验、沙箱和审批。实际原生 Codex 的新会话与原 QQ 聊天恢复均只发现该业务工具，并确认新版输出 schema；QQ 在线，原会话绑定和历史条数保持一致。此次部署未调用真实绑定、解绑或二维码业务，也未发送真实 QQ 消息；首次实际绑定由用户在 QQ 发起。
+
+完整本机验证记录：`D:\AI项目\QQ-Codex\docs\verification\hyrz-direct-binding-verification.json`。
