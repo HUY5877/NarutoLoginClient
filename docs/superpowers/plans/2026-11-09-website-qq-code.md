@@ -43,12 +43,18 @@
 
 ## Task 4：接入与交付
 
-- [ ] 同步源码文档和 QQ 技能，验证普通用户仅能凭码绑定本人。
+- [x] 同步源码文档、QQ 技能与项目提示词；真实模型验证普通用户凭码绑定本人及过期码不降级注册。
 - [x] 相关回归、类型检查、构建、独立审查。
-- [ ] 提交推送 test，核对部署和 QQ 工具 schema，保存验证记录。
+- [x] 提交推送 test，核对部署和 QQ 工具 schema，保存验证记录。
 
 ## 验证范围
 
 2026-11-09：相关 TypeScript 测试 57/57，浏览器 8/8，类型检查与前后端构建通过。独立审查发现的最终过期轮询问题已先复现失败再修复；框架将可选 null 删除重试的行为已用显式拒绝 null 防止降级注册，并有协议回归。
 
 限并发完整测试真实退出码 1：519 项，517 通过、2 失败。`admin-interrupt.test.ts` 为文件级失败，单独复跑 10/10 通过；另一个为此前已在未修改基线复现的 Windows tsx watcher 父进程退出失败。未修改这些无关实现，不将全套报告为全部通过。
+
+实现提交 `e1acf5ed1401d6d4b6a06f35a2214a57fd34526c` 已推送 `origin/test` 并通过 Vercel 发布。线上前端已显示新入口及机器人 QQ，新网站接口未登录返回 401；MCP schema 已包含 `bindingCode`。
+
+本机只重载空闲 cc-connect，保留 NapCat、会话与历史。QQ 端仅 `bind_qq` 预先批准，主机仍为 suggest/read-only/on-request。真实 `gpt-6.1-sol` + 假 OneBot + loopback MCP（无真实业务数据）通过有效/过期码两次调用，QQ 与代码原样匹配，失败不省略代码注册，10 项审计检查通过。三个可恢复的旧 QQ 会话已无模型轮次地刷新业务规则；一个本已归档的旧会话保持归档。未在真实网站创建绑定或发送真实 QQ 消息。
+
+完整本机验证记录：`D:\AI项目\QQ-Codex\docs\verification\website-qq-code-binding-verification.json`。
