@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import type { Config } from './config.js';
 import { ApiError } from './errors.js';
+import { QqRobotBindingService, type QqRobotBindingStore, type QqRobotBindingStatus } from './qq-robot-bindings.js';
+export type { QqRobotBindingStatus as McpQqBindingStatus } from './qq-robot-bindings.js';
 
 interface QueryResult { rows: Record<string, unknown>[] }
 export interface McpQqBindingClient {
@@ -210,19 +212,33 @@ export class PgMcpQqBindingStore implements McpQqBindingStore {
 }
 
 export class McpQqBindingService {
+  private readonly robot: QqRobotBindingService;
+  private usersInitialization?: Promise<void>;
   private readonly store: McpQqBindingStore;
   private readonly now: () => number;
   private initialization?: Promise<void>;
   private closing?: Promise<void>;
   constructor(private readonly config: BindingConfig,
-    private readonly options: { beforeInitialize: () => Promise<void>; store?: McpQqBindingStore; now?: () => number }) {
+    private readonly options: { beforeInitialize: () => Promise<void>; store?: McpQqBindingStore; robotStore?: QqRobotBindingStore; now?: () => number }) {
     this.store = options.store ?? new PgMcpQqBindingStore(config, { beforeInitialize: async () => {} });
     this.now = options.now ?? Date.now;
+    this.robot = new QqRobotBindingService(config, { store: options.robotStore, now: this.now,
+      beforeInitialize: () => this.initializeUsers() });
+  }
+  private async initializeUsers(): Promise<void> {
+    if (!this.usersInitialization) {
+      const pending = this.options.beforeInitialize().catch(error => {
+        if (this.usersInitialization === pending) this.usersInitialization = undefined;
+        throw error;
+      });
+      this.usersInitialization = pending;
+    }
+    await this.usersInitialization;
   }
   private async ready(): Promise<void> {
     if (this.closing || !this.config.databaseUrl) throw unavailable();
     if (!this.initialization) {
-      const pending = (async () => { await this.options.beforeInitialize(); await this.store.initialize(); })()
+      const pending = (async () => { await this.initializeUsers(); await this.store.initialize(); })()
         .catch(error => { if (this.initialization === pending) this.initialization = undefined; throw safeError(error); });
       this.initialization = pending;
     }
@@ -243,9 +259,15 @@ export class McpQqBindingService {
       return url.origin;
     } catch { throw unavailable(); }
   }
-  async bind(qq: string): Promise<{ qq: string; userId: string }> {
-    validateQq(qq); return this.run(() => this.store.bind(qq, new Date(this.now())));
+  async bind(qq: string, bindingCode?: string): Promise<{ qq: string; userId: string }> {
+    return this.robot.bind(qq, bindingCode);
   }
+  async getStatus(userId: string): Promise<QqRobotBindingStatus> { return this.robot.getStatus(userId); }
+  async createChallenge(userId: string): Promise<{ id: string; code: string; expiresAt: string }> {
+    return this.robot.createChallenge(userId);
+  }
+  async resolveRobot(qq: string): Promise<{ qq: string; userId: string }> { return this.robot.resolve(qq); }
+  async unbindRobot(userId: string): Promise<{ userId: string; status: 'unbound' }> { return this.robot.unbind(userId); }
   async create(qq: string, requestOrigin?: string): Promise<{ qq: string; bindingUrl: string; expiresAt: string }> {
     validateQq(qq); const origin = this.origin(requestOrigin);
     return this.run(async () => {
@@ -273,7 +295,9 @@ export class McpQqBindingService {
   async close(): Promise<void> {
     if (!this.closing) this.closing = (async () => {
       try { await this.initialization; } catch { /* Still close resources after failure. */ }
-      try { await this.store.close(); } catch (error) { throw safeError(error); }
+      const outcomes = await Promise.allSettled([this.store.close(), this.robot.close()]);
+      const failed = outcomes.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+      if (failed) throw safeError(failed.reason);
     })();
     await this.closing;
   }

@@ -44,26 +44,30 @@ export function createHyrzMcpHandler(config: Config, dependencies: McpDependenci
     if (server) return server;
     const tools = {
       bind_qq: createTool({
-        id: 'bind_qq', description: '用真实消息发送者的数字 QQ 号直接创建普通用户并绑定，无需登录网站。已有有效绑定时复用原用户，返回 qq 和 userId；停用账号不会自动恢复。',
-        inputSchema: z.object({ qq }).strict(),
+        id: 'bind_qq', description: '使用真实消息发送者的数字 QQ 号绑定。用户发送网站登录后生成的绑定码时，传 bindingCode 直接关联该网站账号，无需网页二次确认；代码错误不会自动注册。不传代码时创建或复用普通账号。返回 qq 和 userId；停用账号不会自动恢复。',
+        // Mastra retries invalid optional null values as omitted. Keep null through validation
+        // so it can be rejected explicitly rather than falling back to account registration.
+        inputSchema: z.object({ qq, bindingCode: z.string().length(24).regex(/^[A-Za-z0-9_-]{24}$/).nullable().optional() }).strict(),
         outputSchema: z.object({ qq: z.string(), userId: uuid }).or(failure),
-        execute: async input => safely(() => bindings().bind(input.qq)),
+        execute: async input => safely(() => {
+          if (input.bindingCode === null) throw new ApiError(400, '绑定码格式无效，请完整复制网页上的绑定命令。', 'INVALID_QQ_BINDING_CODE');
+          return bindings().bind(input.qq, input.bindingCode);
+        }),
       }),
       unbind_qq: createTool({
-        id: 'unbind_qq', description: '解除指定网站用户的数字 QQ 号绑定。保留原有 QQ 官方机器人 openid 群提醒绑定。',
+        id: 'unbind_qq', description: '解除指定网站用户的新 QQ 机器人数字绑定。旧数字绑定和官方机器人 OpenID 群提醒绑定保持不变。',
         inputSchema: z.object({ userId: uuid }).strict(),
         outputSchema: z.object({ userId: z.string(), status: z.literal('unbound') }).or(failure),
         execute: async input => safely(async () => {
           const userId = input.userId.toLowerCase();
-          await bindings().assertActiveUser(userId);
-          return bindings().unbind(userId);
+          return bindings().unbindRobot(userId);
         }),
       }),
       qq_to_userid: createTool({
         id: 'qq_to_userid', description: '查询数字 QQ 号已绑定的有效网站用户 userId，不创建用户。后续二维码工具使用这个 userId；未绑定时先调用 bind_qq。',
         inputSchema: z.object({ qq }).strict(),
         outputSchema: z.object({ qq: z.string(), userId: z.string() }).or(failure),
-        execute: async input => safely(() => bindings().resolve(input.qq)),
+        execute: async input => safely(() => bindings().resolveRobot(input.qq)),
       }),
       request_qrcode: createTool({
         id: 'request_qrcode', description: '以 userId 提交游戏登录二维码申请。提供登录渠道和任务选项；同一次申请重试必须保留同一 UUID requestId，新的申请才换 ID。已有活动任务会返回其实际渠道和选项。省略选项时采用网页默认设置。',
@@ -98,7 +102,7 @@ export function createHyrzMcpHandler(config: Config, dependencies: McpDependenci
     };
     server = new MCPServer({ id: 'hyrz', name: 'hyrz', version: '1.0.0', legacy: 'stateless', tools,
       description: '忍者日常 QQ 号绑定与登录二维码申请。',
-      instructions: '仅供可信机器人后台调用。QQ 号必须来自可信消息发送者。bind_qq 直接创建或复用账号并返回 userId，无需网页登录；qq_to_userid 只查询已有绑定。申请和查询使用返回的 userId，不要把数字 QQ 号或 QQ openid 当作 userId。',
+      instructions: '仅供可信机器人后台调用。QQ 号必须来自可信消息发送者。用户发送网站绑定码时，bind_qq 必须携带 bindingCode，将该 QQ 绑定到码所属网站账号；失败不得省略代码重试注册。无代码的明确注册绑定请求仍可创建或复用账号。qq_to_userid 只查询已有绑定。申请和查询使用返回的 userId，不要把数字 QQ 号或 QQ openid 当作 userId。',
       toolResult: { modelOutput: false, transform: ({ output, result }) => {
         if (output && typeof output === 'object' && 'status' in output && output.status === 'error') return { ...result, isError: true };
         return result;

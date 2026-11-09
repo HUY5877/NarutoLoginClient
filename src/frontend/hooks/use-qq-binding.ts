@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-interface Binding { boundAt: string }
-interface Challenge { id: string; expiresAt: string; received: boolean; senderName: string | null }
+interface Binding { qq: string; boundAt: string }
+interface Challenge { id: string; expiresAt: string }
 export interface QqBindingStatus { enabled: boolean; binding: Binding | null; challenge: Challenge | null }
 type Scope = { userId: string | null; open: boolean };
 interface View {
@@ -19,12 +19,10 @@ const validDate = (value: unknown): value is string => typeof value === 'string'
 function parseStatus(value: unknown): QqBindingStatus {
   const status = value as QqBindingStatus;
   if (!status || typeof status.enabled !== 'boolean'
-    || status.binding !== null && !validDate(status.binding?.boundAt)
+    || status.binding !== null && (!validDate(status.binding?.boundAt) || typeof status.binding.qq !== 'string' || !/^[1-9][0-9]*$/.test(status.binding.qq))
     || status.challenge !== null && (!validDate(status.challenge?.expiresAt)
-      || typeof status.challenge.id !== 'string' || !status.challenge.id
-      || typeof status.challenge.received !== 'boolean'
-      || status.challenge.senderName !== null && typeof status.challenge.senderName !== 'string')) {
-    throw new Error('群提醒状态暂时无法读取，请重试。');
+      || typeof status.challenge.id !== 'string' || !status.challenge.id)) {
+    throw new Error('QQ 绑定状态暂时无法读取，请重试。');
   }
   return status;
 }
@@ -36,8 +34,6 @@ export function useQqBinding(userId: string | null, open: boolean, onUnauthorize
   const unauthorizedRef = useRef(onUnauthorized);
   unauthorizedRef.current = onUnauthorized;
   const [view, setView] = useState(() => emptyView(scope));
-  const viewRef = useRef(view);
-  viewRef.current = view;
   const [now, setNow] = useState(Date.now);
   const requestRef = useRef<{ scope: Scope; controller: AbortController; mutation: boolean } | null>(null);
 
@@ -64,7 +60,7 @@ export function useQqBinding(userId: string | null, open: boolean, onUnauthorize
     const isCurrent = () => scopeRef.current === scope && requestRef.current === active;
     const timeout = window.setTimeout(() => active.controller.abort(), 10_000);
     try {
-      const response = await fetch(`/api/qq-binding${suffix}`, {
+      const response = await fetch(`/api/qq-number-binding${suffix}`, {
         method, credentials: 'same-origin', cache: 'no-store', signal: active.controller.signal,
         ...(mutation ? { headers: { 'Content-Type': 'application/json' }, ...(method === 'POST' ? { body: JSON.stringify(input) } : {}) } : {}),
       });
@@ -74,14 +70,14 @@ export function useQqBinding(userId: string | null, open: boolean, onUnauthorize
       if (!isCurrent()) return;
       if (!response.ok) {
         const error = (body as { error?: unknown })?.error;
-        throw new Error(typeof error === 'string' ? error : '群提醒操作未完成，请重试。');
+        throw new Error(typeof error === 'string' ? error : 'QQ 绑定操作未完成，请重试。');
       }
       accept(body);
       update({ error: '' });
     } catch (caught) {
       if (!isCurrent()) return;
       update({ error: caught instanceof Error && caught.name !== 'AbortError'
-        ? caught.message : '群提醒服务连接超时，请重试。' });
+        ? caught.message : 'QQ 绑定服务连接超时，请重试。' });
     } finally {
       clearTimeout(timeout);
       if (isCurrent()) {
@@ -94,7 +90,11 @@ export function useQqBinding(userId: string | null, open: boolean, onUnauthorize
   const refresh = useCallback((silent = false) => request('GET', '', body => {
     const status = parseStatus(body);
     update(current => ({ status,
-      code: current.status?.challenge?.id === status.challenge?.id ? current.code : null }));
+      code: current.status?.challenge?.id === status.challenge?.id ? current.code : null,
+      ...(current.status?.challenge && !status.challenge && status.binding
+        && (!current.status.binding || current.status.binding.qq !== status.binding.qq
+          || current.status.binding.boundAt !== status.binding.boundAt) ? { message: '绑定成功' } : {}),
+    }));
   }, silent), [request, update]);
 
   useEffect(() => {
@@ -122,9 +122,12 @@ export function useQqBinding(userId: string | null, open: boolean, onUnauthorize
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
-      if (disposed || Date.now() >= Date.parse(expiresAt)) return;
+      if (disposed) return;
+      // A code redeemed just before expiry may commit after the last live poll.
+      // Read once at the boundary so that success is visible, then stop.
+      const terminal = Date.now() >= Date.parse(expiresAt);
       await refresh(true);
-      if (!disposed) timer = setTimeout(() => { void poll(); }, 2_500);
+      if (!disposed && !terminal) timer = setTimeout(() => { void poll(); }, 2_500);
     };
     timer = setTimeout(() => { void poll(); }, 2_500);
     return () => { disposed = true; clearTimeout(timer); };
@@ -133,29 +136,14 @@ export function useQqBinding(userId: string | null, open: boolean, onUnauthorize
   const generate = () => request('POST', '/challenge', body => {
     const result = body as { id?: unknown; code?: unknown; expiresAt?: unknown };
     if (typeof result?.id !== 'string' || !result.id || typeof result.code !== 'string'
-      || !/^[A-Z0-9]{8}$/i.test(result.code) || !validDate(result.expiresAt)) {
+      || !/^[A-Za-z0-9_-]{24}$/.test(result.code) || !validDate(result.expiresAt)) {
       throw new Error('绑定码暂时无法生成，请重试。');
     }
     const expiresAt = result.expiresAt;
     update(current => ({ code: result.code as string, status: { enabled: true,
-      binding: current.status?.binding ?? null, challenge: { id: result.id as string, expiresAt, received: false, senderName: null } } }));
+      binding: current.status?.binding ?? null, challenge: { id: result.id as string, expiresAt } } }));
     setNow(Date.now());
   });
-
-  const confirm = async () => {
-    const candidate = viewRef.current.scope === scope ? viewRef.current.status?.challenge : null;
-    if (!candidate?.received || Date.now() >= Date.parse(candidate.expiresAt)) return;
-    let confirmed = false;
-    await request('POST', '/confirm', body => {
-      const result = body as { binding?: Binding };
-      if (!validDate(result?.binding?.boundAt)) throw new Error('绑定结果暂时无法读取，请重试查询。');
-      confirmed = true;
-      update(current => ({ code: null, message: '绑定成功', status: {
-        enabled: current.status?.enabled ?? true, binding: result.binding!, challenge: null,
-      } }));
-    }, false, { challengeId: candidate.id });
-    if (confirmed) await refresh(true);
-  };
 
   const unbind = () => request('DELETE', '', () => {
     update(current => ({ code: null, status: { enabled: current.status?.enabled ?? true, binding: null, challenge: null }, message: '已解除绑定' }));
@@ -163,5 +151,5 @@ export function useQqBinding(userId: string | null, open: boolean, onUnauthorize
 
   const remainingSeconds = expiresAt ? Math.max(0, Math.ceil((Date.parse(expiresAt) - now) / 1_000)) : 0;
   return { ...current, remainingSeconds, expired: Boolean(expiresAt && remainingSeconds <= 0),
-    refresh, generate, confirm, unbind };
+    refresh, generate, unbind };
 }

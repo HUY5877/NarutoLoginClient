@@ -30,7 +30,7 @@ export interface Dependencies {
   qqAuthorizations?: Pick<QqAuthorizationService, 'upload' | 'list' | 'get' | 'delete'> & Partial<Pick<QqAuthorizationService, 'isConfigured'>>;
   qqBindings?: Pick<QqBindingService, 'getStatus' | 'createChallenge' | 'confirm' | 'unbind' | 'handleWebhook'>;
   modelChannels?: Pick<ModelChannelService, 'list' | 'update' | 'test'>;
-  mcpBindings?: Pick<McpQqBindingService, 'bind' | 'create' | 'preview' | 'confirm' | 'resolve' | 'unbind' | 'assertActiveUser'>;
+  mcpBindings?: Pick<McpQqBindingService, 'bind' | 'getStatus' | 'createChallenge' | 'resolveRobot' | 'unbindRobot' | 'create' | 'preview' | 'confirm' | 'resolve' | 'unbind' | 'assertActiveUser'>;
   now?: () => number;
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -152,6 +152,28 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
   app.post('/api/qq-binding/challenge', async (_req, res) => res.status(201).json(await bindingService().createChallenge((res.locals.user as User).id)));
   app.post('/api/qq-binding/confirm', async (req, res) => res.json(await bindingService().confirm((res.locals.user as User).id, req.body)));
   app.delete('/api/qq-binding', async (_req, res) => { await bindingService().unbind((res.locals.user as User).id); res.status(204).end(); });
+
+  // Numeric QQ binding uses the logged-in website account, independent of the legacy official bot.
+  const numberBindingService = () => {
+    if (!mcpBindings || !config.hyrzMcpToken) throw new ApiError(503, 'QQ 机器人绑定尚未配置。', 'HYRZ_BINDINGS_UNAVAILABLE');
+    return mcpBindings;
+  };
+  app.use('/api/qq-number-binding', async (req, res, next) => {
+    const user = await auth.getUser(sessionToken(req, cookieName));
+    if (!user) throw new ApiError(401, '请先登录账号。', 'AUTH_REQUIRED');
+    res.locals.user = user; next();
+  });
+  app.get('/api/qq-number-binding', async (_req, res) => res.json(mcpBindings && config.hyrzMcpToken
+    ? await mcpBindings.getStatus((res.locals.user as User).id) : { enabled: false, binding: null, challenge: null }));
+  app.post('/api/qq-number-binding/challenge', async (req, res) => {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length !== 0) {
+      throw new ApiError(400, '绑定码仅由当前登录账号生成，请勿提交其他账号信息。', 'INVALID_QQ_BINDING_REQUEST');
+    }
+    res.status(201).json(await numberBindingService().createChallenge((res.locals.user as User).id));
+  });
+  app.delete('/api/qq-number-binding', async (_req, res) => {
+    await numberBindingService().unbindRobot((res.locals.user as User).id); res.status(204).end();
+  });
 
   const captureService = () => {
     if (!qqCaptures) throw new ApiError(503, 'QQ 抓号服务尚未配置。', 'QQ_AUTHORIZATION_UNAVAILABLE');

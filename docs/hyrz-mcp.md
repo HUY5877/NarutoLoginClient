@@ -31,7 +31,7 @@ http_headers = { Authorization = "Bearer 与服务器一致的Token" }
 
 | 名称 | 参数 | 结果 |
 | --- | --- | --- |
-| `bind_qq` | `qq`，无前导零的数字字符串 | `{qq,userId}`，直接创建或返回数字 QQ 关联 |
+| `bind_qq` | `qq`，无前导零的数字字符串；可选 `bindingCode`，网页生成的 24 字符码 | `{qq,userId}`；有码关联生成码的现有账号，无码创建或复用账号 |
 | `unbind_qq` | `userId` | `{userId,status:"unbound"}`，仅解除数字 QQ 关联 |
 | `qq_to_userid` | `qq` | `{qq,userId}`，只读查询已绑定且未停用的网站账号，不创建用户 |
 | `request_qrcode` | `userId, requestId, loginType, userOptions?` | 返回实际 `taskId`、渠道、任务选项及建议查询间隔 |
@@ -58,16 +58,34 @@ http_headers = { Authorization = "Bearer 与服务器一致的Token" }
 
 ## QQ 绑定
 
+### 从网站账号发码后绑定当前 QQ
+
+登录后打开「QQ 机器人绑定」，网站用已验证 Cookie 身份调用：
+
+- `GET /api/qq-number-binding`：返回 `{enabled,binding:{qq,boundAt}|null,challenge:{id,expiresAt}|null}`，不返回码明文。
+- `POST /api/qq-number-binding/challenge`：JSON 正文仅为 `{}`，返回 `{id,code,expiresAt}`。不接受正文 `userId`；跨站写入拒绝。
+- `DELETE /api/qq-number-binding`：解除当前登录用户的数字关联并撤销绑定码，返回 204。
+
+用户在群里 @ 当前机器人（QQ `3470367045`）发送 `绑定 <code>`。可信后台从真实消息取得 QQ，调用 `bind_qq({qq,bindingCode:code})`，立即绑定到该码所属网站账号；网页轮询自动显示结果，无需二次确认。此路径不新建用户，不接受调用方指定目标网站用户 ID。
+
+代码为 18 随机字节的 base64url 字符串（24 字符），区分大小写，5 分钟有效，只在 `naruto_login.qq_robot_binding_codes` 保存 SHA-256 摘要。重新生成、解绑或转绑会撤销旧代码。已成功的同 QQ 重试只有在当前关联和绑定时间均未变时才幂等返回；其他 QQ 不能重放。
+
+凭码兑换可将 QQ 从新表中无代码模式创建的账号转到码所属已登录账号，也可替换该网站账号原有的 QQ；原账号、任务和 OpenID 数据不删除或合并，新表关联变更和撤销新表旧代码在同一事务中完成。停用目标、无效码、过期码、撤销码必须返回错误，不能删去 `bindingCode` 重试成注册。显式传入 null 也返回格式错误；实现保留 null 至执行层后拒绝，以避免框架把非法可选 null 删除后当作无代码调用。
+
+当前数字绑定入口替代原官方 OpenID 绑定弹窗；官方回调与旧表保留兼容。新机器人的二维码/任务提醒发送仍属于外部执行服务集成，绑定成功不代表提醒已经投递。
+
+### 不传网站码的直接创建/复用（兼容）
+
 1. 可信机器人后台从已核验的真实消息上下文取得数字 QQ 号，在已有授权范围内调用 `bind_qq({qq})`。
-2. 未绑定时，服务器在同一事务内创建已启用的普通网站用户并保存数字 QQ 关联，成功直接返回 `{qq,userId}`。新账号密码为随机值，不返回给客户端或用户，不写入日志。
+2. 未绑定时，服务器在同一事务内创建已启用的普通网站用户并保存新机器人数字 QQ 关联，成功直接返回 `{qq,userId}`。新账号密码为随机值，不返回给客户端或用户，不写入日志。
 3. 已绑定且账号有效时，返回现有 `userId`。相同 QQ 的重复或并发调用保持幂等，不重复创建账号；已有账号停用时拒绝操作，不重新启用，不另建账号绕过停用，也不转移已有绑定。
 4. 后续可用 `qq_to_userid({qq})` 只读查询有效关联。该查询不会注册用户；未找到有效关联时仍按实际错误返回。申请和查询二维码传网站 `userId`，不能把 QQ 号当作用户 ID。
 
-`bind_qq` 不创建待确认链接，不返回 `bindingUrl` 或 `expiresAt`，不要求先登录网站或点击确认。共享 Bearer token 认证可信客户端；QQ 号参数本身不能证明调用人身份，后台仍须保持主人核验和普通用户的既有权限。QQ 专用部署以 `enabled_tools = ["bind_qq"]` 仅开放此工具，其余工具的服务端能力保持，但不在该渠道开放。修改配置和源码不代表已发布或完成真实业务验证。
+`bind_qq` 不创建待确认链接，不返回 `bindingUrl` 或 `expiresAt`。无代码模式不要求网页登录；有代码模式由已登录网站用户发码，兑换时不再网页登录。共享 Bearer token 认证可信客户端；QQ 参数必须来自可信消息身份，普通用户只允许凭码绑定本人，不授予其他工具/主机权限。QQ 专用部署仍仅开放 `bind_qq`。修改配置和源码不代表已发布或完成真实业务验证。
 
-数字关联保存在 `naruto_login.qq_number_bindings`，新用户保存在已有的 `naruto_login.users`。数据库写入失败时整个创建与绑定事务回滚，不能留下无关联的新账号。保留的 `qq_number_binding_requests`、旧网站链接预览及确认路由只服务旧流程，不是 MCP `bind_qq` 的前置步骤；旧待确认请求不得覆盖直接绑定后的关联。
+新机器人的数字关联保存在独立 `naruto_login.qq_robot_bindings`，新用户保存在已有 `naruto_login.users`，绑定码摘要保存在 `naruto_login.qq_robot_binding_codes`。新流程不读写或自动迁移旧 `qq_number_bindings`、`qq_number_binding_requests`、官方 `qq_bindings` 或 `qq_binding_challenges`；旧接口与提醒逻辑保持原样。数据库失败时新表事务整体回滚。
 
-现有 QQ 官方机器人的 `qq_bindings`、openid 字段和群提醒流程保留。数字 QQ 绑定与群提醒是两种独立标识，不猜测 QQ 号与 openid 的对应关系，不伪造官方机器人回调。`unbind_qq` 仅解除个人数字 QQ 关联，不解除官方群提醒。
+现有 QQ 官方机器人的 `qq_bindings`、openid 字段和群提醒流程保留。数字 QQ 绑定与群提醒是两种独立标识，不猜测 QQ 号与 openid 的对应关系，不伪造官方机器人回调。`unbind_qq` 及 `qq_to_userid` 仅操作新机器人绑定表；旧数字关联和官方群提醒不变。
 
 ## 二维码结果
 

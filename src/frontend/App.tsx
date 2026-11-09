@@ -252,7 +252,7 @@ export default function App() {
             {auth.loading ? <Spinner aria-label="正在读取账户状态" className="size-4" /> : auth.user ? (
               <>
                 <Button variant="outline" size="sm" disabled={auth.busy} onClick={() => setQqBindingOpen(true)} className="gap-1.5 bg-white/50">
-                  <MessageCircle aria-hidden="true" />QQ 群提醒
+                  <MessageCircle aria-hidden="true" />QQ 机器人绑定
                 </Button>
                 {auth.user.isAdmin === true ? <AdminMenu key={auth.user.id} userId={auth.user.id} refreshAuth={auth.refresh}
                   mobileAccount={{ username: auth.user.username, busy: auth.busy, logout: () => { void auth.logout(); } }} /> : (

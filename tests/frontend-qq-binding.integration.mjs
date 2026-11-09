@@ -26,8 +26,8 @@ const replacementChallengeId = '70000000-0000-4000-8000-000000000002';
 const user = { id: 'qq-user-one', username: '第一位用户', isAdmin: false };
 const secondUser = { id: 'qq-user-two', username: '第二位用户', isAdmin: false };
 const unbound = () => ({ enabled: true, binding: null, challenge: null });
-const challenge = (received = false, senderName = null, lifetime = 300_000) => ({
-  id: challengeId, expiresAt: new Date(now + lifetime).toISOString(), received, senderName,
+const challenge = (lifetime = 300_000) => ({
+  id: challengeId, expiresAt: new Date(now + lifetime).toISOString(),
 });
 function deferred() {
   let resolve;
@@ -62,7 +62,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
       const page = await context.newPage();
       page.setDefaultTimeout(5_000);
       await page.clock.install({ time: new Date(now) });
-      const state = { user, status: unbound(), calls: [], errors: [], read: null, generate: null, confirm: null };
+      const state = { user, status: unbound(), calls: [], errors: [], read: null, generate: null };
       page.on('pageerror', error => state.errors.push(error.message));
       await context.route('**/*', async route => {
         const url = new URL(route.request().url());
@@ -74,7 +74,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
         if (url.pathname === '/api/auth/logout') { state.user = null; return reply({ ok: true }); }
         if (url.pathname === '/api/health') return reply({ ok: true, environment: 'test' });
         if (url.pathname === '/api/task-runs/latest') return reply({ task: null, run: null });
-        if (url.pathname.startsWith('/api/qq-binding')) {
+        if (url.pathname.startsWith('/api/qq-number-binding')) {
           state.calls.push({ method, path: url.pathname, user: state.user?.id,
             body: route.request().postData() ? route.request().postDataJSON() : null });
           if (method === 'GET') {
@@ -87,13 +87,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
               return reply(result.json, result.status);
             }
             state.status.challenge = challenge();
-            return reply({ id: challengeId, code: 'ABCD1234', expiresAt: state.status.challenge.expiresAt }, 201);
-          }
-          if (url.pathname.endsWith('/confirm')) {
-            if (state.confirm) return reply((await state.confirm()).json, 409);
-            state.status.binding = { boundAt: new Date(now).toISOString() };
-            state.status.challenge = null;
-            return reply({ binding: state.status.binding });
+            return reply({ id: challengeId, code: 'AbCd1234_EfGh5678-IjKl90', expiresAt: state.status.challenge.expiresAt }, 201);
           }
           if (method === 'DELETE') {
             state.status = unbound();
@@ -106,8 +100,8 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
       return { page, context, state,
         async open() {
           await page.goto(origin, { waitUntil: 'networkidle' });
-          await page.getByRole('button', { name: 'QQ 群提醒', exact: true }).click();
-          await page.getByRole('dialog', { name: 'QQ 群提醒', exact: true }).waitFor();
+          await page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).click();
+          await page.getByRole('dialog', { name: 'QQ 机器人绑定', exact: true }).waitFor();
         },
         async close() { await context.close(); assert.deepEqual(state.errors, []); },
       };
@@ -119,114 +113,94 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
         f.state.status = { enabled: false, binding: null, challenge: null };
         await f.page.goto(origin, { waitUntil: 'networkidle' });
         assert.deepEqual(f.state.calls, [], 'binding is loaded only when its dialog opens');
-        await f.page.getByRole('button', { name: 'QQ 群提醒', exact: true }).click();
-        await f.page.getByText('暂未开启 QQ 群提醒', { exact: true }).waitFor();
+        await f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).click();
+        await f.page.getByText('暂未开启 QQ 机器人绑定', { exact: true }).waitFor();
         assert.equal(await f.page.getByRole('button', { name: /生成绑定码/ }).count(), 0);
         await f.page.clock.fastForward(30_000);
         assert.equal(f.state.calls.length, 1);
       } finally { await f.close(); }
     });
 
-    await t.test('a replacement keeps the existing binding until group identity is confirmed, then can be unbound', async () => {
+    await t.test('replacement keeps old QQ until automatic redemption, copies command and unbinds', async () => {
       const f = await fixture(390);
       try {
-        f.state.status.binding = { boundAt };
+        f.state.status.binding = { qq: '123456789', boundAt };
         await f.open();
-        await f.page.getByText('已绑定 QQ 群提醒', { exact: true }).waitFor();
+        await f.page.getByText('已绑定 QQ：123456789', { exact: true }).waitFor();
         await f.page.getByRole('button', { name: '重新绑定', exact: true }).click();
         await f.page.locator('code').waitFor();
-        assert.equal(await f.page.getByText('已绑定 QQ 群提醒', { exact: true }).count(), 1);
-        assert.equal(await f.page.getByRole('button', { name: '确认绑定', exact: true }).isEnabled(), false);
+        await f.page.getByText('新绑定成功前，原绑定继续生效。', { exact: true }).waitFor();
+        assert.equal(await f.page.getByRole('button', { name: '确认绑定', exact: true }).count(), 0);
+        await f.page.getByText('当前机器人（QQ：3470367045）', { exact: true }).waitFor();
         await f.page.getByRole('button', { name: '复制命令', exact: true }).click();
-        assert.equal(await f.page.evaluate(() => navigator.clipboard.readText()), '绑定 ABCD1234',
-          'the copied command must not include a literal mention that survives a real QQ @ mention');
-        assert.equal(await f.page.locator('code').innerText(), '@机器人 绑定 ABCD1234');
-        await f.page.getByText('在 QQ 群输入 @，从列表中选择机器人。', { exact: true }).waitFor();
-        f.state.status.challenge = challenge(true, '木叶忍者');
-        await f.page.clock.fastForward(3_000);
-        await f.page.getByText('木叶忍者', { exact: true }).waitFor();
+        assert.equal(await f.page.evaluate(() => navigator.clipboard.readText()), '绑定 AbCd1234_EfGh5678-IjKl90');
+        await f.page.getByText('在 QQ 群输入 @，从列表中选择当前机器人（QQ：3470367045）。', { exact: true }).waitFor();
         if (process.env.QQ_BINDING_SCREENSHOT_DIR) {
           await mkdir(process.env.QQ_BINDING_SCREENSHOT_DIR, { recursive: true });
-          const screenshot = path.join(process.env.QQ_BINDING_SCREENSHOT_DIR, 'qq-binding-mobile-390.png');
-          await f.page.screenshot({ animations: 'disabled', path: screenshot });
-          t.diagnostic(`QQ binding mobile preview: ${screenshot}`);
+          await f.page.screenshot({ animations: 'disabled', path: path.join(process.env.QQ_BINDING_SCREENSHOT_DIR, 'qq-binding-mobile-390.png') });
         }
-        await f.page.getByRole('button', { name: '确认绑定', exact: true }).click();
+        f.state.status = { enabled: true, binding: { qq: '987654321', boundAt: new Date(now).toISOString() }, challenge: null };
+        await f.page.clock.fastForward(3_000);
         await f.page.getByText('绑定成功', { exact: true }).waitFor();
-        assert.equal(await f.page.getByText('绑定 ABCD1234', { exact: true }).count(), 0);
+        await f.page.getByText('已绑定 QQ：987654321', { exact: true }).waitFor();
+        assert.equal(await f.page.locator('code').count(), 0);
         await f.page.getByRole('button', { name: '解除绑定', exact: true }).click();
-        await f.page.getByText('尚未绑定 QQ 群提醒', { exact: true }).waitFor();
+        await f.page.getByText('尚未绑定 QQ', { exact: true }).waitFor();
         assert.deepEqual(f.state.calls.filter(call => call.method !== 'GET').map(call => [call.method, call.path]), [
-          ['POST', '/api/qq-binding/challenge'], ['POST', '/api/qq-binding/confirm'], ['DELETE', '/api/qq-binding'],
+          ['POST', '/api/qq-number-binding/challenge'], ['DELETE', '/api/qq-number-binding'],
         ]);
-        const layout = await f.page.getByRole('dialog').evaluate(element => ({
-          left: element.getBoundingClientRect().left, right: element.getBoundingClientRect().right, width: innerWidth,
-        }));
-        assert.ok(layout.left >= 0 && layout.right <= layout.width, 'dialog fits a mobile screen');
+        const layout = await f.page.getByRole('dialog').evaluate(element => ({ left: element.getBoundingClientRect().left, right: element.getBoundingClientRect().right, width: innerWidth }));
+        assert.ok(layout.left >= 0 && layout.right <= layout.width);
       } finally { await f.close(); }
     });
 
-    await t.test('restored candidates need explicit self confirmation and expiry disables confirmation and polling', async () => {
+    await t.test('restored challenge hides missing code and expiry stops polling', async () => {
       const f = await fixture();
       try {
-        f.state.status.challenge = challenge(true, null, 4_000);
+        f.state.status.challenge = challenge(4_000);
         await f.open();
-        await f.page.getByText(/请确认这条群消息由你本人发送/).waitFor();
-        assert.equal(await f.page.getByRole('button', { name: '确认绑定', exact: true }).isEnabled(), true);
+        await f.page.getByText(/请发送此前保存的命令/).waitFor();
+        assert.equal(await f.page.getByRole('button', { name: '确认绑定', exact: true }).count(), 0);
         assert.equal(await f.page.getByRole('button', { name: '复制命令', exact: true }).count(), 0);
         await f.page.clock.fastForward(6_000);
         await f.page.getByText('绑定码已过期，请重新生成。', { exact: true }).waitFor();
-        assert.equal(await f.page.getByRole('button', { name: '确认绑定', exact: true }).isEnabled(), false);
         const reads = f.state.calls.length;
         await f.page.clock.fastForward(30_000);
-        assert.equal(f.state.calls.length, reads, 'expired candidates do not keep polling');
+        assert.equal(f.state.calls.length, reads);
       } finally { await f.close(); }
     });
 
-    await t.test('a committed confirmation clears the candidate even when its following status refresh fails', async () => {
+    await t.test('redemption after the last live poll is observed once at expiry', async () => {
       const f = await fixture();
       try {
-        f.state.status.challenge = challenge(true, '木叶忍者');
+        f.state.status.challenge = challenge(4_000);
         await f.open();
-        await f.page.getByText('等待网页确认', { exact: true }).waitFor();
-        f.state.read = async () => ({ status: 503, json: { error: '状态查询暂时失败' } });
-        await f.page.getByRole('button', { name: '确认绑定', exact: true }).click();
+        await f.page.getByText('等待机器人完成绑定', { exact: true }).waitFor();
+        await f.page.clock.fastForward(2_500);
+        await waitFor(() => f.state.calls.length === 2, 'last live poll started');
+        await f.page.waitForTimeout(50);
+        await f.page.clock.fastForward(1_000);
+        f.state.status = { enabled: true, binding: { qq: '987654321', boundAt: new Date(now + 3_500).toISOString() }, challenge: null };
+        await f.page.clock.fastForward(1_500);
         await f.page.getByText('绑定成功', { exact: true }).waitFor();
-        await f.page.getByRole('alert').getByText('状态查询暂时失败', { exact: true }).waitFor();
-        assert.equal(await f.page.getByRole('button', { name: '确认绑定', exact: true }).count(), 0,
-          'successful confirmation consumes the candidate before another status request');
-        assert.equal(await f.page.getByText('已绑定 QQ 群提醒', { exact: true }).count(), 1);
+        await f.page.getByText('已绑定 QQ：987654321', { exact: true }).waitFor();
+        assert.equal(f.state.calls.length, 3, 'one terminal status read observes the committed binding');
+        await f.page.clock.fastForward(30_000);
+        assert.equal(f.state.calls.length, 3, 'terminal read does not restart expired polling');
       } finally { await f.close(); }
     });
 
-    await t.test('confirmation identifies the candidate actually seen even when another page replaces it', async () => {
+    await t.test('another page regenerating code removes the obsolete command without reporting success', async () => {
       const f = await fixture();
       try {
         await f.open();
         await f.page.getByRole('button', { name: '生成绑定码', exact: true }).click();
-        await f.page.getByText('绑定 ABCD1234', { exact: true }).waitFor();
-        f.state.status.challenge = challenge(true, '木叶忍者');
+        await f.page.locator('code').waitFor();
+        f.state.status.challenge = { ...challenge(), id: replacementChallengeId };
         await f.page.clock.fastForward(3_000);
-        await f.page.getByText('木叶忍者', { exact: true }).waitFor();
-        if (process.env.QQ_BINDING_SCREENSHOT_DIR) {
-          await mkdir(process.env.QQ_BINDING_SCREENSHOT_DIR, { recursive: true });
-          const screenshot = path.join(process.env.QQ_BINDING_SCREENSHOT_DIR, 'qq-binding-desktop.png');
-          await f.page.screenshot({ animations: 'disabled', path: screenshot });
-          t.diagnostic(`QQ binding desktop preview: ${screenshot}`);
-        }
-        f.state.status.challenge = { ...challenge(true, '另一位成员'), id: replacementChallengeId };
-        f.state.confirm = async () => ({ json: { error: '绑定码已更新，请重新验证。' } });
-        await f.page.getByRole('button', { name: '确认绑定', exact: true }).click();
-        await f.page.getByRole('alert').getByText('绑定码已更新，请重新验证。', { exact: true }).waitFor();
-        assert.deepEqual(f.state.calls.find(call => call.path.endsWith('/confirm')).body, { challengeId });
+        await f.page.getByText(/请发送此前保存的命令/).waitFor();
+        assert.equal(await f.page.locator('code').count(), 0);
         assert.equal(await f.page.getByText('绑定成功', { exact: true }).count(), 0);
-        await f.page.getByRole('button', { name: '重试', exact: true }).click();
-        await f.page.getByText('另一位成员', { exact: true }).waitFor();
-        assert.equal(await f.page.getByText('绑定 ABCD1234', { exact: true }).count(), 0,
-          'a newer challenge invalidates the old command even when the expiration timestamp is unchanged');
-        await f.page.getByRole('button', { name: '确认绑定', exact: true }).click();
-        assert.deepEqual(f.state.calls.filter(call => call.path.endsWith('/confirm')).at(-1).body,
-          { challengeId: replacementChallengeId });
       } finally { await f.close(); }
     });
 
@@ -240,22 +214,22 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
         await f.page.keyboard.press('Escape');
         await f.page.getByRole('dialog').waitFor({ state: 'hidden' });
         f.state.read = null;
-        await f.page.getByRole('button', { name: 'QQ 群提醒', exact: true }).click();
-        await f.page.getByText('尚未绑定 QQ 群提醒', { exact: true }).waitFor();
-        oldRead.resolve({ json: { enabled: true, binding: { boundAt }, challenge: null } });
+        await f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).click();
+        await f.page.getByText('尚未绑定 QQ', { exact: true }).waitFor();
+        oldRead.resolve({ json: { enabled: true, binding: { qq: '123456789', boundAt }, challenge: null } });
         await f.page.waitForTimeout(100);
-        assert.equal(await f.page.getByText('已绑定 QQ 群提醒', { exact: true }).count(), 0);
+        assert.equal(await f.page.getByText('已绑定 QQ：123456789', { exact: true }).count(), 0);
         f.state.generate = () => oldCode.promise;
         await f.page.getByRole('button', { name: '生成绑定码', exact: true }).click();
         await waitFor(() => f.state.calls.some(call => call.method === 'POST'), 'old challenge request started');
         f.state.user = secondUser;
         await f.page.evaluate(() => dispatchEvent(new StorageEvent('storage', { key: 'naruto-login:auth-changed', newValue: 'another-account' })));
         await f.page.getByRole('dialog').waitFor({ state: 'hidden' });
-        await f.page.getByRole('button', { name: 'QQ 群提醒', exact: true }).click();
-        await f.page.getByText('尚未绑定 QQ 群提醒', { exact: true }).waitFor();
-        oldCode.resolve({ status: 201, json: { id: challengeId, code: 'OLD12345', expiresAt: challenge().expiresAt } });
+        await f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).click();
+        await f.page.getByText('尚未绑定 QQ', { exact: true }).waitFor();
+        oldCode.resolve({ status: 201, json: { id: challengeId, code: 'Old12345_AbCd6789-EfGh01', expiresAt: challenge().expiresAt } });
         await f.page.waitForTimeout(100);
-        assert.equal(await f.page.getByText(/OLD12345/).count(), 0);
+        assert.equal(await f.page.getByText(/Old12345_AbCd6789-EfGh01/).count(), 0);
         assert.equal(await f.page.getByRole('button', { name: '生成绑定码', exact: true }).isEnabled(), true);
         await f.page.keyboard.press('Escape');
         const calls = f.state.calls.length;
@@ -275,7 +249,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
         await f.page.getByRole('alert').getByText(/超时/).waitFor();
         f.state.read = null;
         await f.page.getByRole('button', { name: '重试', exact: true }).click();
-        await f.page.getByText('尚未绑定 QQ 群提醒', { exact: true }).waitFor();
+        await f.page.getByText('尚未绑定 QQ', { exact: true }).waitFor();
         f.state.generate = () => hanging.promise;
         const generate = f.page.getByRole('button', { name: '生成绑定码', exact: true });
         await generate.click();
@@ -286,10 +260,10 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
         assert.equal(f.state.calls.filter(call => call.method === 'POST').length, 1);
         await f.page.keyboard.press('Escape');
         f.state.read = async () => ({ status: 401, json: { error: '登录已过期' } });
-        await f.page.getByRole('button', { name: 'QQ 群提醒', exact: true }).click();
+        await f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).click();
         await f.page.getByRole('dialog').waitFor({ state: 'hidden' });
         await f.page.getByRole('button', { name: '登录 / 注册', exact: true }).waitFor();
-        assert.equal(await f.page.getByRole('button', { name: 'QQ 群提醒', exact: true }).count(), 0);
+        assert.equal(await f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).count(), 0);
       } finally { hanging.resolve({ json: unbound() }); await f.close(); }
     });
   } finally {
