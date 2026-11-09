@@ -74,7 +74,7 @@ http_headers = { Authorization = "Bearer 与服务器一致的Token" }
 
 当前数字绑定入口替代原官方 OpenID 绑定弹窗；官方回调与旧表保留兼容。新机器人的二维码/任务提醒发送仍属于外部执行服务集成，绑定成功不代表提醒已经投递。
 
-QQ 端的本次部署仅启用 `bind_qq`，并仅对该工具设置 `mcp_servers.hyrz.tools.bind_qq.approval_mode="approve"`，使已授权的网站码绑定不再要求额外 MCP 确认；保留 `suggest` / `on-request` / `read-only` 主机权限。`auto` 是按工具风险决定是否询问，并不等于总是批准，不能用它实现此处的自动绑定。机器人项目提示词和业务技能只为普通群友增加本人凭码绑定的例外，其他业务和主机操作权限不变。
+QQ 端当前部署不设置 `enabled_tools`、`disabled_tools` 或逐工具审批覆盖，按服务端运行时发现结果提供全部 `hyrz` 工具，不维护工具名称清单。仅可信 `hyrz` 服务设置 `mcp_servers.hyrz.default_tools_approval_mode="approve"`，统一预批准该服务的 MCP 调用；保留 `suggest` / `on-request` / `read-only` 主机权限。`auto` 是按工具风险决定是否询问，并不等于总是批准。服务预批准不替代可信消息身份核验或业务授权；机器人项目提示词和业务技能只为普通群友增加本人凭码绑定的例外，其他业务和主机操作权限不变。
 
 ### 不传网站码的直接创建/复用（兼容）
 
@@ -83,7 +83,7 @@ QQ 端的本次部署仅启用 `bind_qq`，并仅对该工具设置 `mcp_servers
 3. 已绑定且账号有效时，返回现有 `userId`。相同 QQ 的重复或并发调用保持幂等，不重复创建账号；已有账号停用时拒绝操作，不重新启用，不另建账号绕过停用，也不转移已有绑定。
 4. 后续可用 `qq_to_userid({qq})` 只读查询有效关联。该查询不会注册用户；未找到有效关联时仍按实际错误返回。申请和查询二维码传网站 `userId`，不能把 QQ 号当作用户 ID。
 
-`bind_qq` 不创建待确认链接，不返回 `bindingUrl` 或 `expiresAt`。无代码模式不要求网页登录；有代码模式由已登录网站用户发码，兑换时不再网页登录。共享 Bearer token 认证可信客户端；QQ 参数必须来自可信消息身份，普通用户只允许凭码绑定本人，不授予其他工具/主机权限。QQ 专用部署仍仅开放 `bind_qq`。修改配置和源码不代表已发布或完成真实业务验证。
+`bind_qq` 不创建待确认链接，不返回 `bindingUrl` 或 `expiresAt`。无代码模式不要求网页登录；有代码模式由已登录网站用户发码，兑换时不再网页登录。共享 Bearer token 认证可信客户端；QQ 参数必须来自可信消息身份，普通用户只允许凭码绑定本人，不授予其他工具/主机权限。QQ 专用部署按服务端运行时发现结果提供全部工具，可信服务统一预批准不改变这些身份与业务授权规则。修改配置和源码不代表已发布或完成真实业务验证。
 
 新机器人的数字关联保存在独立 `naruto_login.qq_robot_bindings`，新用户保存在已有 `naruto_login.users`，绑定码摘要保存在 `naruto_login.qq_robot_binding_codes`。新流程不读写或自动迁移旧 `qq_number_bindings`、`qq_number_binding_requests`、官方 `qq_bindings` 或 `qq_binding_challenges`；旧接口与提醒逻辑保持原样。数据库失败时新表事务整体回滚。
 
