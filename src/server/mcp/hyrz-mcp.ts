@@ -8,6 +8,7 @@ import type { Config } from '../config.js';
 import type { Dependencies } from '../app.js';
 import { ApiError } from '../errors.js';
 import { QrTaskResultService } from './qr-task-result.js';
+import { createHyrzSkillResources, HYRZ_SKILL_URI } from './skills.js';
 import { logBackend } from '../logging.js';
 import { loginTypes } from '../../shared/login-types.js';
 import { mainTasks, parseUserOptions, secretRealmModes } from '../../shared/user-options.js';
@@ -100,7 +101,8 @@ export function createHyrzMcpHandler(config: Config, dependencies: McpDependenci
     };
     server = new MCPServer({ id: 'hyrz', name: 'hyrz', version: '1.0.0', legacy: 'stateless', tools,
       description: '忍者日常 QQ 号绑定与登录二维码申请。',
-      instructions: '仅供可信机器人后台调用。QQ 号必须来自可信消息发送者。用户发送网站绑定码时，bind_qq 必须携带 bindingCode，将该 QQ 绑定到码所属网站账号；失败不得省略代码重试注册。无代码的明确注册绑定请求仍可创建或复用账号。qq_to_userid 只查询已有绑定。申请和查询使用返回的 userId，不要把数字 QQ 号或 QQ openid 当作 userId。二维码流程只需提交一次 request_qrcode，再调用一次 get_qrcode_status；获取工具内部最多等待2分钟，未出码返回 QR_TIMEOUT，不要循环调用或自动重复提交。',
+      resources: createHyrzSkillResources(),
+      instructions: `使用本服务前，先列出 hyrz 的 MCP 资源，读取 ${HYRZ_SKILL_URI}，并遵循其中的业务流程和身份授权要求。`,
       toolResult: { modelOutput: false, transform: ({ output, result }) => {
         if (output && typeof output === 'object' && 'status' in output && output.status === 'error') return { ...result, isError: true };
         return result;

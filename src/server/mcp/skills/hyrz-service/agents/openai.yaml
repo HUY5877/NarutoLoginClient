@@ -1,0 +1,6 @@
+interface:
+  display_name: "火影忍者项目业务"
+  short_description: "识别火影项目的群提醒、个人QQ绑定和扫码需求，按网站与MCP现有流程处理"
+  default_prompt: "使用 $hyrz-service 帮我处理火影忍者项目的 QQ 群提醒、账号绑定或游戏扫码请求。"
+policy:
+  allow_implicit_invocation: true

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { readFile } from 'node:fs/promises';
 import { test, type TestContext } from 'node:test';
 import { createRequire } from 'node:module';
 import { createApp, type Dependencies } from '../src/server/app.js';
@@ -96,7 +97,8 @@ async function rpc(base: string, method: string, params: Record<string, unknown>
   } } : {};
   return fetch(`${base}/api/mcp`, { method: 'POST', headers: {
     'Content-Type': 'application/json', Accept: 'application/json, text/event-stream',
-    'Mcp-Method': method, ...(typeof params.name === 'string' ? { 'Mcp-Name': params.name } : {}),
+    'Mcp-Method': method, ...(typeof params.name === 'string' ? { 'Mcp-Name': params.name }
+      : typeof params.uri === 'string' ? { 'Mcp-Name': params.uri } : {}),
     Authorization: `Bearer ${secret}`, 'MCP-Protocol-Version': '2026-07-28', ...headers,
   }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params: { ...params, ...envelope } }) });
 }
@@ -110,6 +112,66 @@ async function call(base: string, name: string, args: unknown, headers: Record<s
   // Mastra advertises legacy union outputs as object-shaped {result: ...} schemas.
   return output.result ?? output;
 }
+
+test('hyrz skill通过新旧MCP资源读取，正文来自服务端技能目录', async t => {
+  const base = await fixture(t);
+  const uri = 'skill://hyrz-service/SKILL.md';
+  for (const version of ['2026-07-28', '2025-11-25']) {
+    const headers = { 'MCP-Protocol-Version': version };
+    const listed = await payload(await rpc(base, 'resources/list', {}, headers));
+    assert(Array.isArray(listed.result?.resources), JSON.stringify(listed));
+    const skill = listed.result.resources.find((resource: { uri: string }) => resource.uri === uri);
+    assert(skill, 'hyrz skill must be discoverable without a local installation');
+    assert.equal(skill.name, 'hyrz-service');
+    assert.equal(skill.mimeType, 'text/markdown');
+    const response = await rpc(base, 'resources/read', { uri }, headers);
+    const body = await payload(response);
+    assert.equal(response.status, 200, JSON.stringify(body));
+    assert.equal(body.result.contents.length, 1);
+    assert.equal(body.result.contents[0].uri, uri);
+    assert.equal(body.result.contents[0].mimeType, 'text/markdown');
+    assert.equal(body.result.contents[0].text,
+      await readFile(new URL('../src/server/mcp/skills/hyrz-service/SKILL.md', import.meta.url), 'utf8'));
+    assert.match(body.result.contents[0].text, /name: hyrz-service/);
+    assert.match(body.result.contents[0].text, /get_qrcode_status/);
+    assert.doesNotMatch(body.result.contents[0].text, /C:\/Users\/|C:\\Users\\/);
+  }
+});
+
+test('hyrz skill在初始化中仅提示先读资源，保留五个业务工具', async t => {
+  const base = await fixture(t);
+  const initialized = await payload(await rpc(base, 'initialize', { protocolVersion: '2025-11-25', capabilities: {},
+    clientInfo: { name: 'skill-fixture', version: '1.0.0' } }, { 'MCP-Protocol-Version': '2025-11-25' }));
+  const instructions = initialized.result?.instructions;
+  assert.equal(typeof instructions, 'string');
+  assert.match(instructions, /skill:\/\/hyrz-service\/SKILL\.md/);
+  assert.match(instructions, /hyrz/);
+  assert(instructions.length <= 160, 'business workflow belongs in SKILL.md, not the server instructions');
+  assert(initialized.result.capabilities.resources);
+  const catalog = await payload(await rpc(base, 'tools/list'));
+  assert.equal(catalog.result.tools.length, 5, 'mounting a skill must not add a business or read-skill tool');
+});
+
+test('hyrz skill资源仍需后台认证并拒绝跨站读取', async t => {
+  const base = await fixture(t);
+  for (const [method, params] of [['resources/list', {}], ['resources/read', { uri: 'skill://hyrz-service/SKILL.md' }]] as const) {
+    assert.equal((await rpc(base, method, params, { Authorization: '' })).status, 401);
+    assert.equal((await rpc(base, method, params, { Authorization: 'Bearer wrong' })).status, 401);
+    assert.equal((await rpc(base, method, params, { Origin: 'https://untrusted.example' })).status, 403);
+  }
+  const disabled = await fixture(t, dependencies(), loadConfig({}));
+  assert.equal((await rpc(disabled, 'resources/read', { uri: 'skill://hyrz-service/SKILL.md' })).status, 503);
+});
+
+test('hyrz skill仅读取已挂载的固定资源，不暴露其他文件', async t => {
+  const base = await fixture(t);
+  for (const uri of ['skill://hyrz-service/../config.ts', 'file:///etc/passwd', 'skill://hyrz-service/agents/openai.yaml']) {
+    const body = await payload(await rpc(base, 'resources/read', { uri }));
+    assert.equal(typeof body.error?.code, 'number', 'unmounted resources must return a protocol error');
+    assert.equal(body.result, undefined);
+    assert.doesNotMatch(JSON.stringify(body), /name: hyrz-service|HYRZ_MCP_TOKEN=/);
+  }
+});
 
 test('hyrz 未配置时关闭，网站健康接口仍可用', async t => {
   const base = await fixture(t, dependencies(), loadConfig({}));

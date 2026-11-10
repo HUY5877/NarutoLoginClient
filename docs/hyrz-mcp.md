@@ -10,6 +10,20 @@ MCP 相关后端代码集中在 `src/server/mcp/`：
 - `mcp-qq-bindings.ts`：数字 QQ 绑定服务及旧绑定链接兼容。
 - `qq-robot-bindings.ts`：机器人数字 QQ 绑定、网站绑定码及数据访问。
 - `qr-task-result.ts`：等待二维码结果、检查任务归属与时效、返回 OSS 临时链接。
+- `skills.ts`：加载并挂载服务端业务技能资源。
+- `skills/hyrz-service/SKILL.md`：供 MCP 客户端按需读取的业务流程和身份授权说明。
+
+## 服务端业务技能
+
+业务技能随服务保存在 `src/server/mcp/skills/hyrz-service/`，客户端无需在本机安装。当前使用的 `@mastra/mcp 2.8.0` 为已核实的稳定版本，通过其标准资源接口挂载：
+
+- `resources/list` 列出 `skill://hyrz-service/SKILL.md`。
+- `resources/read` 读取该 URI，返回 `text/markdown` 正文。
+- Server instructions 只提醒先列出 `hyrz` 资源、读取这份 skill，并按其中业务与身份要求操作。
+
+五个业务工具保持不变，没有增加 `read_skill` 工具。资源读取与工具共用现有后台认证和来源检查，只开放这份 Markdown，不对外提供任意本地文件或 `agents/openai.yaml`。技能中的流程说明不替代服务端鉴权，也不代表工具已经执行成功。
+
+启动 MCPServer 时读取并缓存技能；修改内容后需要重新启动或发布服务。构建会将整个技能目录复制到 `src/server/dist/skills/`，Vercel 函数则通过 `includeFiles` 携带源码技能目录，以兼容源码启动、独立构建产物和函数入口。这里使用标准 MCP resources，不宣称实现额外的 `skills/list` 扩展。
 
 ## 接入与配置
 
