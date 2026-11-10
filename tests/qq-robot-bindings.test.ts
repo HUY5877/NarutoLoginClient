@@ -2,8 +2,8 @@ import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { test, type TestContext } from 'node:test';
-import { McpQqBindingService, PgMcpQqBindingStore } from '../src/server/mcp-qq-bindings.js';
-import { PgQqRobotBindingStore } from '../src/server/qq-robot-bindings.js';
+import { McpQqBindingService, PgMcpQqBindingStore } from '../src/server/mcp/mcp-qq-bindings.js';
+import { PgQqRobotBindingStore } from '../src/server/mcp/qq-robot-bindings.js';
 import { ApiError } from '../src/server/errors.js';
 
 const { PGlite } = createRequire(new URL('../src/server/package.json', import.meta.url))('@electric-sql/pglite') as

@@ -7,7 +7,7 @@ import type { LoginEvent, LoginEventStore } from '../src/server/database.js';
 import { LoginEventService } from '../src/server/login-events.js';
 import { DEFAULT_USER_OPTIONS } from '../src/shared/user-options.js';
 import type { Task } from '../src/server/queue.js';
-import { QrTaskResultService } from '../src/server/qr-task-result.js';
+import { QrTaskResultService } from '../src/server/mcp/qr-task-result.js';
 import { createObjectReader, type ObjectReader } from '../src/server/storage.js';
 
 const userId = '123e4567-e89b-42d3-a456-426614174001';

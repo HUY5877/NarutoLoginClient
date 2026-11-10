@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
-import type { Config } from './config.js';
-import { ApiError } from './errors.js';
+import type { Config } from '../config.js';
+import { ApiError } from '../errors.js';
 
 interface QueryResult { rows: Record<string, unknown>[] }
 export interface QqRobotBindingClient {

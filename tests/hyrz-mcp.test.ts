@@ -5,8 +5,8 @@ import { createRequire } from 'node:module';
 import { createApp, type Dependencies } from '../src/server/app.js';
 import { loadConfig } from '../src/server/config.js';
 import { ApiError } from '../src/server/errors.js';
-import { McpQqBindingService, PgMcpQqBindingStore, type McpQqBindingPool } from '../src/server/mcp-qq-bindings.js';
-import { PgQqRobotBindingStore } from '../src/server/qq-robot-bindings.js';
+import { McpQqBindingService, PgMcpQqBindingStore, type McpQqBindingPool } from '../src/server/mcp/mcp-qq-bindings.js';
+import { PgQqRobotBindingStore } from '../src/server/mcp/qq-robot-bindings.js';
 
 const userId = '10000000-0000-4000-8000-000000000001';
 const otherUserId = '10000000-0000-4000-8000-000000000002';

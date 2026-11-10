@@ -1,7 +1,7 @@
-import type { LoginEventService } from './login-events.js';
-import { ApiError } from './errors.js';
-import type { Task } from './queue.js';
-import type { ObjectReader } from './storage.js';
+import type { LoginEventService } from '../login-events.js';
+import { ApiError } from '../errors.js';
+import type { Task } from '../queue.js';
+import type { ObjectReader } from '../storage.js';
 
 export type QrTaskResult =
   | { status: 'running'; taskId: string; pollAfterMs: number }

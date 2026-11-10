@@ -19,7 +19,7 @@ import { QqCaptureService } from './qq-captures.js';
 import { QqBindingService } from './qq-binding.js';
 import { QqGroupDiscoveryService } from './qq-group-discovery.js';
 import { ModelChannelService } from './model-channels.js';
-import { McpQqBindingService } from './mcp-qq-bindings.js';
+import { McpQqBindingService } from './mcp/mcp-qq-bindings.js';
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const serverRoot = existsSync(resolve(moduleDir, 'package.json')) ? moduleDir : resolve(moduleDir, '..');

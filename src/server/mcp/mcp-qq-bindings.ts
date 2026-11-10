@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
-import type { Config } from './config.js';
-import { ApiError } from './errors.js';
+import type { Config } from '../config.js';
+import { ApiError } from '../errors.js';
 import { QqRobotBindingService, type QqRobotBindingStore, type QqRobotBindingStatus } from './qq-robot-bindings.js';
 export type { QqRobotBindingStatus as McpQqBindingStatus } from './qq-robot-bindings.js';
 

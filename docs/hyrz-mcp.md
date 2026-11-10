@@ -2,6 +2,15 @@
 
 在网站同一个服务提供 `POST /api/mcp`，名称为 `hyrz`。使用原生 TypeScript ESM、Mastra MCP 2.8.0、Core 1.82.0 和 MCP `2026-07-28`，消息格式为 JSON-RPC 2.0。Node.js 最低版本为 22.13。旧客户端的初始化、工具发现与调用通过 Mastra 的无会话兼容模式支持。
 
+## 代码目录
+
+MCP 相关后端代码集中在 `src/server/mcp/`：
+
+- `hyrz-mcp.ts`：MCP HTTP 入口、认证和工具注册。
+- `mcp-qq-bindings.ts`：数字 QQ 绑定服务及旧绑定链接兼容。
+- `qq-robot-bindings.ts`：机器人数字 QQ 绑定、网站绑定码及数据访问。
+- `qr-task-result.ts`：等待二维码结果、检查任务归属与时效、返回 OSS 临时链接。
+
 ## 接入与配置
 
 该接口使用一个共享 Token，供可信 MCP 客户端或机器人后台使用。服务器比较请求中的 Token 与配置是否一致，不需要额外的 MCP 登录流程。持有 Token 的调用方有权选择网站 `userId` 执行业务，所以机器人后台仍需从可信消息上下文识别用户，不能让普通用户任意替换他人的身份。QQ 号、用户 ID、任务 ID 都不是认证凭据。

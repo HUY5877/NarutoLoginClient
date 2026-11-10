@@ -17,8 +17,8 @@ import type { QqAuthorizationService } from './qq-authorizations.js';
 import { validateQqJson } from './qq-authorization-data.js';
 import type { QqBindingService } from './qq-binding.js';
 import type { ModelChannelService } from './model-channels.js';
-import type { McpQqBindingService } from './mcp-qq-bindings.js';
-import { createHyrzMcpHandler } from './hyrz-mcp.js';
+import type { McpQqBindingService } from './mcp/mcp-qq-bindings.js';
+import { createHyrzMcpHandler } from './mcp/hyrz-mcp.js';
 
 export interface Dependencies {
   events: Pick<LoginEventService, 'create' | 'getForUser' | 'getActive' | 'recordStatus'> & Partial<Pick<LoginEventService, 'refresh'>>;

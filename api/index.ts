@@ -12,7 +12,7 @@ import { QqCaptureService } from '../src/server/qq-captures.js';
 import { QqBindingService } from '../src/server/qq-binding.js';
 import { QqGroupDiscoveryService } from '../src/server/qq-group-discovery.js';
 import { ModelChannelService } from '../src/server/model-channels.js';
-import { McpQqBindingService } from '../src/server/mcp-qq-bindings.js';
+import { McpQqBindingService } from '../src/server/mcp/mcp-qq-bindings.js';
 
 const config = await loadRuntimeConfig();
 const store = config.databaseUrl ? new PgAuthStore(config.databaseUrl, config.timeoutMs) : undefined;

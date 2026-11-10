@@ -29,13 +29,13 @@
 ## Task 1：直接绑定服务
 
 - [x] 在 `tests/mcp-qq-bindings.test.ts` 先增加失败用例。
-- [x] 在 `src/server/mcp-qq-bindings.ts` 增加 store/service `bind(qq)`。
+- [x] 在 `src/server/mcp/mcp-qq-bindings.ts` 增加 store/service `bind(qq)`。
 - [x] 跑服务测试，验证幂等、回滚、旧关联、停用和非法输入（PGlite 连接串行化，不等同于真实 PostgreSQL 多连接锁竞争测试）。
 
 ## Task 2：MCP 接口和集成
 
 - [x] 先更新 `tests/hyrz-mcp.test.ts`，验证无 Cookie 首次与重复绑定。
-- [x] 在 `src/server/hyrz-mcp.ts` 返回 `{qq,userId}` 并更新 `src/server/app.ts` 依赖类型。
+- [x] 在 `src/server/mcp/hyrz-mcp.ts` 返回 `{qq,userId}` 并更新 `src/server/app.ts` 依赖类型。
 - [x] 更新文档、相关 mock，跑相关测试、类型检查和构建。
 - [x] 独立代码审查通过；提交并推送目标为 `test`。
 
