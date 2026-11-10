@@ -38,6 +38,7 @@ function dependencies() {
       resolveRobot: async (qq: string) => ({ qq, userId }),
       unbindRobot: async (id: string) => ({ userId: id, status: 'unbound' }),
       assertActiveUser: async () => {},
+      assertRobotBoundUser: async () => {},
     },
   } as unknown as Dependencies;
 }
@@ -56,14 +57,14 @@ async function fixture(t: TestContext, deps = dependencies(), appConfig = config
   return `http://127.0.0.1:${address.port}`;
 }
 
-test('后台直接绑定不需要网站Cookie、网站地址或确认链接', async t => {
+test('凭网站码绑定不需要额外网站Cookie、网站地址或确认链接', async t => {
   const deps = dependencies();
   const received: string[] = [];
   deps.mcpBindings!.bind = async qq => { received.push(qq); return { qq, userId }; };
   deps.mcpBindings!.create = async () => { throw new Error('不能创建待确认链接'); };
   deps.auth.getUser = async () => { throw new Error('MCP绑定不能要求网站登录'); };
   const base = await fixture(t, deps, loadConfig({ HYRZ_MCP_TOKEN: secret }));
-  const results = await Promise.all(Array.from({ length: 3 }, () => call(base, 'bind_qq', { qq: '123456789' })));
+  const results = await Promise.all(Array.from({ length: 3 }, () => call(base, 'bind_qq', { qq: '123456789', bindingCode })));
   assert.deepEqual(received, ['123456789', '123456789', '123456789']);
   assert.deepEqual(results, Array.from({ length: 3 }, () => ({ qq: '123456789', userId })));
 });
@@ -73,7 +74,7 @@ test('直接绑定在新旧MCP协议和反代连接下返回同一用户而非�
   const base = await fixture(t, deps, loadConfig({ HYRZ_MCP_TOKEN: secret }), true);
   for (const version of ['2026-07-28', '2025-11-25']) {
     const results = await Promise.all(['https', 'http'].map(protocol =>
-      call(base, 'bind_qq', { qq: '123456789' }, { 'X-Forwarded-Proto': protocol,
+      call(base, 'bind_qq', { qq: '123456789', bindingCode }, { 'X-Forwarded-Proto': protocol,
         'X-Forwarded-Host': 'untrusted.example', 'MCP-Protocol-Version': version })));
     assert.deepEqual(results, [{ qq: '123456789', userId }, { qq: '123456789', userId }]);
   }
@@ -113,6 +114,19 @@ async function call(base: string, name: string, args: unknown, headers: Record<s
   return output.result ?? output;
 }
 
+test('MCP无码绑定在新旧协议下均被拒绝，不提交到绑定服务', async t => {
+  const deps = dependencies(); let submitted = 0;
+  deps.mcpBindings!.bind = async qq => { submitted++; return { qq, userId }; };
+  const base = await fixture(t, deps);
+  for (const version of ['2026-07-28', '2025-11-25']) {
+    const response = await payload(await rpc(base, 'tools/call', {
+      name: 'bind_qq', arguments: { qq: '123456789' },
+    }, { 'MCP-Protocol-Version': version }));
+    assert.equal(response.result.isError, true);
+  }
+  assert.equal(submitted, 0);
+});
+
 test('hyrz skill通过新旧MCP资源读取，正文来自服务端技能目录', async t => {
   const base = await fixture(t);
   const uri = 'skill://hyrz-service/SKILL.md';
@@ -136,7 +150,7 @@ test('hyrz skill通过新旧MCP资源读取，正文来自服务端技能目录'
     assert.match(body.result.contents[0].text, /get_qrcode_status/);
     // 群聊本人扫码流程必须经远端资源下发，避免客户端读到旧的仅凭码绑定规则。
     assert.match(body.result.contents[0].text, /群聊或私聊[^\n]*明确[^\n]*扫码[^\n]*授权/);
-    assert.match(body.result.contents[0].text, /仅当[^\n]*MCP_QQ_NOT_BOUND[^\n]*bind_qq/);
+    assert.match(body.result.contents[0].text, /MCP_QQ_NOT_BOUND[^\n]*网站[^\n]*绑定/);
     assert.match(body.result.contents[0].text, /可信 QQ 转发层[^\n]*私发[^\n]*实际[^\n]*发送结果/);
     assert.match(body.result.contents[0].text, /sandbox_mode="read-only"[^\n]*approval_policy="never"/);
     assert.doesNotMatch(body.result.contents[0].text, /提示本人转到私聊继续|suggest|on-request/);
@@ -213,6 +227,7 @@ test('hyrz 拒绝非允许来源且通过真实Mastra列出全部五个工具', 
   const bindingTool = body.result.tools.find((tool: { name: string }) => tool.name === 'bind_qq');
   assert(JSON.stringify(bindingTool.outputSchema).includes('userId'));
   assert(!JSON.stringify(bindingTool.outputSchema).includes('bindingUrl'));
+  assert(bindingTool.inputSchema.required.includes('bindingCode'));
   assert.equal(response.headers.get('cache-control'), 'no-store');
 });
 
@@ -229,7 +244,7 @@ test('hyrz 为现有MCP客户端保留无会话初始化和工具调用', async 
 
 test('hyrz QQ绑定直接返回用户ID，解析和解绑由专用工具执行', async t => {
   const base = await fixture(t);
-  const binding = await call(base, 'bind_qq', { qq: '123456789' });
+  const binding = await call(base, 'bind_qq', { qq: '123456789', bindingCode });
   assert.deepEqual(binding, { qq: '123456789', userId });
   assert.deepEqual(await call(base, 'qq_to_userid', { qq: '123456789' }), { qq: '123456789', userId });
   assert.deepEqual(await call(base, 'unbind_qq', { userId }), { userId, status: 'unbound' });
@@ -243,7 +258,7 @@ test('直接绑定拒绝未认证调用及非法QQ，不向绑定服务提交', 
     assert.equal((await rpc(base, 'tools/call', { name: 'bind_qq', arguments: { qq: '123456789' } }, { Authorization })).status, 401);
   }
   for (const args of [{ qq: '0123' }, { qq: '123\n' }, { qq: 123 }, { qq: '123', userId }]) {
-    const result = await payload(await rpc(base, 'tools/call', { name: 'bind_qq', arguments: args }));
+    const result = await payload(await rpc(base, 'tools/call', { name: 'bind_qq', arguments: { bindingCode, ...args } }));
     assert.equal(result.result.isError, true);
   }
   assert.equal(submitted, 0);
@@ -257,10 +272,10 @@ test('直接绑定保留停用错误并隐藏未知底层异常', async t => {
     throw new Error('private-database-details');
   };
   const base = await fixture(t, deps);
-  const inactive = await call(base, 'bind_qq', { qq: '123456789' });
+  const inactive = await call(base, 'bind_qq', { qq: '123456789', bindingCode });
   assert.equal(inactive.status, 'error'); assert.equal(inactive.code, 'MCP_USER_INACTIVE');
   failSafely = false;
-  const unknown = await call(base, 'bind_qq', { qq: '123456789' });
+  const unknown = await call(base, 'bind_qq', { qq: '123456789', bindingCode });
   assert.equal(unknown.status, 'error'); assert.equal(unknown.code, 'HYRZ_TOOL_FAILED');
   assert(!JSON.stringify(unknown).includes('private-database-details'));
 });
@@ -277,15 +292,16 @@ test('网站绑定码透传给MCP绑定服务，错误绑定码不会回退无�
   assert.equal(failure.status, 'error'); assert.equal(failure.code, 'MCP_QQ_BINDING_CODE_EXPIRED');
   assert.deepEqual(submitted, [['123456789', bindingCode]]);
   assert(!JSON.stringify(failure).includes(bindingCode));
-  assert.deepEqual(await call(base, 'bind_qq', { qq: '123456789' }), { qq: '123456789', userId });
-  assert.deepEqual(submitted, [['123456789', bindingCode], ['123456789', undefined]]);
+  const missing = await payload(await rpc(base, 'tools/call', { name: 'bind_qq', arguments: { qq: '123456789' } }));
+  assert.equal(missing.result.isError, true);
+  assert.deepEqual(submitted, [['123456789', bindingCode]]);
 });
 
 test('MCP拒绝格式错误的绑定码且不调用绑定服务', async t => {
   const deps = dependencies(); let submitted = false;
   deps.mcpBindings!.bind = async qq => { submitted = true; return { qq, userId }; };
   const base = await fixture(t, deps);
-  for (const code of ['', 'ABCD1234', null, 123, `${bindingCode}\n`]) {
+  for (const code of [undefined, '', 'ABCD1234', null, 123, `${bindingCode}\n`]) {
     const response = await payload(await rpc(base, 'tools/call', {
       name: 'bind_qq', arguments: { qq: '123456789', bindingCode: code },
     }));
@@ -366,7 +382,7 @@ test('hyrz 拒绝带换行的申请ID，不向任务服务提交', async t => {
 
 test('hyrz 用户ID工具每次核对有效账号，拒绝停用后继续调用且错误不泄漏底层内容', async t => {
   const deps = dependencies();
-  deps.mcpBindings!.assertActiveUser = async () => { throw new ApiError(403, '账号不可用。', 'ACCOUNT_DISABLED'); };
+  deps.mcpBindings!.assertRobotBoundUser = async () => { throw new ApiError(403, '账号不可用。', 'ACCOUNT_DISABLED'); };
   const base = await fixture(t, deps);
   const result = await call(base, 'request_qrcode', { userId, requestId, loginType: 'android_qq' });
   assert.equal(result.status, 'error'); assert.equal(result.code, 'ACCOUNT_DISABLED');
@@ -400,7 +416,7 @@ test('hyrz 接受大写UUID但以同一规范用户和任务身份查询', async
   const deps = dependencies();
   deps.storage.read = async () => Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   deps.storage.signUrl = async () => 'https://fixture.example/qr.png';
-  deps.mcpBindings!.assertActiveUser = async owner => { assert.equal(owner, id); };
+  deps.mcpBindings!.assertRobotBoundUser = async owner => { assert.equal(owner, id); };
   deps.events.getForUser = async (requested, owner) => { assert.equal(requested, id); assert.equal(owner, id); return { ...task, id } as never; };
   const base = await fixture(t, deps);
   assert.equal((await call(base, 'get_qrcode_status', { userId: id.toUpperCase(), taskId: id.toUpperCase() })).status, 'success');
@@ -459,7 +475,7 @@ test('数字QQ确认必须使用网站登录身份和明确确认，不依赖MCP
   assert.deepEqual(confirmed, [userId]);
 });
 
-test('真实MCP无需网页登录直接建用户并绑定，重复调用复用且可继续解析和申请二维码', async t => {
+test('真实MCP拒绝未绑定及只有其他机器人绑定的账号申请和取码，网站凭码绑定后才允许', async t => {
   const requireServer = createRequire(new URL('../src/server/package.json', import.meta.url));
   const { PGlite } = requireServer('@electric-sql/pglite') as typeof import('../src/server/node_modules/@electric-sql/pglite/dist/index.js');
   const db = new PGlite();
@@ -476,28 +492,45 @@ test('真实MCP无需网页登录直接建用户并绑定，重复调用复用�
   const store = new PgMcpQqBindingStore(appConfig, { beforeInitialize: async () => {}, pool });
   const robotStore = new PgQqRobotBindingStore(appConfig, { beforeInitialize: async () => {}, pool });
   const bindingService = new McpQqBindingService(appConfig, { beforeInitialize: async () => {}, store, robotStore });
-  const deps = dependencies();
+  const deps = dependencies(); let created = 0;
+  deps.events.create = async () => { created++; return task as never; };
   deps.mcpBindings = bindingService;
   deps.storage.read = async () => Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   deps.storage.signUrl = async () => 'https://fixture-bucket.oss-cn-shanghai.aliyuncs.com/login/qr.png?fixture=signed';
   const base = await fixture(t, deps, appConfig);
   t.after(async () => { await bindingService.close(); await db.close(); });
-  const bound = await call(base, 'bind_qq', { qq: '123456789' });
-  assert.deepEqual(Object.keys(bound).sort(), ['qq', 'userId']);
-  assert.match(bound.userId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
-  assert.deepEqual(await call(base, 'bind_qq', { qq: '123456789' }), bound);
+  await db.query(`INSERT INTO naruto_login.users(id, username, username_key, password, is_invalid)
+    VALUES ($1, 'website-user', 'website-user', 'fixture-password', false)`, [userId]);
+  assert.equal((await call(base, 'qq_to_userid', { qq: '123456789' })).code, 'MCP_QQ_NOT_BOUND');
+  for (const legacyOnly of [false, true]) {
+    if (legacyOnly) {
+      await bindingService.confirm(userId, new URL((await bindingService.create('123456789', 'https://site.example')).bindingUrl).hash.slice('#mcp-bind='.length));
+      await db.exec(`CREATE TABLE naruto_login.qq_bindings(user_id uuid PRIMARY KEY, member_openid text);
+        INSERT INTO naruto_login.qq_bindings VALUES ('${userId}', 'other-bot-openid');`);
+    }
+    assert.equal((await call(base, 'request_qrcode', { userId, requestId, loginType: 'ios_wechat' })).code, 'MCP_QQ_NOT_BOUND');
+    assert.equal((await call(base, 'get_qrcode_status', { userId, taskId })).code, 'MCP_QQ_NOT_BOUND');
+    assert.equal(created, 0, `other robot bound: ${legacyOnly}`);
+  }
+  const code = await bindingService.createChallenge(userId);
+  const bound = await call(base, 'bind_qq', { qq: '123456789', bindingCode: code.code });
+  assert.deepEqual(bound, { qq: '123456789', userId });
+  assert.deepEqual(await call(base, 'bind_qq', { qq: '123456789', bindingCode: code.code }), bound);
   assert.equal((await db.query('SELECT * FROM naruto_login.users')).rows.length, 1);
   assert.equal((await db.query('SELECT * FROM naruto_login.qq_robot_bindings')).rows.length, 1);
-  assert.equal((await db.query<{ legacy_table: string | null }>("SELECT to_regclass('naruto_login.qq_number_bindings') AS legacy_table")).rows[0].legacy_table, null);
   const owner = await call(base, 'qq_to_userid', { qq: '123456789' });
   assert.deepEqual(owner, bound);
   const requested = await call(base, 'request_qrcode', { userId: owner.userId, requestId, loginType: 'ios_wechat' });
   const ready = await call(base, 'get_qrcode_status', { userId: owner.userId, taskId: requested.taskId });
+  assert.equal(created, 1);
   assert.equal(ready.status, 'success');
   assert.equal(ready.url, 'https://fixture-bucket.oss-cn-shanghai.aliyuncs.com/login/qr.png?fixture=signed');
   assert(Date.parse(ready.expiresAt) <= Date.now() + 60000);
   await call(base, 'unbind_qq', { userId: owner.userId });
   assert.equal((await call(base, 'qq_to_userid', { qq: '123456789' })).code, 'MCP_QQ_NOT_BOUND');
+  assert.equal((await call(base, 'request_qrcode', { userId, requestId, loginType: 'ios_wechat' })).code, 'MCP_QQ_NOT_BOUND');
+  assert.equal((await call(base, 'get_qrcode_status', { userId, taskId })).code, 'MCP_QQ_NOT_BOUND');
+  assert.equal(created, 1);
 });
 
 test('登录网站发码后MCP立即绑定该账号，替换自动账号且网页无需二次确认', async t => {
@@ -520,9 +553,19 @@ test('登录网站发码后MCP立即绑定该账号，替换自动账号且网�
   const robotStore = new PgQqRobotBindingStore(appConfig, { beforeInitialize: async () => {}, pool });
   const service = new McpQqBindingService(appConfig, { beforeInitialize: async () => {}, store, robotStore });
   const deps = dependencies(); deps.mcpBindings = service;
+  let submissions = 0;
+  deps.events.create = async () => { submissions++; return task as never; };
   const base = await fixture(t, deps, appConfig);
   t.after(async () => { await service.close(); await db.close(); });
-  const auto = await call(base, 'bind_qq', { qq: '123456789' }); assert.notEqual(auto.userId, userId);
+  await service.getStatus(userId);
+  await db.query(`INSERT INTO naruto_login.users(id, username, username_key, password, is_invalid, created_at)
+    VALUES ($1, '0123456789abcdef01234567', '0123456789abcdef01234567', $2, false, $3)`, [otherUserId, 'A'.repeat(43), new Date('2026-11-06T00:00:00Z')]);
+  await db.query('INSERT INTO naruto_login.qq_robot_bindings(user_id, qq_number, bound_at) VALUES ($1, $2, $3)',
+    [otherUserId, '123456789', new Date('2026-11-06T00:00:00Z')]);
+  assert.equal((await call(base, 'qq_to_userid', { qq: '123456789' })).code, 'MCP_QQ_NOT_BOUND');
+  assert.equal((await call(base, 'request_qrcode', { userId: otherUserId, requestId, loginType: 'ios_wechat' })).code, 'MCP_QQ_NOT_BOUND');
+  assert.equal((await call(base, 'get_qrcode_status', { userId: otherUserId, taskId })).code, 'MCP_QQ_NOT_BOUND');
+  assert.equal(submissions, 0);
   const cookie = { Cookie: 'naruto_session=fixture.cookie.signature', 'Content-Type': 'application/json' };
   const response = await fetch(`${base}/api/qq-number-binding/challenge`, { method: 'POST', headers: cookie, body: '{}' });
   assert.equal(response.status, 201); const challenge = await response.json();

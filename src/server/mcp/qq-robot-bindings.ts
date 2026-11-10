@@ -17,13 +17,12 @@ export interface QqRobotBindingStatus {
 }
 export interface QqRobotBindingStore {
   initialize(): Promise<void>;
-  bind(qq: string, now: Date): Promise<{ qq: string; userId: string }>;
   getStatus(userId: string, now: Date): Promise<QqRobotBindingStatus>;
   createChallenge(userId: string, id: string, codeHash: string, now: Date, expiresAt: Date): Promise<void>;
   redeem(qq: string, codeHash: string, now: Date): Promise<{ qq: string; userId: string }>;
   resolve(qq: string): Promise<{ qq: string; userId: string }>;
   unbind(userId: string): Promise<void>;
-  assertActiveUser(userId: string): Promise<void>;
+  assertBoundUser(userId: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -41,7 +40,21 @@ const userPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 const codePattern = /^[A-Za-z0-9_-]{24}$/;
 const validateQq = (qq: string) => { if (!fullMatch(qqPattern, qq)) throw new ApiError(400, 'QQ 号必须是不含前导零的数字字符串。', 'INVALID_QQ_NUMBER'); };
 const validateUser = (userId: string) => { if (!fullMatch(userPattern, userId)) throw new ApiError(400, '网站用户 ID 格式无效。', 'INVALID_USER_ID'); };
-const validateCode = (code: string) => { if (!fullMatch(codePattern, code)) throw new ApiError(400, '绑定码格式无效。', 'INVALID_QQ_BINDING_CODE'); };
+function validateCode(code: unknown): asserts code is string {
+  if (!fullMatch(codePattern, code)) throw new ApiError(400, '请完整提供网站生成的绑定码。', 'INVALID_QQ_BINDING_CODE');
+}
+
+// The removed no-code path created these credentials and the binding in one write.
+// Treat the combined fingerprint conservatively as unverified, unless a website
+// code redemption proves this exact association. Never use it to delete accounts.
+const websiteAssociation = `NOT (
+  u.username ~ '^[a-f0-9]{24}$' AND u.username_key = u.username
+  AND u.password ~ '^[A-Za-z0-9_-]{43}$' AND u.created_at = b.bound_at
+  AND NOT EXISTS (SELECT 1 FROM naruto_login.qq_robot_binding_codes proof
+    WHERE proof.status IN ('confirmed', 'revoked') AND proof.user_id = b.user_id
+      AND proof.qq_number = b.qq_number AND proof.bound_at = b.bound_at)
+)`;
+const notBound = () => new ApiError(404, '请先登录网站生成绑定码，并向 HUY2 发送绑定命令。', 'MCP_QQ_NOT_BOUND');
 
 const schema = `CREATE TABLE IF NOT EXISTS naruto_login.qq_robot_bindings (
   user_id uuid PRIMARY KEY REFERENCES naruto_login.users(id) ON DELETE CASCADE,
@@ -119,27 +132,6 @@ export class PgQqRobotBindingStore implements QqRobotBindingStore {
     const result = await client.query('SELECT id FROM naruto_login.users WHERE id = $1 AND is_invalid = false FOR SHARE', [userId]);
     if (!result.rows.length) throw inactive();
   }
-  async bind(qq: string, now: Date): Promise<{ qq: string; userId: string }> {
-    validateQq(qq);
-    return this.transaction(async client => {
-      await this.lockBindings(client);
-      const existing = (await client.query('SELECT user_id FROM naruto_login.qq_robot_bindings WHERE qq_number = $1', [qq])).rows[0];
-      let userId: string;
-      if (existing) {
-        userId = existing.user_id as string;
-        await this.activeUser(client, userId);
-      } else {
-        userId = randomUUID();
-        // Independent random credentials cannot identify or take over an existing website account.
-        const username = randomBytes(12).toString('hex');
-        const password = randomBytes(32).toString('base64url');
-        await client.query(`INSERT INTO naruto_login.users(id, username, username_key, password, is_invalid, is_admin, created_at)
-          VALUES ($1, $2, $2, $3, false, false, $4)`, [userId, username, password, now]);
-        await client.query('INSERT INTO naruto_login.qq_robot_bindings(user_id, qq_number, bound_at) VALUES ($1, $2, $3)', [userId, qq, now]);
-      }
-      return { qq, userId };
-    });
-  }
   async getStatus(userId: string, now: Date): Promise<QqRobotBindingStatus> {
     return this.transaction(async client => {
       await this.activeUser(client, userId);
@@ -156,7 +148,12 @@ export class PgQqRobotBindingStore implements QqRobotBindingStore {
   async createChallenge(userId: string, id: string, codeHash: string, now: Date, expiresAt: Date): Promise<void> {
     await this.transaction(async client => {
       await this.lockBindings(client); await this.activeUser(client, userId);
-      await client.query('DELETE FROM naruto_login.qq_robot_binding_codes WHERE expires_at <= $1', [now]);
+      // Preserve only the redemption evidence for a current association. Its code
+      // remains expired/revoked and cannot be redeemed, but still proves website binding.
+      await client.query(`DELETE FROM naruto_login.qq_robot_binding_codes c WHERE c.expires_at <= $1
+        AND NOT EXISTS (SELECT 1 FROM naruto_login.qq_robot_bindings b
+          WHERE c.status IN ('confirmed', 'revoked') AND b.user_id = c.user_id
+            AND b.qq_number = c.qq_number AND b.bound_at = c.bound_at)`, [now]);
       await client.query("UPDATE naruto_login.qq_robot_binding_codes SET status = 'revoked' WHERE user_id = $1", [userId]);
       await client.query(`INSERT INTO naruto_login.qq_robot_binding_codes
         (code_hash, challenge_id, user_id, created_at, expires_at, status) VALUES ($1, $2, $3, $4, $5, 'pending')`,
@@ -194,8 +191,9 @@ export class PgQqRobotBindingStore implements QqRobotBindingStore {
   async resolve(qq: string): Promise<{ qq: string; userId: string }> {
     return this.transaction(async client => {
       const row = (await client.query(`SELECT b.user_id FROM naruto_login.qq_robot_bindings b
-        JOIN naruto_login.users u ON u.id = b.user_id WHERE b.qq_number = $1 AND u.is_invalid = false`, [qq])).rows[0];
-      if (!row) throw new ApiError(404, '该 QQ 尚未绑定有效的网站账号。', 'MCP_QQ_NOT_BOUND');
+        JOIN naruto_login.users u ON u.id = b.user_id WHERE b.qq_number = $1 AND u.is_invalid = false
+        AND ${websiteAssociation}`, [qq])).rows[0];
+      if (!row) throw notBound();
       return { qq, userId: row.user_id as string };
     });
   }
@@ -206,8 +204,13 @@ export class PgQqRobotBindingStore implements QqRobotBindingStore {
       await client.query('DELETE FROM naruto_login.qq_robot_bindings WHERE user_id = $1', [userId]);
     });
   }
-  async assertActiveUser(userId: string): Promise<void> {
-    await this.transaction(client => this.activeUser(client, userId));
+  async assertBoundUser(userId: string): Promise<void> {
+    await this.transaction(async client => {
+      await this.activeUser(client, userId);
+      const row = (await client.query(`SELECT b.user_id FROM naruto_login.qq_robot_bindings b
+        JOIN naruto_login.users u ON u.id = b.user_id WHERE b.user_id = $1 AND ${websiteAssociation}`, [userId])).rows[0];
+      if (!row) throw notBound();
+    });
   }
   async close(): Promise<void> {
     if (!this.closing) this.closing = (async () => {
@@ -242,11 +245,8 @@ export class QqRobotBindingService {
   }
   async bind(qq: string, bindingCode?: string): Promise<{ qq: string; userId: string }> {
     validateQq(qq);
-    if (bindingCode !== undefined) {
-      validateCode(bindingCode);
-      return this.run(() => this.store.redeem(qq, digest(bindingCode), new Date(this.now())));
-    }
-    return this.run(() => this.store.bind(qq, new Date(this.now())));
+    validateCode(bindingCode);
+    return this.run(() => this.store.redeem(qq, digest(bindingCode), new Date(this.now())));
   }
   async getStatus(userId: string): Promise<QqRobotBindingStatus> {
     validateUser(userId);
@@ -268,8 +268,8 @@ export class QqRobotBindingService {
     validateUser(userId); const canonicalId = userId.toLowerCase();
     return this.run(async () => { await this.store.unbind(canonicalId); return { userId: canonicalId, status: 'unbound' }; });
   }
-  async assertActiveUser(userId: string): Promise<void> {
-    validateUser(userId); await this.run(() => this.store.assertActiveUser(userId.toLowerCase()));
+  async assertBoundUser(userId: string): Promise<void> {
+    validateUser(userId); await this.run(() => this.store.assertBoundUser(userId.toLowerCase()));
   }
   async close(): Promise<void> {
     if (!this.closing) this.closing = (async () => {

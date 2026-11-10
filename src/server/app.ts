@@ -30,7 +30,7 @@ export interface Dependencies {
   qqAuthorizations?: Pick<QqAuthorizationService, 'upload' | 'list' | 'get' | 'delete'> & Partial<Pick<QqAuthorizationService, 'isConfigured'>>;
   qqBindings?: Pick<QqBindingService, 'getStatus' | 'createChallenge' | 'confirm' | 'unbind' | 'handleWebhook'>;
   modelChannels?: Pick<ModelChannelService, 'list' | 'update' | 'test'>;
-  mcpBindings?: Pick<McpQqBindingService, 'bind' | 'getStatus' | 'createChallenge' | 'resolveRobot' | 'unbindRobot' | 'create' | 'preview' | 'confirm' | 'resolve' | 'unbind' | 'assertActiveUser'>;
+  mcpBindings?: Pick<McpQqBindingService, 'bind' | 'getStatus' | 'createChallenge' | 'resolveRobot' | 'unbindRobot' | 'create' | 'preview' | 'confirm' | 'resolve' | 'unbind' | 'assertActiveUser' | 'assertRobotBoundUser'>;
   now?: () => number;
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

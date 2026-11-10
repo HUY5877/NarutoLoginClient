@@ -45,15 +45,10 @@ export function createHyrzMcpHandler(config: Config, dependencies: McpDependenci
     if (server) return server;
     const tools = {
       bind_qq: createTool({
-        id: 'bind_qq', description: '使用真实消息发送者的数字 QQ 号绑定。用户发送网站登录后生成的绑定码时，传 bindingCode 直接关联该网站账号，无需网页二次确认；代码错误不会自动注册。不传代码时创建或复用普通账号。返回 qq 和 userId；停用账号不会自动恢复。',
-        // Mastra retries invalid optional null values as omitted. Keep null through validation
-        // so it can be rejected explicitly rather than falling back to account registration.
-        inputSchema: z.object({ qq, bindingCode: z.string().length(24).regex(/^[A-Za-z0-9_-]{24}$/).nullable().optional() }).strict(),
+        id: 'bind_qq', description: '使用真实消息发送者的数字 QQ 号绑定。必须提供网站登录后生成的 bindingCode，直接关联该网站账号，无需网页二次确认；未提供或代码错误均拒绝，不创建账号。返回 qq 和 userId；停用账号不会自动恢复。',
+        inputSchema: z.object({ qq, bindingCode: z.string().length(24).regex(/^[A-Za-z0-9_-]{24}$/) }).strict(),
         outputSchema: z.object({ qq: z.string(), userId: uuid }).or(failure),
-        execute: async input => safely(() => {
-          if (input.bindingCode === null) throw new ApiError(400, '绑定码格式无效，请完整复制网页上的绑定命令。', 'INVALID_QQ_BINDING_CODE');
-          return bindings().bind(input.qq, input.bindingCode);
-        }),
+        execute: async input => safely(() => bindings().bind(input.qq, input.bindingCode)),
       }),
       unbind_qq: createTool({
         id: 'unbind_qq', description: '解除指定网站用户的新 QQ 机器人数字绑定。旧数字绑定和官方机器人 OpenID 群提醒绑定保持不变。',
@@ -65,7 +60,7 @@ export function createHyrzMcpHandler(config: Config, dependencies: McpDependenci
         }),
       }),
       qq_to_userid: createTool({
-        id: 'qq_to_userid', description: '查询数字 QQ 号已绑定的有效网站用户 userId，不创建用户。后续二维码工具使用这个 userId；未绑定时先调用 bind_qq。',
+        id: 'qq_to_userid', description: '查询数字 QQ 号已绑定的有效网站用户 userId，不创建用户。后续二维码工具使用这个 userId；未绑定时停止申请，提示先登录网站生成绑定码，并用当前 QQ 向本机器人发送绑定命令。',
         inputSchema: z.object({ qq }).strict(),
         outputSchema: z.object({ qq: z.string(), userId: z.string() }).or(failure),
         execute: async input => safely(() => bindings().resolveRobot(input.qq)),
@@ -77,7 +72,7 @@ export function createHyrzMcpHandler(config: Config, dependencies: McpDependenci
           userOptions, expiresAt: z.string() }).or(failure),
         execute: async input => safely(async () => {
           const userId = input.userId.toLowerCase();
-          await bindings().assertActiveUser(userId);
+          await bindings().assertRobotBoundUser(userId);
           const options = parseUserOptions(input.userOptions);
           if (!options) throw new ApiError(400, '任务设置格式不正确。', 'INVALID_USER_OPTIONS');
           if (input.loginType === 'android_qq' || input.loginType === 'ios_qq') await dependencies.qqCaptures?.initialize?.();
@@ -95,7 +90,7 @@ export function createHyrzMcpHandler(config: Config, dependencies: McpDependenci
         outputSchema: z.object({ status: z.literal('success'), taskId: z.string(), url: z.string(), expiresAt: z.string() }).or(failure),
         execute: async input => safely(async () => {
           const userId = input.userId.toLowerCase();
-          return qr.wait(userId, input.taskId.toLowerCase(), () => bindings().assertActiveUser(userId));
+          return qr.wait(userId, input.taskId.toLowerCase(), () => bindings().assertRobotBoundUser(userId));
         }),
       }),
     };
