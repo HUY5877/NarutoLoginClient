@@ -11,9 +11,10 @@ interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onUnauthorized: () => void;
+  onReturnFocus?: () => void;
 }
 
-export function QqBindingDialog({ userId, open, onOpenChange, onUnauthorized }: Props) {
+export function QqBindingDialog({ userId, open, onOpenChange, onUnauthorized, onReturnFocus }: Props) {
   const binding = useQqBinding(userId, open, onUnauthorized);
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
   useEffect(() => { setCopyState('idle'); }, [userId, open, binding.code]);
@@ -28,10 +29,11 @@ export function QqBindingDialog({ userId, open, onOpenChange, onUnauthorized }: 
   }
 
   return <Dialog open={open} onOpenChange={onOpenChange}>
-    <DialogContent className="auth-dialog max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto p-6 sm:max-w-md sm:p-7">
+    <DialogContent className="auth-dialog max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto p-6 sm:max-w-md sm:p-7"
+      onCloseAutoFocus={event => { if (onReturnFocus) { event.preventDefault(); onReturnFocus(); } }}>
       <DialogHeader className="gap-3 pr-6">
         <DialogTitle className="flex items-center gap-2 text-xl font-semibold">
-          <MessageCircle className="size-5 text-primary" aria-hidden="true" />QQ 机器人绑定
+          <MessageCircle className="size-5 text-primary" aria-hidden="true" />绑定HUY2
         </DialogTitle>
         <DialogDescription className="leading-6">将当前网站账号与自己的数字 QQ 号关联。在群里发送绑定码后自动完成绑定，无需再次确认。</DialogDescription>
       </DialogHeader>

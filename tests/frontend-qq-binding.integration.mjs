@@ -23,6 +23,7 @@ const now = Date.parse('2026-10-26T08:00:00.000Z');
 const boundAt = '2026-10-25T08:00:00.000Z';
 const challengeId = '70000000-0000-4000-8000-000000000001';
 const replacementChallengeId = '70000000-0000-4000-8000-000000000002';
+const officialChallengeId = '80000000-0000-4000-8000-000000000001';
 const user = { id: 'qq-user-one', username: '第一位用户', isAdmin: false };
 const secondUser = { id: 'qq-user-two', username: '第二位用户', isAdmin: false };
 const unbound = () => ({ enabled: true, binding: null, challenge: null });
@@ -42,6 +43,31 @@ async function waitFor(predicate, message) {
   }
 }
 
+async function selectBinding(page, name = '绑定HUY2') {
+  await page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).click();
+  await page.clock.runFor(200);
+  await page.getByRole('menuitem', { name, exact: true }).click();
+  await page.clock.runFor(200);
+}
+
+async function assertFitsViewport(locator) {
+  const layout = await locator.evaluate(element => ({
+    left: element.getBoundingClientRect().left,
+    right: element.getBoundingClientRect().right,
+    width: innerWidth,
+    scrollWidth: element.scrollWidth,
+    clientWidth: element.clientWidth,
+  }));
+  assert.ok(layout.left >= 0 && layout.right <= layout.width, 'binding UI stays inside the viewport');
+  assert.ok(layout.scrollWidth <= layout.clientWidth, 'binding UI has no horizontal overflow');
+}
+
+async function screenshot(page, name) {
+  const directory = path.join(repository, 'test-results/robot-binding-menu');
+  await mkdir(directory, { recursive: true });
+  await page.screenshot({ animations: 'disabled', path: path.join(directory, name) });
+}
+
 test('QQ group binding lifecycle in the real account page', { skip: skip || false, timeout: 120_000 }, async t => {
   const { createServer } = await import(pathToFileURL(require.resolve('vite')).href);
   const { default: react } = await import(pathToFileURL(require.resolve('@vitejs/plugin-react')).href);
@@ -57,12 +83,13 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
     browser = await chromium.launch({ headless: true,
       ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
 
-    async function fixture(width = 1280) {
+    async function fixture(width = 1280, signedInUser = user) {
       const context = await browser.newContext({ viewport: { width, height: 844 }, permissions: ['clipboard-read', 'clipboard-write'] });
       const page = await context.newPage();
       page.setDefaultTimeout(5_000);
       await page.clock.install({ time: new Date(now) });
-      const state = { user, status: unbound(), calls: [], errors: [], read: null, generate: null };
+      const state = { user: signedInUser, status: unbound(), calls: [], errors: [], read: null, generate: null,
+        officialStatus: unbound(), officialCalls: [], officialRead: null };
       page.on('pageerror', error => state.errors.push(error.message));
       await context.route('**/*', async route => {
         const url = new URL(route.request().url());
@@ -94,18 +121,151 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
             return route.fulfill({ status: 204 }).catch(() => {});
           }
         }
+        if (url.pathname === '/api/qq-binding' || url.pathname.startsWith('/api/qq-binding/')) {
+          const body = route.request().postData() ? route.request().postDataJSON() : null;
+          state.officialCalls.push({ method, path: url.pathname, user: state.user?.id, body });
+          if (method === 'GET') {
+            const result = state.officialRead ? await state.officialRead() : { json: structuredClone(state.officialStatus) };
+            return reply(result.json, result.status);
+          }
+          if (method === 'POST' && url.pathname.endsWith('/challenge')) {
+            state.officialStatus.challenge = { id: officialChallengeId, expiresAt: challenge().expiresAt,
+              received: false, senderName: null };
+            return reply({ id: officialChallengeId, code: 'ABCD1234', expiresAt: challenge().expiresAt }, 201);
+          }
+          if (method === 'POST' && url.pathname.endsWith('/confirm')) {
+            if (!state.officialStatus.challenge?.received || body?.challengeId !== officialChallengeId) {
+              return reply({ error: '群内验证尚未完成。' }, 409);
+            }
+            state.officialStatus = { enabled: true, binding: { boundAt }, challenge: null };
+            return reply({ binding: { boundAt } });
+          }
+          if (method === 'DELETE' && url.pathname === '/api/qq-binding') {
+            state.officialStatus = unbound();
+            return route.fulfill({ status: 204 }).catch(() => {});
+          }
+        }
         state.errors.push(`Unexpected API: ${method} ${url.pathname}`);
         return reply({}, 404);
       });
       return { page, context, state,
-        async open() {
+        async open(name = '绑定HUY2') {
           await page.goto(origin, { waitUntil: 'networkidle' });
-          await page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).click();
-          await page.getByRole('dialog', { name: 'QQ 机器人绑定', exact: true }).waitFor();
+          await selectBinding(page, name);
+          await page.getByRole('dialog', { name, exact: true }).waitFor();
         },
+        async select(name = '绑定HUY2') { await selectBinding(page, name); },
         async close() { await context.close(); assert.deepEqual(state.errors, []); },
       };
     }
+
+    await t.test('robot menu separates both bindings and restores focus without mobile overflow', async () => {
+      const f = await fixture(390);
+      try {
+        await f.page.goto(origin, { waitUntil: 'networkidle' });
+        const trigger = f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true });
+        assert.equal(await trigger.count(), 1);
+        await trigger.click();
+        await f.page.clock.runFor(200);
+        const menu = f.page.getByRole('menu');
+        await menu.waitFor();
+        assert.equal(await menu.getByRole('menuitem').count(), 2);
+        await menu.getByRole('menuitem', { name: '绑定HUY2', exact: true }).waitFor();
+        await menu.getByRole('menuitem', { name: '绑定HUY的日常小助手', exact: true }).waitFor();
+        assert.deepEqual(f.state.calls, []);
+        assert.deepEqual(f.state.officialCalls, [], 'opening the menu does not load either binding');
+        await assertFitsViewport(menu);
+        await screenshot(f.page, 'menu-mobile-390.png');
+        await f.page.keyboard.press('Escape');
+        await f.page.clock.runFor(200);
+        await menu.waitFor({ state: 'hidden' });
+        assert.equal(await trigger.evaluate(element => element === document.activeElement), true);
+
+        await f.select();
+        const digital = f.page.getByRole('dialog', { name: '绑定HUY2', exact: true });
+        await digital.getByText('尚未绑定 QQ', { exact: true }).waitFor();
+        await assertFitsViewport(digital);
+        await screenshot(f.page, 'huy2-mobile-390.png');
+        assert.deepEqual(f.state.calls.map(call => [call.method, call.path]), [['GET', '/api/qq-number-binding']]);
+        assert.deepEqual(f.state.officialCalls, []);
+        await f.page.keyboard.press('Escape');
+        await f.page.clock.runFor(200);
+        await digital.waitFor({ state: 'hidden' });
+        assert.equal(await trigger.evaluate(element => element === document.activeElement), true);
+
+        await f.select('绑定HUY的日常小助手');
+        const official = f.page.getByRole('dialog', { name: '绑定HUY的日常小助手', exact: true });
+        await official.getByText('尚未绑定 QQ 群提醒', { exact: true }).waitFor();
+        await assertFitsViewport(official);
+        await screenshot(f.page, 'official-mobile-390.png');
+        assert.deepEqual(f.state.officialCalls.map(call => [call.method, call.path]), [['GET', '/api/qq-binding']]);
+        assert.equal(f.state.calls.length, 1, 'opening the official dialog does not read the digital binding');
+        await f.page.keyboard.press('Escape');
+        await f.page.clock.runFor(200);
+        await official.waitFor({ state: 'hidden' });
+        assert.equal(await trigger.evaluate(element => element === document.activeElement), true);
+        const reads = f.state.calls.length + f.state.officialCalls.length;
+        await f.page.clock.fastForward(30_000);
+        assert.equal(f.state.calls.length + f.state.officialCalls.length, reads);
+        assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      } finally { await f.close(); }
+    });
+
+    await t.test('signed out visitors have no robot binding entry or binding requests', async () => {
+      const f = await fixture(390, null);
+      try {
+        await f.page.goto(origin, { waitUntil: 'networkidle' });
+        await f.page.getByRole('button', { name: '登录 / 注册', exact: true }).waitFor();
+        assert.equal(await f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).count(), 0);
+        assert.deepEqual(f.state.calls, []);
+        assert.deepEqual(f.state.officialCalls, []);
+      } finally { await f.close(); }
+    });
+
+    await t.test('official assistant keeps group verification separate from explicit web confirmation and unbind', async () => {
+      const f = await fixture(390);
+      try {
+        await f.open('绑定HUY的日常小助手');
+        await f.page.getByText('尚未绑定 QQ 群提醒', { exact: true }).waitFor();
+        await f.page.getByRole('button', { name: '生成绑定码', exact: true }).click();
+        await f.page.locator('code').getByText('绑定 ABCD1234', { exact: true }).waitFor();
+        await f.page.getByText('等待群内验证', { exact: true }).waitFor();
+        const confirm = f.page.getByRole('button', { name: '确认绑定', exact: true });
+        assert.equal(await confirm.isDisabled(), true);
+        assert.equal(f.state.officialCalls.filter(call => call.path.endsWith('/confirm')).length, 0);
+        await f.page.getByRole('button', { name: '复制命令', exact: true }).click();
+        assert.equal(await f.page.evaluate(() => navigator.clipboard.readText()), '绑定 ABCD1234');
+
+        f.state.officialStatus.challenge = { ...f.state.officialStatus.challenge, received: true, senderName: '测试群成员' };
+        await f.page.clock.fastForward(3_000);
+        await f.page.getByText('等待网页确认', { exact: true }).waitFor();
+        await f.page.getByText('测试群成员', { exact: true }).waitFor();
+        assert.equal(await confirm.isEnabled(), true);
+        assert.equal(f.state.officialCalls.filter(call => call.path.endsWith('/confirm')).length, 0,
+          'receiving a group message does not bind until the user confirms');
+        assert.equal(await f.page.getByText('已绑定 QQ 群提醒', { exact: true }).count(), 0);
+        await confirm.click();
+        await f.page.getByText('绑定成功', { exact: true }).waitFor();
+        await f.page.getByText('已绑定 QQ 群提醒', { exact: true }).waitFor();
+        assert.equal(await f.page.locator('code').count(), 0);
+        await f.page.getByRole('button', { name: '解除绑定', exact: true }).click();
+        await f.page.getByText('尚未绑定 QQ 群提醒', { exact: true }).waitFor();
+        assert.deepEqual(f.state.officialCalls.filter(call => call.method !== 'GET').map(call => [call.method, call.path, call.body]), [
+          ['POST', '/api/qq-binding/challenge', {}],
+          ['POST', '/api/qq-binding/confirm', { challengeId: officialChallengeId }],
+          ['DELETE', '/api/qq-binding', null],
+        ]);
+        assert.deepEqual(f.state.calls, [], 'official binding never calls the digital binding API');
+        await f.page.keyboard.press('Escape');
+        await f.page.clock.runFor(200);
+        await f.page.getByRole('dialog').waitFor({ state: 'hidden' });
+        const officialReads = f.state.officialCalls.length;
+        await f.select();
+        await f.page.getByText('尚未绑定 QQ', { exact: true }).waitFor();
+        assert.equal(f.state.officialCalls.length, officialReads);
+        assert.deepEqual(f.state.calls.map(call => [call.method, call.path]), [['GET', '/api/qq-number-binding']]);
+      } finally { await f.close(); }
+    });
 
     await t.test('unconfigured bot gives a clear inactive state without issuing mutations or polling', async () => {
       const f = await fixture();
@@ -113,7 +273,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
         f.state.status = { enabled: false, binding: null, challenge: null };
         await f.page.goto(origin, { waitUntil: 'networkidle' });
         assert.deepEqual(f.state.calls, [], 'binding is loaded only when its dialog opens');
-        await f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).click();
+        await f.select();
         await f.page.getByText('暂未开启 QQ 机器人绑定', { exact: true }).waitFor();
         assert.equal(await f.page.getByRole('button', { name: /生成绑定码/ }).count(), 0);
         await f.page.clock.fastForward(30_000);
@@ -173,7 +333,9 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
     await t.test('redemption after the last live poll is observed once at expiry', async () => {
       const f = await fixture();
       try {
-        f.state.status.challenge = challenge(4_000);
+        // Keep this boundary case independent of navigation and menu animation time.
+        await f.page.clock.pauseAt(new Date(now + 60_000));
+        f.state.status.challenge = challenge(64_000);
         await f.open();
         await f.page.getByText('等待机器人完成绑定', { exact: true }).waitFor();
         await f.page.clock.fastForward(2_500);
@@ -214,7 +376,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
         await f.page.keyboard.press('Escape');
         await f.page.getByRole('dialog').waitFor({ state: 'hidden' });
         f.state.read = null;
-        await f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).click();
+        await f.select();
         await f.page.getByText('尚未绑定 QQ', { exact: true }).waitFor();
         oldRead.resolve({ json: { enabled: true, binding: { qq: '123456789', boundAt }, challenge: null } });
         await f.page.waitForTimeout(100);
@@ -225,7 +387,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
         f.state.user = secondUser;
         await f.page.evaluate(() => dispatchEvent(new StorageEvent('storage', { key: 'naruto-login:auth-changed', newValue: 'another-account' })));
         await f.page.getByRole('dialog').waitFor({ state: 'hidden' });
-        await f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).click();
+        await f.select();
         await f.page.getByText('尚未绑定 QQ', { exact: true }).waitFor();
         oldCode.resolve({ status: 201, json: { id: challengeId, code: 'Old12345_AbCd6789-EfGh01', expiresAt: challenge().expiresAt } });
         await f.page.waitForTimeout(100);
@@ -260,7 +422,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
         assert.equal(f.state.calls.filter(call => call.method === 'POST').length, 1);
         await f.page.keyboard.press('Escape');
         f.state.read = async () => ({ status: 401, json: { error: '登录已过期' } });
-        await f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).click();
+        await f.select();
         await f.page.getByRole('dialog').waitFor({ state: 'hidden' });
         await f.page.getByRole('button', { name: '登录 / 注册', exact: true }).waitFor();
         assert.equal(await f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).count(), 0);

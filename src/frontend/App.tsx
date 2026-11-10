@@ -21,7 +21,7 @@ import {
   UserRound,
 } from 'lucide-react';
 import { AuthDialog } from '@/components/auth-dialog';
-import { QqBindingDialog } from '@/components/qq-binding-dialog';
+import { RobotBindingMenu } from '@/components/robot-binding-menu';
 import { McpBindingDialog } from '@/components/mcp-binding-dialog';
 import { AdminMenu } from '@/components/admin-menu';
 import { VillageParticles } from '@/components/village-particles';
@@ -153,7 +153,6 @@ function LoginHelp({ mainTask = 'daily' }: { mainTask?: MainTask }) {
 export default function App() {
   const auth = useAuth();
   const [authOpen, setAuthOpen] = useState(false);
-  const [qqBindingOpen, setQqBindingOpen] = useState(false);
   const [mobileDetailsOpen, setMobileDetailsOpen] = useState(false);
   const [submissionRevision, setSubmissionRevision] = useState<number | null>(null);
   const {
@@ -193,7 +192,6 @@ export default function App() {
     else if (taskRun.error) failTaskRestore();
   }, [auth.user?.id, taskRun.restored, taskRun.task, taskRun.run, taskRun.error, restoreTask, failTaskRestore]);
   useEffect(() => { setSubmissionRevision(null); setMobileDetailsOpen(false); }, [auth.user?.id]);
-  useEffect(() => { setQqBindingOpen(false); }, [auth.user?.id]);
   const awaitingSubmission = submissionRevision !== null && acceptedRevision === submissionRevision;
 
   function openLogin() {
@@ -251,9 +249,7 @@ export default function App() {
           <div className="village-account flex flex-wrap items-center justify-end gap-1.5 sm:gap-3">
             {auth.loading ? <Spinner aria-label="正在读取账户状态" className="size-4" /> : auth.user ? (
               <>
-                <Button variant="outline" size="sm" disabled={auth.busy} onClick={() => setQqBindingOpen(true)} className="gap-1.5 bg-white/50">
-                  <MessageCircle aria-hidden="true" />QQ 机器人绑定
-                </Button>
+                <RobotBindingMenu key={auth.user.id} userId={auth.user.id} busy={auth.busy} onUnauthorized={auth.handleUnauthorized} />
                 {auth.user.isAdmin === true ? <AdminMenu key={auth.user.id} userId={auth.user.id} refreshAuth={auth.refresh}
                   mobileAccount={{ username: auth.user.username, busy: auth.busy, logout: () => { void auth.logout(); } }} /> : (
                   <DropdownMenu modal={false}>
@@ -588,8 +584,6 @@ export default function App() {
         onLogin={openLogin} onUnauthorized={auth.handleUnauthorized} />
       <AuthDialog open={authOpen} onOpenChange={setAuthOpen} busy={auth.busy}
         error={auth.error} clearError={auth.clearError} authenticate={auth.authenticate} />
-      {auth.user && <QqBindingDialog key={auth.user.id} userId={auth.user.id} open={qqBindingOpen}
-        onOpenChange={setQqBindingOpen} onUnauthorized={auth.handleUnauthorized} />}
     </div>
   );
 }
