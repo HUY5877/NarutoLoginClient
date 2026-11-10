@@ -134,6 +134,12 @@ test('hyrz skill通过新旧MCP资源读取，正文来自服务端技能目录'
       await readFile(new URL('../src/server/mcp/skills/hyrz-service/SKILL.md', import.meta.url), 'utf8'));
     assert.match(body.result.contents[0].text, /name: hyrz-service/);
     assert.match(body.result.contents[0].text, /get_qrcode_status/);
+    // 群聊本人扫码流程必须经远端资源下发，避免客户端读到旧的仅凭码绑定规则。
+    assert.match(body.result.contents[0].text, /群聊或私聊[^\n]*明确[^\n]*扫码[^\n]*授权/);
+    assert.match(body.result.contents[0].text, /仅当[^\n]*MCP_QQ_NOT_BOUND[^\n]*bind_qq/);
+    assert.match(body.result.contents[0].text, /可信 QQ 转发层[^\n]*私发[^\n]*实际[^\n]*发送结果/);
+    assert.match(body.result.contents[0].text, /sandbox_mode="read-only"[^\n]*approval_policy="never"/);
+    assert.doesNotMatch(body.result.contents[0].text, /提示本人转到私聊继续|suggest|on-request/);
     assert.doesNotMatch(body.result.contents[0].text, /C:\/Users\/|C:\\Users\\/);
   }
 });
