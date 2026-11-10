@@ -83,8 +83,9 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
     browser = await chromium.launch({ headless: true,
       ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
 
-    async function fixture(width = 1280, signedInUser = user) {
-      const context = await browser.newContext({ viewport: { width, height: 844 }, permissions: ['clipboard-read', 'clipboard-write'] });
+    async function fixture(width = 1280, signedInUser = user, touch = false) {
+      const context = await browser.newContext({ viewport: { width, height: 844 }, hasTouch: touch, isMobile: touch,
+        permissions: ['clipboard-read', 'clipboard-write'] });
       const page = await context.newPage();
       page.setDefaultTimeout(5_000);
       await page.clock.install({ time: new Date(now) });
@@ -158,6 +159,106 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
         async close() { await context.close(); assert.deepEqual(state.errors, []); },
       };
     }
+
+    await t.test('robot help explains each binding without selecting it and keeps keyboard selection available', async () => {
+      const f = await fixture();
+      try {
+        await f.page.goto(origin, { waitUntil: 'networkidle' });
+        const trigger = f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true });
+        await trigger.click();
+        await f.page.clock.runFor(200);
+        const huy2Help = f.page.locator('[data-binding-help="huy2"]');
+        const dailyHelp = f.page.locator('[data-binding-help="daily"]');
+        assert.equal(await huy2Help.count(), 1, 'HUY2 has a question mark for its own explanation');
+        assert.equal(await dailyHelp.count(), 1, 'the official assistant has a separate question mark');
+        const tooltip = f.page.locator('[data-slot="tooltip-content"]:not([data-state="closed"]):visible');
+
+        await huy2Help.hover();
+        await f.page.clock.runFor(400);
+        await tooltip.waitFor();
+        assert.match(await tooltip.innerText(), /群聊或私聊[\s\S]*二维码[\s\S]*私聊/);
+        assert.match(await tooltip.innerText(), /无需回网页确认/);
+        await screenshot(f.page, 'huy2-help-desktop.png');
+        await huy2Help.click();
+        await f.page.clock.runFor(200);
+        await tooltip.waitFor();
+        await f.page.getByRole('menu').waitFor();
+        assert.equal(await f.page.getByRole('dialog').count(), 0, 'clicking help does not open a binding dialog');
+        assert.deepEqual(f.state.calls, []);
+        assert.deepEqual(f.state.officialCalls, []);
+
+        await dailyHelp.hover();
+        await f.page.clock.runFor(400);
+        await tooltip.waitFor();
+        assert.match(await tooltip.innerText(), /二维码准备好[\s\S]*任务结束[\s\S]*群里\s*@你/);
+        assert.match(await tooltip.innerText(), /网页[\s\S]*确认绑定/);
+        await screenshot(f.page, 'daily-help-desktop.png');
+        await dailyHelp.click();
+        await f.page.clock.runFor(200);
+        await tooltip.waitFor();
+        assert.equal(await f.page.getByRole('dialog').count(), 0);
+        assert.deepEqual(f.state.calls, []);
+        assert.deepEqual(f.state.officialCalls, []);
+
+        await f.page.getByRole('menuitem', { name: '绑定HUY的日常小助手', exact: true }).click();
+        const official = f.page.getByRole('dialog', { name: '绑定HUY的日常小助手', exact: true });
+        await official.getByText('尚未绑定 QQ 群提醒', { exact: true }).waitFor();
+        await f.page.keyboard.press('Escape');
+        await f.page.clock.runFor(200);
+        await official.waitFor({ state: 'hidden' });
+
+        await f.page.mouse.move(0, 0);
+        await trigger.focus();
+        await f.page.keyboard.press('ArrowDown');
+        await f.page.clock.runFor(400);
+        const digitalItem = f.page.getByRole('menuitem', { name: '绑定HUY2', exact: true });
+        assert.equal(await digitalItem.evaluate(element => element === document.activeElement), true);
+        await tooltip.waitFor();
+        assert.match(await tooltip.innerText(), /无需回网页确认/);
+        await f.page.keyboard.press('ArrowDown');
+        await f.page.clock.runFor(400);
+        assert.equal(await f.page.getByRole('menuitem', { name: '绑定HUY的日常小助手', exact: true })
+          .evaluate(element => element === document.activeElement), true);
+        assert.match(await tooltip.innerText(), /网页[\s\S]*确认绑定/);
+        await f.page.keyboard.press('ArrowUp');
+        await f.page.clock.runFor(200);
+        assert.equal(await digitalItem.evaluate(element => element === document.activeElement), true);
+        await f.page.keyboard.press('Enter');
+        await f.page.clock.runFor(200);
+        await f.page.getByRole('dialog', { name: '绑定HUY2', exact: true }).getByText('尚未绑定 QQ', { exact: true }).waitFor();
+        assert.deepEqual(f.state.calls.map(call => [call.method, call.path]), [['GET', '/api/qq-number-binding']]);
+        assert.deepEqual(f.state.officialCalls.map(call => [call.method, call.path]), [['GET', '/api/qq-binding']]);
+      } finally { await f.close(); }
+    });
+
+    await t.test('touch question marks reveal readable help inside a 390px viewport without binding', async () => {
+      const f = await fixture(390, user, true);
+      try {
+        await f.page.goto(origin, { waitUntil: 'networkidle' });
+        await f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).tap();
+        await f.page.clock.runFor(200);
+        for (const [robot, explanation] of [['huy2', /无需回网页确认/], ['daily', /网页[\s\S]*确认绑定/]]) {
+          const help = f.page.locator(`[data-binding-help="${robot}"]`);
+          assert.equal(await help.count(), 1, 'each binding has a touch help target');
+          await help.tap();
+          await f.page.clock.runFor(400);
+          const tooltip = f.page.locator('[data-slot="tooltip-content"]:not([data-state="closed"]):visible');
+          await tooltip.waitFor();
+          assert.match(await tooltip.innerText(), explanation);
+          await assertFitsViewport(tooltip);
+          await screenshot(f.page, `${robot}-help-mobile-390.png`);
+          await f.page.getByRole('menu').waitFor();
+          assert.equal(await f.page.getByRole('dialog').count(), 0);
+          assert.deepEqual(f.state.calls, []);
+          assert.deepEqual(f.state.officialCalls, []);
+        }
+        await f.page.getByRole('menuitem', { name: '绑定HUY的日常小助手', exact: true }).tap();
+        await f.page.getByRole('dialog', { name: '绑定HUY的日常小助手', exact: true })
+          .getByText('尚未绑定 QQ 群提醒', { exact: true }).waitFor();
+        assert.deepEqual(f.state.calls, []);
+        assert.deepEqual(f.state.officialCalls.map(call => [call.method, call.path]), [['GET', '/api/qq-binding']]);
+      } finally { await f.close(); }
+    });
 
     await t.test('robot menu separates both bindings and restores focus without mobile overflow', async () => {
       const f = await fixture(390);
