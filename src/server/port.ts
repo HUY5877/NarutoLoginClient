@@ -65,8 +65,10 @@ function isClientWatcher(info: ProcessInfo | undefined, cli: string | undefined)
 async function stopWindowsOwners(port: number): Promise<void> {
   // Return only the listener and current-process ancestor chains. Command lines
   // are used for identification only and must never appear in errors or logs.
+  // Preserve Unicode workspace paths when Node decodes PowerShell's output.
   const script = `
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $owners = @(Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -eq ${port} } | Select-Object -ExpandProperty OwningProcess -Unique)
 $all = @{}
 Get-CimInstance Win32_Process | ForEach-Object {
