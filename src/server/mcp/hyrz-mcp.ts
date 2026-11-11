@@ -96,7 +96,7 @@ export function createHyrzMcpHandler(config: Config, dependencies: McpDependenci
     };
     server = new MCPServer({ id: 'hyrz', name: 'hyrz', version: '1.0.0', legacy: 'stateless', tools,
       description: '忍者日常 QQ 号绑定与登录二维码申请。',
-      resources: createHyrzSkillResources(),
+      resources: createHyrzSkillResources(config.hyrzPublicUrl),
       instructions: `使用本服务前，先列出 hyrz 的 MCP 资源，读取 ${HYRZ_SKILL_URI}，并遵循其中的业务流程和身份授权要求。`,
       toolResult: { modelOutput: false, transform: ({ output, result }) => {
         if (output && typeof output === 'object' && 'status' in output && output.status === 'error') return { ...result, isError: true };

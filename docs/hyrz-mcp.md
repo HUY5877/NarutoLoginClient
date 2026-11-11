@@ -17,13 +17,14 @@ MCP 相关后端代码集中在 `src/server/mcp/`：
 
 业务技能随服务保存在 `src/server/mcp/skills/hyrz-service/`，客户端无需在本机安装。当前使用的 `@mastra/mcp 2.8.0` 为已核实的稳定版本，通过其标准资源接口挂载：
 
-- `resources/list` 列出 `skill://hyrz-service/SKILL.md`。
-- `resources/read` 读取该 URI，返回 `text/markdown` 正文。
-- Server instructions 只提醒先列出 `hyrz` 资源、读取这份 skill，并按其中业务与身份要求操作。
+- `resources/list` 列出 `skill://hyrz-service/SKILL.md` 和 `hyrz://service/site-info`。
+- `resources/read` 读取 `skill://hyrz-service/SKILL.md`，返回 `text/markdown` 正文。
+- `resources/read` 读取 `hyrz://service/site-info`，返回 `application/json`，结构为 `{websiteUrl: 当前服务提供的根网址}`；`websiteUrl` 为稳定字段，站点地址由当前服务运行时提供。
+- Server instructions 提醒先列出 `hyrz` 资源、读取这份 skill，并按其中业务与身份要求操作；向用户提供绑定网站地址前，先从同一个 MCP 读取站点信息资源。
 
-五个业务工具保持不变，没有增加 `read_skill` 工具。资源读取与工具共用现有后台认证和来源检查，只开放这份 Markdown，不对外提供任意本地文件或 `agents/openai.yaml`。技能中的流程说明不替代服务端鉴权，也不代表工具已经执行成功。
+五个业务工具保持不变，没有增加 `read_skill` 工具。资源读取与工具共用现有后台认证和来源检查，只开放这份 Markdown 和当前站点信息 JSON，不对外提供任意本地文件或 `agents/openai.yaml`。静态 skill 不写死测试或正式域名；客户端不能猜测域名或复用其他环境、历史链接，找不到可信地址时不编造网址。QQ、`userId`、`taskId` 和绑定结果不得跨环境混用。技能中的流程说明不替代服务端鉴权，也不代表工具已经执行成功。
 
-启动 MCPServer 时读取并缓存技能；修改内容后需要重新启动或发布服务。构建会将整个技能目录复制到 `src/server/dist/skills/`，Vercel 函数则通过 `includeFiles` 携带源码技能目录，以兼容源码启动、独立构建产物和函数入口。这里使用标准 MCP resources，不宣称实现额外的 `skills/list` 扩展。
+启动 MCPServer 时读取并缓存静态技能；修改内容后需要重新启动或发布服务。站点信息资源由当前服务提供，不从静态技能正文提取地址。`websiteUrl` 优先使用 `HYRZ_PUBLIC_URL` 配置的根网址；未配置时，从当前这次 MCP 请求在服务端可见的协议和 Host 生成，不采用 `X-Forwarded-Host`，也不根据环境名称猜测域名。每次请求独立解析，不能把某次连接的地址缓存成共享实例的站点地址。构建会将整个技能目录复制到 `src/server/dist/skills/`，Vercel 函数则通过 `includeFiles` 携带源码技能目录，以兼容源码启动、独立构建产物和函数入口。这里使用标准 MCP resources，不宣称实现额外的 `skills/list` 扩展。
 
 ## 接入与配置
 
@@ -34,7 +35,7 @@ MCP 相关后端代码集中在 `src/server/mcp/`：
 | 键 | 含义 |
 | --- | --- |
 | `HYRZ_MCP_TOKEN` | 必填；不含空白的共享 Token，服务器和可信客户端配置同一个值，不限制最短长度 |
-| `HYRZ_PUBLIC_URL` | 可选；仅供保留的旧网站绑定链接流程固定域名，HTTPS 根地址，本机开发允许 localhost HTTP。`bind_qq` 凭网站码兑换不使用此配置 |
+| `HYRZ_PUBLIC_URL` | 可选；当前环境对外公开根网址的显式覆盖，供站点信息资源和保留的旧网站绑定链接流程使用。要求 HTTPS，本机开发允许 localhost HTTP；未配置时站点信息使用当前 MCP 请求的协议和 Host。`bind_qq` 凭网站码兑换本身不依赖此配置 |
 
 请求头设置 `Authorization: Bearer <HYRZ_MCP_TOKEN>`。Token 不一致或缺失时返回 401，服务端未配置时返回 503，网站其他功能继续工作。不要把共享 Token 放进仓库、网页、工具参数或日志。`bind_qq` 必须携带本人登录网站后生成的绑定码，在当前环境数据库保存关联；兑换无需额外网站 Cookie 或登录会话；返回 OSS 链接使用网站既有 OSS 配置。仅修改源码不会自动配置 KV 或发布。
 

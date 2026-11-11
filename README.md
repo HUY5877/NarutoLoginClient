@@ -40,11 +40,11 @@
 
 ## hyrz MCP
 
-网站提供 `/api/mcp`，供可信机器人后台调用。支持数字 QQ 号直接绑定、解绑、QQ 号转网站用户 ID，以及按用户 ID 提交和查询二维码申请。原有 openid 群提醒绑定保留。
+网站提供 `/api/mcp`，供可信机器人后台调用。支持凭网站绑定码关联数字 QQ、解绑、QQ 号转网站用户 ID，以及按用户 ID 提交和查询二维码申请。原有 openid 群提醒绑定保留。
 
-`bind_qq({qq,bindingCode?})` 返回 `{qq,userId}`。携带网页登录后生成的绑定码时，关联到该现有账号；错误码不回退注册。不传代码时保留自动创建/复用普通用户的行为；已有停用账号不会重新启用。`qq_to_userid` 仅查询，不创建账号。二维码准备中返回 `running`，错误返回 `error`，图片就绪后返回 `success` 与短期 OSS 链接。服务器配置共享 Token，可信客户端只需填写 MCP 地址和同一个 Token。
+`bind_qq({qq,bindingCode})` 返回 `{qq,userId}`，绑定码必填，只关联到生成码的现有网站账号；缺码、错码或过期码均拒绝，不自动创建账号，也不回退注册或恢复停用账号。所有人申请游戏任务前都必须先在网站「绑定QQ」完成 HUY2 绑定，主人也不能跳过。`qq_to_userid` 仅查询，不创建账号；未绑定或仅有历史无码自动账号时须先从网站凭码绑定。二维码准备中返回 `running`，错误返回 `error`，图片就绪后返回 `success` 与短期 OSS 链接。服务器配置共享 Token，可信客户端只需填写 MCP 地址和同一个 Token。
 
-配置、工具参数和验证方法见 [hyrz MCP](docs/hyrz-mcp.md)。
+客户端向用户提供绑定网站地址前，先从同一个 MCP 读取 `hyrz://service/site-info` 的 `websiteUrl`，不能猜测域名或复用其他环境的链接。配置、工具参数和验证方法见 [hyrz MCP](docs/hyrz-mcp.md)。
 
 ## 大模型渠道（管理员）
 

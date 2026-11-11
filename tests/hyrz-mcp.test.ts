@@ -155,6 +155,8 @@ test('hyrz skill通过新旧MCP资源读取，正文来自服务端技能目录'
     assert.match(body.result.contents[0].text, /sandbox_mode="read-only"[^\n]*approval_policy="never"/);
     assert.doesNotMatch(body.result.contents[0].text, /提示本人转到私聊继续|suggest|on-request/);
     assert.doesNotMatch(body.result.contents[0].text, /C:\/Users\/|C:\\Users\\/);
+    assert.doesNotMatch(body.result.contents[0].text, /https?:\/\/(?:test\.)?huy1\.site|当前接入测试站|先登录测试站/);
+    assert.match(body.result.contents[0].text, /同一个 MCP[^\n]*hyrz:\/\/service\/site-info[^\n]*websiteUrl/);
   }
 });
 
@@ -170,6 +172,73 @@ test('hyrz skill在初始化中仅提示先读资源，保留五个业务工具'
   assert(initialized.result.capabilities.resources);
   const catalog = await payload(await rpc(base, 'tools/list'));
   assert.equal(catalog.result.tools.length, 5, 'mounting a skill must not add a business or read-skill tool');
+});
+
+const siteInfoUri = 'hyrz://service/site-info';
+async function siteInfo(base: string, headers: Record<string, string> = {}) {
+  const response = await rpc(base, 'resources/read', { uri: siteInfoUri }, headers);
+  const body = await payload(response);
+  assert.equal(response.status, 200, JSON.stringify(body));
+  assert.equal(body.result?.contents?.length, 1, JSON.stringify(body));
+  assert.equal(body.result.contents[0].uri, siteInfoUri);
+  assert.equal(body.result.contents[0].mimeType, 'application/json');
+  return JSON.parse(body.result.contents[0].text);
+}
+
+test('网站信息资源在新旧协议下提供当前MCP连接的网站地址', async t => {
+  const base = await fixture(t, dependencies(), loadConfig({ HYRZ_MCP_TOKEN: secret }));
+  for (const version of ['2026-07-28', '2025-11-25']) {
+    const headers = { 'MCP-Protocol-Version': version };
+    const catalog = await payload(await rpc(base, 'resources/list', {}, headers));
+    assert(catalog.result.resources.some((entry: { uri: string; mimeType: string }) =>
+      entry.uri === siteInfoUri && entry.mimeType === 'application/json'));
+    assert.deepEqual(await siteInfo(base, headers), { websiteUrl: base });
+  }
+});
+
+test('网站信息资源优先使用配置的公开网址', async t => {
+  const base = await fixture(t, dependencies(), loadConfig({ HYRZ_MCP_TOKEN: secret,
+    HYRZ_PUBLIC_URL: 'https://public.example/' }), true);
+  for (const version of ['2026-07-28', '2025-11-25']) {
+    assert.deepEqual(await siteInfo(base, { 'MCP-Protocol-Version': version,
+      Host: 'preview.example', 'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': 'untrusted.example' }),
+    { websiteUrl: 'https://public.example' });
+  }
+});
+
+test('网站信息资源按每次连接隔离地址，不缓存首个域名或采信转发Host', async t => {
+  const app = createApp(loadConfig({ HYRZ_MCP_TOKEN: secret }), dependencies());
+  app.set('trust proxy', 1);
+  const servers = [app.listen(0, '127.0.0.1'), app.listen(0, '127.0.0.1')];
+  await Promise.all(servers.map(server => once(server, 'listening')));
+  t.after(async () => {
+    await Promise.all(servers.map(server => new Promise<void>(resolve => {
+      server.closeAllConnections(); server.close(() => resolve());
+    })));
+    await app.locals.closeHyrzMcp?.();
+  });
+  const bases = servers.map(server => {
+    const address = server.address(); assert(address && typeof address !== 'string');
+    return `http://127.0.0.1:${address.port}`;
+  });
+  const connections = [bases[0], bases[1], bases[1], bases[0]];
+  for (const version of ['2026-07-28', '2025-11-25']) {
+    const results = await Promise.all(connections.map(base => siteInfo(base, {
+      'MCP-Protocol-Version': version, 'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': 'untrusted.example' })));
+    assert.deepEqual(results, connections.map(base => ({ websiteUrl: base.replace('http:', 'https:') })));
+  }
+});
+
+test('网站信息资源需要同一MCP的认证且不接受跨站读取', async t => {
+  const base = await fixture(t);
+  const attempts: Array<Record<string, string>> = [{ Authorization: '' }, { Authorization: 'Bearer wrong' },
+    { Origin: 'https://untrusted.example' }];
+  for (const headers of attempts) {
+    const response = await rpc(base, 'resources/read', { uri: siteInfoUri }, headers);
+    assert.equal(response.status, 'Origin' in headers ? 403 : 401);
+  }
+  const disabled = await fixture(t, dependencies(), loadConfig({}));
+  assert.equal((await rpc(disabled, 'resources/read', { uri: siteInfoUri })).status, 503);
 });
 
 test('hyrz skill资源仍需后台认证并拒绝跨站读取', async t => {
