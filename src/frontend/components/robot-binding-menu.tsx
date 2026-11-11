@@ -59,7 +59,7 @@ export function RobotBindingMenu({ userId, busy, onUnauthorized }: Props) {
     <DropdownMenu modal={false} onOpenChange={open => { if (!open) setHelpRobot(null); }}>
       <DropdownMenuTrigger asChild>
         <Button ref={triggerRef} type="button" variant="outline" size="sm" disabled={busy} className="gap-1.5 bg-white/50">
-          <MessageCircle aria-hidden="true" />QQ 机器人绑定<ChevronDown aria-hidden="true" />
+          <MessageCircle aria-hidden="true" />绑定QQ<ChevronDown aria-hidden="true" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent ref={menuRef} align="end" className="village-account-menu w-72 max-w-[calc(100vw-2rem)] p-1.5" onCloseAutoFocus={event => {

@@ -44,7 +44,7 @@ async function waitFor(predicate, message) {
 }
 
 async function selectBinding(page, name = '绑定HUY2') {
-  await page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).click();
+  await page.getByRole('button', { name: '绑定QQ', exact: true }).click();
   await page.clock.runFor(200);
   await page.getByRole('menuitem', { name, exact: true }).click();
   await page.clock.runFor(200);
@@ -164,7 +164,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
       const f = await fixture();
       try {
         await f.page.goto(origin, { waitUntil: 'networkidle' });
-        const trigger = f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true });
+        const trigger = f.page.getByRole('button', { name: '绑定QQ', exact: true });
         await trigger.click();
         await f.page.clock.runFor(200);
         const huy2Help = f.page.locator('[data-binding-help="huy2"]');
@@ -235,7 +235,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
       const f = await fixture(390, user, true);
       try {
         await f.page.goto(origin, { waitUntil: 'networkidle' });
-        await f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).tap();
+        await f.page.getByRole('button', { name: '绑定QQ', exact: true }).tap();
         await f.page.clock.runFor(200);
         for (const [robot, explanation] of [['huy2', /无需回网页确认/], ['daily', /网页[\s\S]*确认绑定/]]) {
           const help = f.page.locator(`[data-binding-help="${robot}"]`);
@@ -264,7 +264,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
       const f = await fixture(390);
       try {
         await f.page.goto(origin, { waitUntil: 'networkidle' });
-        const trigger = f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true });
+        const trigger = f.page.getByRole('button', { name: '绑定QQ', exact: true });
         assert.equal(await trigger.count(), 1);
         await trigger.click();
         await f.page.clock.runFor(200);
@@ -317,7 +317,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
       try {
         await f.page.goto(origin, { waitUntil: 'networkidle' });
         await f.page.getByRole('button', { name: '登录 / 注册', exact: true }).waitFor();
-        assert.equal(await f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).count(), 0);
+        assert.equal(await f.page.getByRole('button', { name: '绑定QQ', exact: true }).count(), 0);
         assert.deepEqual(f.state.calls, []);
         assert.deepEqual(f.state.officialCalls, []);
       } finally { await f.close(); }
@@ -526,7 +526,7 @@ test('QQ group binding lifecycle in the real account page', { skip: skip || fals
         await f.select();
         await f.page.getByRole('dialog').waitFor({ state: 'hidden' });
         await f.page.getByRole('button', { name: '登录 / 注册', exact: true }).waitFor();
-        assert.equal(await f.page.getByRole('button', { name: 'QQ 机器人绑定', exact: true }).count(), 0);
+        assert.equal(await f.page.getByRole('button', { name: '绑定QQ', exact: true }).count(), 0);
       } finally { hanging.resolve({ json: unbound() }); await f.close(); }
     });
   } finally {
