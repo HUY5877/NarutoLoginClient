@@ -84,6 +84,24 @@ export function createHyrzMcpHandler(config: Config, dependencies: McpDependenci
             userOptions: task.userOptions ?? options, expiresAt: task.expiresAt };
         }),
       }),
+      refresh_qrcode: createTool({
+        id: 'refresh_qrcode', description: '刷新该网站用户原任务的游戏登录二维码，不创建新任务，不改变登录渠道或任务选项。返回 running 只表示已提交刷新，随后调用一次 get_qrcode_status 等待新图片。已扫码、已授权或任务结束时不再刷新；执行服务器不支持刷新时返回错误。',
+        inputSchema: z.object({ userId: uuid, taskId: uuid }).strict(),
+        outputSchema: z.object({ status: z.literal('running'), taskId: z.string(), expiresAt: z.string() }).or(failure),
+        execute: async input => safely(async () => {
+          const userId = input.userId.toLowerCase();
+          await bindings().assertRobotBoundUser(userId);
+          if (!dependencies.events.refresh) throw new ApiError(503, '二维码刷新服务尚未配置。', 'QR_REFRESH_UNAVAILABLE');
+          const task = await dependencies.events.refresh(input.taskId.toLowerCase(), userId);
+          if (task.loginAuthorized || task.scanCaptured || task.runStatus && ['finishing_login', 'running_daily', 'completed'].includes(task.runStatus)) {
+            throw new ApiError(409, '扫码已完成，无需刷新二维码。', 'QR_UNAVAILABLE');
+          }
+          if (task.status === 'failed' || task.status === 'expired' || task.runStatus && ['failed', 'interrupted', 'expired'].includes(task.runStatus)) {
+            throw new ApiError(410, '这次申请已结束，请重新申请二维码。', 'QR_REQUEST_ENDED');
+          }
+          return { status: 'running' as const, taskId: task.id, expiresAt: task.expiresAt };
+        }),
+      }),
       get_qrcode_status: createTool({
         id: 'get_qrcode_status', description: '获取该网站用户自己的二维码。每次申请只需调用一次；工具内部等待图片就绪，最多2分钟。就绪返回 success 与短期阿里云 OSS URL；2分钟未出码返回 QR_TIMEOUT 错误，失败/过期/已扫码立即返回 error。不返回准备中状态，不需要调用方轮询。success 只代表二维码就绪。',
         inputSchema: z.object({ userId: uuid, taskId: uuid }).strict(),

@@ -22,7 +22,7 @@ MCP 相关后端代码集中在 `src/server/mcp/`：
 - `resources/read` 读取 `hyrz://service/site-info`，返回 `application/json`，结构为 `{websiteUrl: 当前服务提供的根网址}`；`websiteUrl` 为稳定字段，站点地址由当前服务运行时提供。
 - Server instructions 提醒先列出 `hyrz` 资源、读取这份 skill，并按其中业务与身份要求操作；向用户提供绑定网站地址前，先从同一个 MCP 读取站点信息资源。
 
-五个业务工具保持不变，没有增加 `read_skill` 工具。资源读取与工具共用现有后台认证和来源检查，只开放这份 Markdown 和当前站点信息 JSON，不对外提供任意本地文件或 `agents/openai.yaml`。静态 skill 不写死测试或正式域名；客户端不能猜测域名或复用其他环境、历史链接，找不到可信地址时不编造网址。QQ、`userId`、`taskId` 和绑定结果不得跨环境混用。技能中的流程说明不替代服务端鉴权，也不代表工具已经执行成功。
+当前提供六个业务工具，包含 `refresh_qrcode`，没有增加 `read_skill` 工具。资源读取与工具共用现有后台认证和来源检查，只开放这份 Markdown 和当前站点信息 JSON，不对外提供任意本地文件或 `agents/openai.yaml`。静态 skill 不写死测试或正式域名；客户端不能猜测域名或复用其他环境、历史链接，找不到可信地址时不编造网址。QQ、`userId`、`taskId` 和绑定结果不得跨环境混用。技能中的流程说明不替代服务端鉴权，也不代表工具已经执行成功。
 
 启动 MCPServer 时读取并缓存静态技能；修改内容后需要重新启动或发布服务。站点信息资源由当前服务提供，不从静态技能正文提取地址。`websiteUrl` 优先使用 `HYRZ_PUBLIC_URL` 配置的根网址；未配置时，从当前这次 MCP 请求在服务端可见的协议和 Host 生成，不采用 `X-Forwarded-Host`，也不根据环境名称猜测域名。每次请求独立解析，不能把某次连接的地址缓存成共享实例的站点地址。构建会将整个技能目录复制到 `src/server/dist/skills/`，Vercel 函数则通过 `includeFiles` 携带源码技能目录，以兼容源码启动、独立构建产物和函数入口。这里使用标准 MCP resources，不宣称实现额外的 `skills/list` 扩展。
 
@@ -59,9 +59,12 @@ http_headers = { Authorization = "Bearer 与服务器一致的Token" }
 | `unbind_qq` | `userId` | `{userId,status:"unbound"}`，仅解除数字 QQ 关联 |
 | `qq_to_userid` | `qq` | `{qq,userId}`，只读查询已绑定且未停用的网站账号，不创建用户 |
 | `request_qrcode` | `userId, requestId, loginType, userOptions?` | 返回实际 `taskId`、渠道和任务选项，之后调用一次获取工具 |
+| `refresh_qrcode` | `userId, taskId` | 刷新原任务，返回 `{status:"running",taskId,expiresAt}`；之后调用一次获取工具等待新图 |
 | `get_qrcode_status` | `userId, taskId` | 内部最多等待 120 秒，只返回 `error` 或 `success`，成功时有 `url,expiresAt` |
 
 `userId`、`taskId`、`requestId` 使用 UUID v4。`requestId` 由调用方生成，同一次申请重试保持不变；新的申请才换 ID。网站已有活动任务时复用原任务，返回的是原任务实际设置。不会绕过网站服务直接创建 Redis 任务。
+
+`refresh_qrcode` 复用网站的刷新服务，先检查账号有效且仍绑定本机器人，再由原业务服务检查任务归属；只刷新原任务，不创建新任务、不改变渠道和选项、不延长原模拟器期限。`running` 表示已提交刷新，不能当作图片已就绪；使用返回的同一任务调用一次 `get_qrcode_status`，等待新二维码后再向本人展示。仅 OSS 链接过期时可重新获取链接，不必刷新二维码。已扫码或已授权返回 `QR_UNAVAILABLE`；任务已结束、执行服务器不支持刷新或二维码尚未就绪时保留现有服务的安全错误。未配置刷新服务返回 `QR_REFRESH_UNAVAILABLE`，不伪装刷新成功。
 
 登录渠道为 `android_qq`、`ios_qq`、`android_wechat`、`ios_wechat`。`userOptions` 与网页共用：`mainTask` 为 `daily` 或 `arena_weekly`；`equipmentStamina` 为布尔值；`secretRealmMode` 为 `once`、`all` 或 `skip`。省略时沿用网页默认的日常任务、刷装备栏体力、用完秘境扫荡券。
 
@@ -102,7 +105,7 @@ QQ 端当前部署不设置 `enabled_tools`、`disabled_tools` 或逐工具审�
 
 ### 强制网站绑定与历史账号
 
-所有人申请游戏任务前都必须在网站「绑定QQ」完成 HUY2 绑定，主人也不能跳过。`bind_qq` 只接受网站绑定码，不提供无码注册或直接复用路径；两个数据库 store 中原有的自动建用户接口已移除。`qq_to_userid` 不创建账号。`request_qrcode` 与 `get_qrcode_status` 服务端均检查当前账号有效且存在本机器人网站关联，只有旧数字表或官方 OpenID 绑定不能放行。
+所有人申请游戏任务前都必须在网站「绑定QQ」完成 HUY2 绑定，主人也不能跳过。`bind_qq` 只接受网站绑定码，不提供无码注册或直接复用路径；两个数据库 store 中原有的自动建用户接口已移除。`qq_to_userid` 不创建账号。`request_qrcode`、`refresh_qrcode` 与 `get_qrcode_status` 服务端均检查当前账号有效且存在本机器人网站关联，只有旧数字表或官方 OpenID 绑定不能放行。
 
 历史无码自动账号以联合特征保守拒用：用户名为 24 位小写十六进制、`username_key` 与其相同、密码为 43 位 base64url、用户创建时间与数字关联时间完全相同，且没有匹配当前用户、QQ、绑定时间的网站兑换证明。命中时查询和任务门禁返回 `MCP_QQ_NOT_BOUND`，要求先从网站凭码绑定。此判断不是可删除账号的证据；不批量删除、停用、解绑或合并账号，也不以缺少历史码记录单独拒绝合法旧绑定。
 
@@ -122,7 +125,7 @@ QQ 端当前部署不设置 `enabled_tools`、`disabled_tools` 或逐工具审�
 4. `get_qrcode_status` 成功只表示图片就绪。群聊发起时，可信 QQ 转发层用本轮真实发送者 QQ 直接私发本人二维码；私聊发起时就在原私聊向本人回码，无需换入口重复请求。群内只按实际发送结果安全告知成功或失败，不展示二维码图片、图片链接或签名 URL。没有通用消息工具不等于没有私信通道；此流程不新增通用消息发送工具或任意跨会话发送能力。
 5. 私发失败结束本次流程，由适配器安全告知失败，不能声称发送成功，也不自动重复申请或取码。
 
-这一普通用户例外只覆盖已完成网站绑定后的本人查询、申请和单次取码；不包含解绑、其他账号、其他业务或主机权限。MCP 仍只有原有五个业务工具，二维码投递由可信消息适配器实现，服务端 schema 与实现不承担 QQ 消息发送。
+这一普通用户例外只覆盖已完成网站绑定后的本人查询、申请、明确要求的原任务刷新和对应单次取码；不包含解绑、其他账号、其他业务或主机权限。MCP 提供包含刷新在内的六个业务工具，二维码投递由可信消息适配器实现，服务端 schema 与实现不承担 QQ 消息发送。
 
 ## 二维码结果
 

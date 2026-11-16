@@ -148,6 +148,8 @@ test('hyrz skill通过新旧MCP资源读取，正文来自服务端技能目录'
       await readFile(new URL('../src/server/mcp/skills/hyrz-service/SKILL.md', import.meta.url), 'utf8'));
     assert.match(body.result.contents[0].text, /name: hyrz-service/);
     assert.match(body.result.contents[0].text, /get_qrcode_status/);
+    assert.match(body.result.contents[0].text, /refresh_qrcode\(\{userId,taskId\}\)/);
+    assert.match(body.result.contents[0].text, /明确要求[^\n]*刷新[^\n]*本人/);
     // 群聊本人扫码流程必须经远端资源下发，避免客户端读到旧的仅凭码绑定规则。
     assert.match(body.result.contents[0].text, /群聊或私聊[^\n]*明确[^\n]*扫码[^\n]*授权/);
     assert.match(body.result.contents[0].text, /MCP_QQ_NOT_BOUND[^\n]*网站[^\n]*绑定/);
@@ -160,7 +162,7 @@ test('hyrz skill通过新旧MCP资源读取，正文来自服务端技能目录'
   }
 });
 
-test('hyrz skill在初始化中仅提示先读资源，保留五个业务工具', async t => {
+test('hyrz skill在初始化中仅提示先读资源，提供六个业务工具', async t => {
   const base = await fixture(t);
   const initialized = await payload(await rpc(base, 'initialize', { protocolVersion: '2025-11-25', capabilities: {},
     clientInfo: { name: 'skill-fixture', version: '1.0.0' } }, { 'MCP-Protocol-Version': '2025-11-25' }));
@@ -171,7 +173,7 @@ test('hyrz skill在初始化中仅提示先读资源，保留五个业务工具'
   assert(instructions.length <= 160, 'business workflow belongs in SKILL.md, not the server instructions');
   assert(initialized.result.capabilities.resources);
   const catalog = await payload(await rpc(base, 'tools/list'));
-  assert.equal(catalog.result.tools.length, 5, 'mounting a skill must not add a business or read-skill tool');
+  assert.equal(catalog.result.tools.length, 6, 'only the six business tools should be exposed');
 });
 
 const siteInfoUri = 'hyrz://service/site-info';
@@ -285,14 +287,14 @@ test('客户端请求头中的短Token必须与服务端配置完全一致', asy
   }
 });
 
-test('hyrz 拒绝非允许来源且通过真实Mastra列出全部五个工具', async t => {
+test('hyrz 拒绝非允许来源且通过真实Mastra列出全部六个工具', async t => {
   const base = await fixture(t);
   assert.equal((await rpc(base, 'tools/list', {}, { Origin: 'https://untrusted.example' })).status, 403);
   const response = await rpc(base, 'tools/list');
   const body = await payload(response);
   assert.equal(response.status, 200, JSON.stringify(body));
   assert.deepEqual(body.result.tools.map((tool: { name: string }) => tool.name).sort(),
-    ['bind_qq', 'get_qrcode_status', 'qq_to_userid', 'request_qrcode', 'unbind_qq']);
+    ['bind_qq', 'get_qrcode_status', 'qq_to_userid', 'refresh_qrcode', 'request_qrcode', 'unbind_qq']);
   const bindingTool = body.result.tools.find((tool: { name: string }) => tool.name === 'bind_qq');
   assert(JSON.stringify(bindingTool.outputSchema).includes('userId'));
   assert(!JSON.stringify(bindingTool.outputSchema).includes('bindingUrl'));
@@ -435,6 +437,110 @@ test('hyrz 申请保留幂等ID并报告已有任务的真实参数，不假称�
   assert.equal(submitted[0][0], userId);
   assert.equal(submitted[0][1], requestId);
   assert.equal(submitted[0][3], 'android_wechat');
+});
+
+test('刷新工具在新旧协议复用原任务并规范化ID，不创建新申请或暴露旧图片', async t => {
+  const deps = dependencies();
+  const owner = 'abcdef00-abcd-4bcd-abcd-abcdef123456';
+  const originalId = 'fedcba00-abcd-4bcd-abcd-fedcba123456';
+  const calls: string[][] = [];
+  deps.mcpBindings!.assertRobotBoundUser = async id => { calls.push(['bound', id]); };
+  deps.events.refresh = async (id, user) => {
+    calls.push(['refresh', id, user]);
+    return { ...task, id, status: 'preparing_qr', refreshRequestId: requestId,
+      privateCredential: 'must-not-leak' } as never;
+  };
+  deps.events.create = async () => assert.fail('refresh must not create a new task');
+  deps.storage.read = async () => assert.fail('refresh must not return the previous QR image');
+  const base = await fixture(t, deps);
+  for (const version of ['2026-07-28', '2025-11-25']) {
+    assert.deepEqual(await call(base, 'refresh_qrcode', { userId: owner.toUpperCase(), taskId: originalId.toUpperCase() },
+      { 'MCP-Protocol-Version': version }), { status: 'running', taskId: originalId, expiresAt: task.expiresAt });
+  }
+  assert.deepEqual(calls, Array.from({ length: 2 }, () => [['bound', owner], ['refresh', originalId, owner]]).flat());
+});
+
+test('刷新工具要求有效网站绑定，未绑定或停用时不提交刷新', async t => {
+  const deps = dependencies();
+  deps.events.refresh = async () => assert.fail('a rejected account must not refresh');
+  let code = 'MCP_QQ_NOT_BOUND';
+  deps.mcpBindings!.assertRobotBoundUser = async () => { throw new ApiError(403, '账号不可用。', code); };
+  const base = await fixture(t, deps);
+  for (code of ['MCP_QQ_NOT_BOUND', 'ACCOUNT_DISABLED']) {
+    const result = await call(base, 'refresh_qrcode', { userId, taskId });
+    assert.equal(result.status, 'error'); assert.equal(result.code, code);
+  }
+});
+
+test('刷新工具拒绝非法ID和额外申请参数，认证及来源检查先于业务操作', async t => {
+  const deps = dependencies();
+  deps.events.refresh = async () => assert.fail('an invalid request must not refresh');
+  const base = await fixture(t, deps);
+  for (const args of [{ userId, taskId: `${taskId}\n` }, { userId: 'invalid', taskId },
+    { userId, taskId, loginType: 'android_qq' }, { userId }]) {
+    const body = await payload(await rpc(base, 'tools/call', { name: 'refresh_qrcode', arguments: args }));
+    assert.equal(body.result.isError, true);
+  }
+  for (const [headers, status] of [[{ Authorization: '' }, 401], [{ Origin: 'https://untrusted.example' }, 403]] as const) {
+    assert.equal((await rpc(base, 'tools/call', { name: 'refresh_qrcode', arguments: { userId, taskId } }, headers)).status, status);
+  }
+});
+
+test('刷新工具保留任务归属和执行服务错误，未配置时明确拒绝且不泄漏内部错误', async t => {
+  const deps = dependencies();
+  let error: Error = new ApiError(404, '申请不存在。');
+  deps.events.refresh = async () => { throw error; };
+  const base = await fixture(t, deps);
+  for (const [failure, code] of [
+    [error, 'HTTP_404'], [new ApiError(410, '占用已结束。'), 'HTTP_410'],
+    [new ApiError(409, '不支持刷新。', 'REFRESH_UNSUPPORTED'), 'REFRESH_UNSUPPORTED'],
+    [new ApiError(409, '二维码准备中。', 'QR_NOT_READY'), 'QR_NOT_READY'],
+    [new Error('private-credential=must-not-leak'), 'HYRZ_TOOL_FAILED'],
+  ] as const) {
+    error = failure;
+    const body = await payload(await rpc(base, 'tools/call', { name: 'refresh_qrcode', arguments: { userId, taskId } }));
+    assert.equal(body.result.isError, true);
+    const output = body.result.structuredContent ?? JSON.parse(body.result.content[0].text);
+    assert.equal((output.result ?? output).code, code);
+    assert(!JSON.stringify(body).includes('must-not-leak'));
+  }
+  const disabled = await fixture(t);
+  const missing = await call(disabled, 'refresh_qrcode', { userId, taskId });
+  assert.equal(missing.status, 'error'); assert.equal(missing.code, 'QR_REFRESH_UNAVAILABLE');
+});
+
+test('刷新工具不把已扫码、已授权或结束任务误报为刷新中', async t => {
+  const deps = dependencies();
+  let current = { ...task } as never;
+  deps.events.refresh = async () => current;
+  const base = await fixture(t, deps);
+  for (const flags of [{ scanCaptured: true }, { loginAuthorized: true }, { runStatus: 'finishing_login' },
+    { runStatus: 'running_daily' }, { runStatus: 'completed' }, { status: 'expired' },
+    { status: 'failed' }, { runStatus: 'interrupted' }]) {
+    current = { ...task, ...flags } as never;
+    assert.equal((await call(base, 'refresh_qrcode', { userId, taskId })).status, 'error');
+  }
+});
+
+test('刷新后单次获取等待新二维码，仍使用原任务且不签发刷新中的旧图', async t => {
+  const deps = dependencies();
+  let refreshing = false;
+  let polls = 0;
+  let imageReads = 0;
+  deps.events.create = async () => assert.fail('refresh must not create a task');
+  deps.events.refresh = async () => { refreshing = true; return { ...task, refreshRequestId: requestId } as never; };
+  deps.events.getForUser = async (id, owner) => {
+    assert.equal(id, taskId); assert.equal(owner, userId);
+    assert(refreshing);
+    return { ...task, status: 'qr_ready', qrRevision: requestId, ...(polls++ === 0 ? { refreshRequestId: requestId } : {}) } as never;
+  };
+  deps.storage.read = async () => { imageReads++; assert(polls >= 2); return Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]); };
+  deps.storage.signUrl = async () => 'https://fixture.example/new-qr.png';
+  const base = await fixture(t, deps);
+  assert.equal((await call(base, 'refresh_qrcode', { userId, taskId })).status, 'running');
+  const ready = await call(base, 'get_qrcode_status', { userId, taskId });
+  assert.equal(ready.status, 'success'); assert.equal(ready.taskId, taskId);
+  assert.equal(ready.url, 'https://fixture.example/new-qr.png'); assert.equal(imageReads, 1);
 });
 
 test('hyrz 拒绝带换行的申请ID，不向任务服务提交', async t => {
