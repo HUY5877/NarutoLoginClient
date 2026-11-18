@@ -1,0 +1,154 @@
+.site-achievement {
+  position: relative;
+  display: grid;
+  isolation: isolate;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .625rem;
+  min-width: 0;
+  min-height: 4.375rem;
+  overflow: hidden;
+  padding: .625rem .875rem;
+  border: 1px solid #b7865266;
+  border-radius: 1rem;
+  background:
+    radial-gradient(ellipse at 9% 0%, #985e3459, transparent 62%),
+    linear-gradient(112deg, #3c2c36, #241e2a 66%, #342634);
+  box-shadow: inset 0 1px #ffe3a91c, 0 6px 20px #20182138;
+}
+
+.site-achievement::before,
+.site-achievement::after {
+  position: absolute;
+  z-index: -1;
+  content: '';
+  pointer-events: none;
+}
+
+.site-achievement::before {
+  inset: 0;
+  background:
+    repeating-linear-gradient(127deg, transparent 0 13px, #ffd19317 13px 14px, transparent 14px 24px),
+    linear-gradient(90deg, transparent, #e9b770b0, transparent) top / 72% 1px no-repeat;
+  mask-image: linear-gradient(100deg, #000, #0000 93%);
+}
+
+.site-achievement[data-status='ready']::after {
+  inset: 0 auto 0 0;
+  width: 34%;
+  background: linear-gradient(106deg, transparent 15%, #ffdda950 50%, transparent 85%);
+  opacity: .4;
+  animation: site-achievement-glint 8s ease-in-out infinite;
+}
+
+.site-achievement-emblem {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 2.625rem;
+  height: 2.625rem;
+  border: 1px solid #ffd999;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 35% 28%, #fff0bc, #ebbe76 57%, #ae713b 74%) center / 74% 74% no-repeat,
+    conic-gradient(from 205deg, #eab572, #8b512e, #ffe7a6, #b77843, #eab572);
+  box-shadow: 0 0 0 3px #d3925229, 0 0 16px #e8ad5450, inset 0 0 0 2px #75472580;
+}
+
+.site-achievement-emblem::before {
+  position: absolute;
+  inset: 3px;
+  border: 1px solid #ffe8ae73;
+  border-radius: 50%;
+  content: '';
+}
+
+.site-achievement-emblem img {
+  position: relative;
+  opacity: .92;
+  filter: sepia(1) saturate(1.9) drop-shadow(0 1px #ffe4aa80);
+}
+
+.site-achievement-copy h2 {
+  color: #ffe2a6;
+  font-size: .875rem;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: .07em;
+}
+
+.site-achievement-copy p,
+.site-achievement-label {
+  margin-top: .2rem;
+  color: #dfc8b3;
+  font-size: .6875rem;
+  line-height: 1.45;
+}
+
+.site-achievement-counter {
+  display: grid;
+  justify-items: end;
+  min-width: 0;
+  padding-inline-start: .625rem;
+  border-inline-start: 1px solid #dbab7340;
+  text-align: end;
+}
+
+.site-achievement-label { margin-top: 0; }
+
+.site-achievement-value {
+  display: flex;
+  align-items: baseline;
+  gap: .2rem;
+  color: #f4cd97;
+  font-size: .6875rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.site-achievement-value strong {
+  color: #fff0c3;
+  font-size: 1.75rem;
+  font-weight: 680;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.045em;
+  text-shadow: 0 0 16px #eab05c66;
+}
+
+.site-achievement-value[data-long] strong { font-size: .875rem; letter-spacing: -.025em; }
+
+.site-achievement-placeholder {
+  width: 3rem;
+  height: .875rem;
+  margin-top: .25rem;
+  border-radius: .2rem;
+  background: #e3bc8533;
+}
+
+@keyframes site-achievement-glint {
+  0%, 65% { transform: translateX(-120%); }
+  88%, 100% { transform: translateX(305%); }
+}
+
+@media (max-width: 639px) {
+  .site-achievement {
+    min-height: 3.75rem;
+    margin-inline: .875rem;
+    padding: .5rem .75rem;
+    border-radius: .875rem;
+  }
+  .site-achievement-emblem { width: 2.375rem; height: 2.375rem; }
+  .site-achievement-emblem img { width: 1.375rem; height: 1.375rem; }
+  .site-achievement-value strong { font-size: 1.5rem; }
+  .site-achievement-value[data-long] strong { font-size: .725rem; }
+}
+
+@media (max-width: 359px) {
+  .site-achievement { gap: .5rem; padding-inline: .625rem; }
+  .site-achievement-counter { padding-inline-start: .5rem; }
+  .site-achievement-value[data-long] strong { letter-spacing: -.035em; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .site-achievement[data-status='ready']::after { animation: none; opacity: 0; }
+}

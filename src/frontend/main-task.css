@@ -1,4 +1,5 @@
 .main-task-tabs { min-width: 0; gap: 1rem; }
+.main-task-shelf { display: grid; min-width: 0; gap: .75rem; }
 .main-task-toolbar { display: flex; min-width: 0; flex-direction: column-reverse; }
 .registration-notice-description-compact { display: none; }
 .main-task-navigation {
@@ -65,10 +66,11 @@
   .main-task-toolbar .registration-notice-description-compact { display: inline; }
 }
 @media (min-width: 1024px) {
-  .main-task-toolbar { width: calc(100% - 20rem - 1.5rem); }
+  .main-task-shelf { grid-template-columns: minmax(0, 1fr) 20rem; gap: 1.5rem; }
 }
 @media (max-width: 639px) {
   .main-task-tabs { gap: .5rem; }
+  .main-task-shelf { gap: .625rem; }
   .main-task-navigation { position: relative; z-index: 4; margin: .625rem .875rem 0; }
   .main-task-list { gap: .25rem; }
   .main-task-trigger { padding-inline: .625rem; font-size: .8125rem; }

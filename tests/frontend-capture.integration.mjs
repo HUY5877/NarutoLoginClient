@@ -54,6 +54,7 @@ test('抓号接收后立即显示扫码成功，隐藏二维码和刷新，并�
         requests.push({ path: url.pathname, method: request.method() });
         let body;
         if (url.pathname === '/api/health') body = { ok: true, environment: 'development' };
+        else if (url.pathname === '/api/achievements') body = { totalCompleted: 0 };
         else if (url.pathname === '/api/auth/me') body = { user: { id: 'capture-ui-user', username: '测试用户', isAdmin: false } };
         else if (url.pathname === '/api/task-runs/latest') body = { task: null, run: null };
         else if (url.pathname === '/api/login-sessions/active') body = { session: failed ? null : session(), showGetButton: failed };

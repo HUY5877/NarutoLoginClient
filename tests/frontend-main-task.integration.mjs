@@ -132,6 +132,7 @@ test('main task selection preserves task options and session ownership', { skip:
           body: request.method() === 'POST' ? request.postDataJSON() : null });
         let body;
         if (url.pathname === '/api/health') body = { ok: true, environment: 'test' };
+        else if (url.pathname === '/api/achievements') body = { totalCompleted: 0 };
         else if (url.pathname === '/api/auth/me') body = { user: state.user };
         else if (url.pathname === '/api/auth/login') {
           state.user = user;

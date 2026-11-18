@@ -31,6 +31,7 @@ import { KonanPortrait } from '@/components/konan-portrait';
 import { MobileTaskSheet } from '@/components/mobile-task-sheet';
 import { TaskProgressCards } from '@/components/task-progress-cards';
 import { SiteEnvironmentBadge } from '@/components/site-environment-badge';
+import { SiteAchievement } from '@/components/site-achievement';
 import { RegistrationNotice } from '@/components/registration-notice';
 import { MainTaskSwitch } from '@/components/main-task-switch';
 import {
@@ -295,6 +296,7 @@ export default function App() {
         )}
         <MainTaskSwitch value={mainTask} disabled={auth.loading || auth.busy || Boolean(auth.user && !canEditShownOptions)}
           locked={Boolean(auth.user && !canEditShownOptions)} onChange={setMainTask}
+          achievement={<SiteAchievement />}
           notice={<RegistrationNotice className="registration-home-notice" />}>
         <MobileVillageHero />
 

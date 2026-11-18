@@ -60,6 +60,7 @@ test('管理员单条任务中断入口', { skip: unavailable || false, timeout:
         if (!url.pathname.startsWith('/api/')) return route.continue();
         const reply = (json, status = 200) => route.fulfill({ status, json });
         if (url.pathname === '/api/health') return reply({ ok: true, environment: 'test' });
+        if (url.pathname === '/api/achievements') return reply({ totalCompleted: 0 });
         if (url.pathname === '/api/auth/me') return reply({ user: admin });
         if (url.pathname === '/api/task-runs/latest') return reply({ task: null, run: null });
         if (url.pathname === '/api/admin/daily-tasks' && route.request().method() === 'GET') {

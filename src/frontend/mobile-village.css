@@ -79,8 +79,8 @@
     position: relative;
     display: block;
     isolation: isolate;
-    height: clamp(18.5rem, 37svh, 20.5rem);
-    min-height: clamp(15.375rem, 76.5vw, 19.875rem);
+    height: clamp(15.75rem, 32svh, 18rem);
+    min-height: clamp(14rem, 64vw, 17rem);
     margin-bottom: -.75rem;
     overflow: hidden;
     animation: ninja-scene-enter 650ms ease-out both;
@@ -89,7 +89,7 @@
   .mobile-character-scene { position: absolute; z-index: 1; inset: 0; display: flex; align-items: flex-end; justify-content: center; pointer-events: none; }
   .mobile-character {
     position: relative;
-    width: clamp(10.25rem, 51vw, 13.25rem);
+    width: clamp(9.5rem, 44vw, 11.5rem);
     height: auto;
     filter: drop-shadow(0 9px 12px #20182180);
     transform: translateY(var(--portrait-shift, 0px));
