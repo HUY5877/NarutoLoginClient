@@ -34,14 +34,12 @@ const jsonHeaders = { 'Content-Type': 'application/json' };
 const post = { method: 'POST', headers: { ...headers, ...jsonHeaders }, body: '{}' };
 
 test('全站成就可匿名读取且仅公开合计，未配置时返回不可用', async () => {
-  await withApi({ auth: auth({ getUser: async () => assert.fail('public statistics do not read accounts') }), runs: {
-    getLatest: async () => assert.fail('must not read task details'),
-    getEvents: async () => assert.fail('must not read task logs'),
-    getAchievements: async () => ({ totalCompleted: 1290, workerId: 'private-worker', userId: 'private-user' }),
+  await withApi({ auth: auth({ getUser: async () => assert.fail('public statistics do not read accounts') }), achievements: {
+    countGameRequests: async () => 1290,
   } }, async base => {
     const response = await fetch(`${base}/api/achievements`);
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { totalCompleted: 1290 });
+    assert.deepEqual(await response.json(), { totalRequests: 1290 });
   });
   await withApi({}, async base => {
     const response = await fetch(`${base}/api/achievements`);

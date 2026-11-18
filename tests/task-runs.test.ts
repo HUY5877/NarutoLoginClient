@@ -49,32 +49,6 @@ function fixture() {
     get calls() { return calls; }, get connections() { return connections; }, get destroyed() { return destroyed; } };
 }
 
-test('全站成就汇总两个任务类型并读取当前环境的独立计数', async () => {
-  const f = fixture();
-  f.driver.eval = async (_script, options) => {
-    assert.deepEqual(options, { keys: ['naruto:login:tasks:achievements:completed'], arguments: [] });
-    return ['1234', '56'];
-  };
-  assert.deepEqual(await f.service.getAchievements(), { totalCompleted: 1290 });
-  f.driver.eval = async () => [null, null];
-  assert.deepEqual(await f.service.getAchievements(), { totalCompleted: 0 });
-  f.driver.eval = async () => [null, '7'];
-  assert.deepEqual(await f.service.getAchievements(), { totalCompleted: 7 });
-  f.service.close();
-});
-
-test('成就拒绝非法或溢出的计数，连接故障不会伪装成零次', async () => {
-  const f = fixture();
-  for (const value of [null, [], ['1'], ['1', '2', '3'], ['-1', '0'], ['1.5', '0'],
-    ['NaN', '0'], ['', '0'], [2, '0'], ['9007199254740992', '0'], ['9007199254740991', '1']]) {
-    f.driver.eval = async () => value;
-    await assert.rejects(f.service.getAchievements(), { status: 502, code: 'ACHIEVEMENTS_DATA_INVALID' });
-  }
-  f.driver.eval = async () => { throw new Error('private connection detail'); };
-  await assert.rejects(f.service.getAchievements(), { status: 503, code: 'ACHIEVEMENTS_UNAVAILABLE' });
-  f.service.close();
-});
-
 test('administrator summary reads use one bounded GET batch and omit worker logs and private fields', async () => {
   const f = fixture();
   const otherId = '123e4567-e89b-42d3-a456-426614174001';

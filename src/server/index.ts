@@ -45,7 +45,7 @@ const qqCaptures = new QqCaptureService(config);
 const qqGroups = new QqGroupDiscoveryService(config);
 const qqBindings = new QqBindingService(config, { initializeUsers: () => auth.initialize(),
   observeGroup: (appId, groupOpenid) => qqGroups.record(appId, groupOpenid) });
-const app = createApp(config, { events, auth, runs, admin, qqAuthorizations, qqCaptures, qqBindings, mcpBindings,
+const app = createApp(config, { events, auth, runs, achievements: store, admin, qqAuthorizations, qqCaptures, qqBindings, mcpBindings,
   modelChannels: new ModelChannelService(), storage: createObjectReader(config) });
 const server = createServer(app);
 let vite: import('vite').ViteDevServer | undefined;

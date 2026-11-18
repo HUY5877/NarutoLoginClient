@@ -63,7 +63,7 @@ test('刷新优先恢复统一任务状态', { skip: unavailable || false, timeo
         state.calls.push(`${request.method()} ${url.pathname}`);
         let body;
         if (url.pathname === '/api/health') body = { ok: true, environment: 'test' };
-        else if (url.pathname === '/api/achievements') body = { totalCompleted: 0 };
+        else if (url.pathname === '/api/achievements') body = { totalRequests: 0 };
         else if (url.pathname === '/api/auth/me') body = { user };
         else if (url.pathname === '/api/task-runs/latest') {
           if (state.latestGate) await state.latestGate.promise;

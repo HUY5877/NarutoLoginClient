@@ -60,7 +60,7 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         state.calls.push(url.pathname);
         let body;
         if (url.pathname === '/api/health') body = { ok: true, environment: 'development' };
-        else if (url.pathname === '/api/achievements') body = { totalCompleted: 0 };
+        else if (url.pathname === '/api/achievements') body = { totalRequests: 0 };
         else if (url.pathname === '/api/auth/me') body = { user: { id: 'confirmed-user', username: '授权测试', isAdmin: false } };
         else if (url.pathname === '/api/login-sessions/active') body = { session, showGetButton: false };
         else if (url.pathname === `/api/login-sessions/${taskId}`) {

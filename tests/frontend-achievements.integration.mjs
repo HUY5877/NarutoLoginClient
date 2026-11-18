@@ -23,7 +23,7 @@ try {
   skip = 'Playwright/Chromium unavailable. Set PLAYWRIGHT_MODULE and PLAYWRIGHT_CHROMIUM_EXECUTABLE to existing dependencies.';
 }
 
-test('the public site achievement shows only confirmed totals', { skip: skip || false, timeout: 90_000 }, async t => {
+test('the public site achievement shows only task request totals', { skip: skip || false, timeout: 90_000 }, async t => {
   const { createServer } = await importLocal('vite');
   const { default: react } = await importLocal('@vitejs/plugin-react');
   const { default: tailwindcss } = await importLocal('@tailwindcss/vite');
@@ -43,7 +43,7 @@ test('the public site achievement shows only confirmed totals', { skip: skip || 
     page.setDefaultTimeout(4000);
     const calls = [];
     const errors = [];
-    let response = () => ({ status: 200, json: { totalCompleted: 12864 } });
+    let response = () => ({ status: 200, json: { totalRequests: 12864 } });
     page.on('pageerror', error => errors.push(error.message));
     t.after(async () => { await context.close(); assert.deepEqual(errors, []); });
     await context.route('**/*', async route => {
@@ -87,7 +87,7 @@ test('the public site achievement shows only confirmed totals', { skip: skip || 
     await f.card.getByText('正在读取成就统计').waitFor();
     assert.equal(await f.total.count(), 0);
     await f.focus();
-    finish({ json: { totalCompleted: 0 } });
+    finish({ json: { totalRequests: 0 } });
     await f.total.filter({ hasText: /^0$/ }).waitFor();
     assert.deepEqual(f.calls, ['GET']);
   });
@@ -98,10 +98,10 @@ test('the public site achievement shows only confirmed totals', { skip: skip || 
     await f.open();
     await f.card.getByText('成就统计暂不可用').waitFor();
     assert.equal(await f.total.count(), 0);
-    f.respond(() => ({ json: { totalCompleted: 12864 } }));
+    f.respond(() => ({ json: { totalRequests: 12864 } }));
     await f.focus();
     await f.total.filter({ hasText: /^12,864$/ }).waitFor();
-    f.respond(() => ({ json: { totalCompleted: -1 } }));
+    f.respond(() => ({ json: { totalRequests: -1 } }));
     const invalidReply = f.page.waitForResponse(`${origin}/api/achievements`);
     await f.focus();
     await (await invalidReply).finished();
@@ -120,14 +120,14 @@ test('the public site achievement shows only confirmed totals', { skip: skip || 
     await f.page.clock.install();
     await f.open();
     await f.total.filter({ hasText: /^12,864$/ }).waitFor();
-    f.respond(() => ({ json: { totalCompleted: 12865 } }));
+    f.respond(() => ({ json: { totalRequests: 12865 } }));
     await f.page.clock.fastForward(61_000);
     await f.total.filter({ hasText: /^12,865$/ }).waitFor();
     await f.setVisible(false);
     await f.page.clock.fastForward(61_000);
     await f.focus();
     assert.deepEqual(f.calls, ['GET', 'GET']);
-    f.respond(() => ({ json: { totalCompleted: 12866 } }));
+    f.respond(() => ({ json: { totalRequests: 12866 } }));
     await f.setVisible(true);
     await f.total.filter({ hasText: /^12,866$/ }).waitFor();
   });
@@ -141,11 +141,11 @@ test('the public site achievement shows only confirmed totals', { skip: skip || 
       await Promise.all([f.open(), f.page.waitForRequest(`${origin}/api/achievements`)]);
       await f.page.clock.fastForward(10_000);
       await f.card.getByText('成就统计暂不可用').waitFor();
-      f.respond(() => ({ json: { totalCompleted: 1 } }));
+      f.respond(() => ({ json: { totalRequests: 1 } }));
       await f.focus();
       await f.total.filter({ hasText: /^1$/ }).waitFor();
     } finally {
-      finish?.({ json: { totalCompleted: 999 } });
+      finish?.({ json: { totalRequests: 999 } });
     }
   });
 
@@ -153,9 +153,10 @@ test('the public site achievement shows only confirmed totals', { skip: skip || 
     for (const width of [1280, 768, 390, 320]) {
       const f = await fixture(t, { viewport: { width, height: width < 640 ? 844 : 900 },
         reducedMotion: width === 320 ? 'reduce' : 'no-preference' });
-      if (width === 320) f.respond(() => ({ json: { totalCompleted: Number.MAX_SAFE_INTEGER } }));
+      if (width === 320) f.respond(() => ({ json: { totalRequests: Number.MAX_SAFE_INTEGER } }));
       await f.open();
       await f.total.filter({ hasText: width === 320 ? /^9,007,199,254,740,991$/ : /^12,864$/ }).waitFor();
+      assert.equal(await f.card.getByText('累计申请', { exact: true }).isVisible(), true);
       const dimensions = await f.card.evaluate(card => ({
         viewportWidth: document.documentElement.clientWidth,
         pageWidth: document.documentElement.scrollWidth,

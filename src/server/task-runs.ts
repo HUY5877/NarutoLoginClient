@@ -269,28 +269,6 @@ export class TaskRunService {
       throw new ApiError(503, '任务日志暂时不可用，请稍后重试。', 'TASK_LOGS_UNAVAILABLE');
     } finally { if (timer) clearTimeout(timer); }
   }
-  async getAchievements(): Promise<{ totalCompleted: number }> {
-    let raw: unknown;
-    try {
-      // The worker increments this permanent hash when it commits completion.
-      // One read gives a consistent total without scanning expiring task history.
-      raw = await this.callRedis("return redis.call('HMGET', KEYS[1], 'daily', 'arena_weekly')",
-        [`${this.config.redisQueueKey}:achievements:completed`], []);
-    } catch {
-      throw new ApiError(503, '成就统计暂时不可用，请稍后重试。', 'ACHIEVEMENTS_UNAVAILABLE');
-    }
-    const invalid = () => new ApiError(502, '成就统计数据异常，请稍后重试。', 'ACHIEVEMENTS_DATA_INVALID');
-    if (!Array.isArray(raw) || raw.length !== 2) throw invalid();
-    let totalCompleted = 0;
-    for (const value of raw) {
-      if (value === null) continue;
-      if (typeof value !== 'string' || !/^(0|[1-9][0-9]{0,15})$/.test(value)) throw invalid();
-      totalCompleted += Number(value);
-      if (!Number.isSafeInteger(totalCompleted)) throw invalid();
-    }
-    return { totalCompleted };
-  }
-
   async interrupt(taskId: string): Promise<{ taskId: string; status: 'interrupted' }> {
     if (taskId !== taskId.trim() || !taskIdPattern.test(taskId)) throw new ApiError(400, '无效的任务编号。');
     const result = await this.callRedis(interruptRunScript, [`${this.config.redisQueueKey}:runs:${taskId}`],

@@ -28,7 +28,7 @@ export function SiteAchievement() {
         });
         if (!response.ok) throw new Error('Achievement statistics unavailable');
         const body: unknown = await response.json();
-        const total = body && typeof body === 'object' && 'totalCompleted' in body ? body.totalCompleted : null;
+        const total = body && typeof body === 'object' && 'totalRequests' in body ? body.totalRequests : null;
         if (typeof total !== 'number' || !Number.isSafeInteger(total) || total < 0) {
           throw new Error('Invalid achievement total');
         }
@@ -74,7 +74,7 @@ export function SiteAchievement() {
       </div>
       <div className="site-achievement-counter" aria-live="polite" aria-atomic="true">
         {total !== null ? <>
-          <span className="site-achievement-label">成就上线起累计</span>
+          <span className="site-achievement-label">累计申请</span>
           <span className="site-achievement-value" data-long={total.length > 10 ? '' : undefined}>
             <strong>{total}</strong> <span>次</span>
           </span>

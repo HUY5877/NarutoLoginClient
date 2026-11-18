@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import express, { type CookieOptions, type ErrorRequestHandler, type Request } from 'express';
 import type { AuthService, User } from './auth.js';
+import type { PgAuthStore } from './database.js';
 import type { Config } from './config.js';
 import type { ObjectReader } from './storage.js';
 import { ApiError } from './errors.js';
@@ -24,7 +25,8 @@ export interface Dependencies {
   events: Pick<LoginEventService, 'create' | 'getForUser' | 'getActive' | 'recordStatus'> & Partial<Pick<LoginEventService, 'refresh'>>;
   auth: Pick<AuthService, 'register' | 'login' | 'getUser' | 'listApplications' | 'reviewApplication'>;
   storage: ObjectReader;
-  runs?: Pick<TaskRunService, 'getLatest' | 'getEvents'> & Partial<Pick<TaskRunService, 'getAchievements'>>;
+  runs?: Pick<TaskRunService, 'getLatest' | 'getEvents'>;
+  achievements?: Pick<PgAuthStore, 'countGameRequests'>;
   admin?: Pick<AdminService, 'listUsers' | 'getUser' | 'createUser' | 'updateUser' | 'deleteUser' | 'dailyTasks' | 'dailyTaskRuns' | 'dailyTaskFailureDetails' | 'dailyTaskLogs' | 'interruptDailyTask' | 'monthlyStats'>;
   qqCaptures?: Pick<QqCaptureService, 'upload' | 'list'> & Partial<Pick<QqCaptureService, 'initialize'>>;
   qqAuthorizations?: Pick<QqAuthorizationService, 'upload' | 'list' | 'get' | 'delete'> & Partial<Pick<QqAuthorizationService, 'isConfigured'>>;
@@ -57,7 +59,7 @@ function logPath(req: Request): string {
     ? path : '/api/unknown';
 }
 
-export function createApp(config: Config, { events, auth, storage, runs, admin, qqAuthorizations, qqCaptures, qqBindings, modelChannels, mcpBindings, now = Date.now }: Dependencies) {
+export function createApp(config: Config, { events, auth, storage, runs, achievements, admin, qqAuthorizations, qqCaptures, qqBindings, modelChannels, mcpBindings, now = Date.now }: Dependencies) {
   const app = express();
   const cookieName = config.sessionCookieName ?? 'naruto_session';
   app.disable('x-powered-by');
@@ -98,9 +100,12 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
   }));
 
   app.get('/api/achievements', async (_req, res) => {
-    if (!runs?.getAchievements) throw new ApiError(503, '成就统计暂时不可用，请稍后重试。', 'ACHIEVEMENTS_UNAVAILABLE');
-    const { totalCompleted } = await runs.getAchievements();
-    res.json({ totalCompleted });
+    if (!achievements) throw new ApiError(503, '成就统计暂时不可用，请稍后重试。', 'ACHIEVEMENTS_UNAVAILABLE');
+    const totalRequests = await achievements.countGameRequests().catch(error => {
+      logBackend('error', 'dependency.failed', { component: 'achievements', phase: 'database.query', error });
+      throw new ApiError(503, '成就统计暂时不可用，请稍后重试。', 'ACHIEVEMENTS_UNAVAILABLE');
+    });
+    res.json({ totalRequests });
   });
 
   app.use('/api', (req, _res, next) => {
