@@ -41,32 +41,10 @@
   animation: site-achievement-glint 8s ease-in-out infinite;
 }
 
-.site-achievement-emblem {
-  position: relative;
-  display: grid;
-  place-items: center;
+.site-achievement-avatar {
   width: 2.625rem;
   height: 2.625rem;
-  border: 1px solid #ffd999;
-  border-radius: 50%;
-  background:
-    radial-gradient(circle at 35% 28%, #fff0bc, #ebbe76 57%, #ae713b 74%) center / 74% 74% no-repeat,
-    conic-gradient(from 205deg, #eab572, #8b512e, #ffe7a6, #b77843, #eab572);
-  box-shadow: 0 0 0 3px #d3925229, 0 0 16px #e8ad5450, inset 0 0 0 2px #75472580;
-}
-
-.site-achievement-emblem::before {
-  position: absolute;
-  inset: 3px;
-  border: 1px solid #ffe8ae73;
-  border-radius: 50%;
-  content: '';
-}
-
-.site-achievement-emblem img {
-  position: relative;
-  opacity: .92;
-  filter: sepia(1) saturate(1.9) drop-shadow(0 1px #ffe4aa80);
+  object-fit: contain;
 }
 
 .site-achievement-copy h2 {
@@ -137,8 +115,7 @@
     padding: .5rem .75rem;
     border-radius: .875rem;
   }
-  .site-achievement-emblem { width: 2.375rem; height: 2.375rem; }
-  .site-achievement-emblem img { width: 1.375rem; height: 1.375rem; }
+  .site-achievement-avatar { width: 2.375rem; height: 2.375rem; }
   .site-achievement-value strong { font-size: 1.5rem; }
   .site-achievement-value[data-long] strong { font-size: .725rem; }
 }
