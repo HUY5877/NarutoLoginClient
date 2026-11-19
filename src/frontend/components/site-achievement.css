@@ -38,7 +38,7 @@
   width: 34%;
   background: linear-gradient(106deg, transparent 15%, #ffdda950 50%, transparent 85%);
   opacity: .4;
-  animation: site-achievement-glint 8s ease-in-out infinite;
+  animation: site-achievement-glint 5s ease-in-out infinite;
 }
 
 .site-achievement-avatar {
@@ -105,7 +105,7 @@
 }
 
 @keyframes site-achievement-glint {
-  0%, 65% { transform: translateX(-120%); }
+  0%, 51% { transform: translateX(-120%); }
   88%, 100% { transform: translateX(305%); }
 }
 
