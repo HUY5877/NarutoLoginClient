@@ -65,7 +65,7 @@ export function SiteAchievement() {
   const total = achievement.status === 'ready' ? achievementNumber.format(achievement.total) : null;
   return (
     <section className="site-achievement" aria-labelledby={titleId} data-status={achievement.status}>
-      <img className="site-achievement-avatar" src="/images/konan-achievement.webp" alt="" width="42" height="42" />
+      <img className="site-achievement-avatar" src="/images/konan-achievement.webp?v=98b569de" alt="" width="42" height="42" />
       <div className="site-achievement-copy">
         <h2 id={titleId}>全站成就</h2>
         <p>日常与周胜</p>
