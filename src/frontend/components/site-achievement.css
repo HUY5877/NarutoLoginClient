@@ -44,6 +44,7 @@
 .site-achievement-avatar {
   width: 2.625rem;
   height: 2.625rem;
+  border-radius: .625rem;
   object-fit: contain;
 }
 
