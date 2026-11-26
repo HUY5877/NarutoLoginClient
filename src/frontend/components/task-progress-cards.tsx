@@ -1,4 +1,5 @@
 import { ArrowRight, Check, CircleAlert, CircleHelp, ListChecks, QrCode } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -8,7 +9,7 @@ import type { deriveTaskProgress } from '@/lib/task-progress';
 
 const stepIcons = { submission: ArrowRight, qr: QrCode, script: ListChecks };
 
-export function TaskProgressCards({ progress }: { progress: ReturnType<typeof deriveTaskProgress> }) {
+export function TaskProgressCards({ progress, children }: { progress: ReturnType<typeof deriveTaskProgress>; children?: ReactNode }) {
   return (
     <>
       <Card className="village-glass preparation-card gap-4">
@@ -45,6 +46,7 @@ export function TaskProgressCards({ progress }: { progress: ReturnType<typeof de
           </ItemGroup>
         </CardContent>
       </Card>
+      {children}
       <Card className="village-glass faq-card gap-2">
         <CardHeader>
           <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base"><CircleHelp className="size-4 text-muted-foreground" aria-hidden="true" />常见问题</CardTitle>

@@ -1,6 +1,7 @@
 // Run with node --test tests/frontend-capture.integration.mjs.
 // Uses existing PLAYWRIGHT_MODULE / PLAYWRIGHT_CHROMIUM_EXECUTABLE, never production APIs.
 import assert from 'node:assert/strict';
+import { closeDrawer, openDrawer } from './fixtures/task-workspace.mjs';
 import { existsSync } from 'node:fs';
 import { mkdtemp, rmdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -79,12 +80,14 @@ test('抓号接收后立即显示扫码成功，隐藏二维码和刷新，并�
         assert.equal(await card.getByRole('img', { name: /登录二维码/ }).count(), 0);
         assert.equal(await page.getByRole('button', { name: '刷新二维码', exact: true }).count(), 0);
         assert.equal(await card.getAttribute('data-authorized'), 'false');
-        const progress = page.getByLabel('任务执行进度', { exact: true });
+        const drawer = await openDrawer(page);
+        const progress = drawer.getByLabel('任务执行进度', { exact: true });
         await progress.locator('[data-stage="qr"][data-state="completed"]').waitFor();
         await progress.locator('[data-stage="script"][data-state="pending"]').waitFor();
         failed = true;
-        await card.getByText('扫码已完成，但游戏登录未完成，脚本尚未开始，请重新申请。', { exact: true }).waitFor();
         await progress.locator('[data-stage="script"][data-state="failed"]').waitFor();
+        await closeDrawer(page);
+        await card.getByText('扫码已完成，但游戏登录未完成，脚本尚未开始，请重新申请。', { exact: true }).waitFor();
         assert.equal(await page.getByRole('button', { name: '再次运行', exact: true }).isEnabled(), true);
         assert.equal(requests.filter(request => request.method === 'POST').length, 0);
         assert.deepEqual(errors, []);

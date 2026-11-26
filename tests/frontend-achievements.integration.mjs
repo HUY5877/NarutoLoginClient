@@ -69,10 +69,18 @@ test('the public site achievement shows only task request totals', { skip: skip 
         document.dispatchEvent(new Event('visibilitychange'));
       };
     });
-    const card = page.getByRole('region', { name: '全站成就' });
-    return { page, card, total: card.locator('strong'), calls,
+    const trigger = page.getByRole('button', { name: '全站成就', exact: true });
+    const dialog = page.getByRole('dialog', { name: '全站成就', exact: true });
+    const card = dialog.getByRole('region', { name: '全站成就' });
+    return { page, trigger, dialog, card, total: card.locator('strong'), calls,
       respond(handler) { response = handler; },
-      async open() { await page.goto(origin); await card.waitFor(); },
+      async open() {
+        await page.goto(origin);
+        await trigger.waitFor();
+        assert.equal(calls.length, 0, 'the closed dialog does not fetch statistics');
+        await trigger.click();
+        await card.waitFor();
+      },
       async focus() { await page.evaluate(() => window.dispatchEvent(new Event('focus'))); },
       async setVisible(visible) { await page.evaluate(visible => window.setTestVisibility(visible), visible); },
     };
@@ -185,6 +193,18 @@ test('the public site achievement shows only task request totals', { skip: skip 
         await f.page.screenshot({ path: screenshot });
         t.diagnostic(screenshot);
       }
+      await f.page.keyboard.press('Escape');
+      await f.dialog.waitFor({ state: 'hidden' });
+      assert.equal(await f.trigger.evaluate(element => element === document.activeElement), true);
+      const notice = f.page.getByRole('button', { name: '注册须知', exact: true });
+      await notice.focus();
+      await f.page.keyboard.press('Enter');
+      const registration = f.page.getByRole('dialog', { name: '注册须知', exact: true });
+      await registration.getByRole('note', { name: '注册审核提醒' }).waitFor();
+      assert.equal(await registration.getByText('进群找群主审核，陌生账号不予通过。').isVisible(), true);
+      await registration.getByRole('button', { name: '关闭', exact: true }).click();
+      await registration.waitFor({ state: 'hidden' });
+      assert.equal(await notice.evaluate(element => element === document.activeElement), true);
       const weekly = f.page.getByRole('tab', { name: '决斗场周胜', exact: true });
       await weekly.click();
       assert.equal(await weekly.getAttribute('aria-selected'), 'true');

@@ -2,6 +2,7 @@
 // Optional existing browser dependencies: PLAYWRIGHT_MODULE and PLAYWRIGHT_CHROMIUM_EXECUTABLE.
 // Every API is mocked. Vite has an empty env directory and never starts the backend.
 import assert from 'node:assert/strict';
+import { closeDrawer, drawerTrigger, expectLockedOptions, openDrawer, taskDrawer } from './fixtures/task-workspace.mjs';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rmdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -221,6 +222,35 @@ test('main task selection preserves task options and session ownership', { skip:
       }
     });
 
+    await t.test('progress and FAQ can be opened by keyboard at desktop, tablet and mobile widths', async () => {
+      for (const width of [1280, 768, 390]) {
+        const f = await fixture({ viewport: { width, height: 844 }, reducedMotion: 'reduce' });
+        try {
+          await f.open();
+          const trigger = drawerTrigger(f.page);
+          assert.equal(await taskDrawer(f.page).isVisible(), false);
+          await trigger.focus();
+          await f.page.keyboard.press('Enter');
+          const drawer = taskDrawer(f.page);
+          await drawer.getByLabel('任务执行进度', { exact: true }).waitFor();
+          const question = drawer.getByRole('button', { name: '我应该用哪个手机 App 扫码？', exact: true });
+          await question.press('Enter');
+          await drawer.getByText('QQ 区用手机 QQ，微信区用微信。扫码后在手机上确认登录。', { exact: true }).waitFor();
+          await assertNoHorizontalOverflow(f.page);
+          await closeDrawer(f.page);
+          await waitFor(() => trigger.evaluate(button => button === document.activeElement), 'Closing the drawer returns focus to its trigger');
+          if (width === 1280) {
+            const headerTrigger = f.page.getByRole('button', { name: '打开任务记录', exact: true });
+            await headerTrigger.press('Enter');
+            await drawer.waitFor();
+            await closeDrawer(f.page);
+            await waitFor(() => headerTrigger.evaluate(button => button === document.activeElement), 'Focus should return to the header when opened there');
+          }
+          assert.equal(posts(f.state).length, 0);
+        } finally { await f.close(); }
+      }
+    });
+
     await t.test('authenticated switching preserves daily selections and does not request a QR', async () => {
       const f = await fixture();
       try {
@@ -352,7 +382,10 @@ test('main task selection preserves task options and session ownership', { skip:
           assert.equal(await card.getByRole('button', { name: '本次申请详情', exact: true }).count(), 0);
           assert.equal(await card.getByText(task.id, { exact: true }).count(), 0);
           assert.equal(await card.getByRole('button', { name: '刷新二维码', exact: true }).count(), 0);
-          assert.equal(await f.page.locator('#task-run-details').getByText('任务执行记录', { exact: true }).count(), 0);
+          const drawer = await openDrawer(f.page);
+          assert.equal(await drawer.getByText('任务执行记录', { exact: true }).count(), 0);
+          assert.equal(await drawer.getByText(task.id, { exact: true }).count(), 0);
+          await closeDrawer(f.page);
         } finally { gate.resolve(); }
         await waitFor(() => posts(f.state).length === 1, 'One new task should be submitted');
         assert.equal(posts(f.state)[0].body.loginType, 'ios_wechat');
@@ -382,12 +415,15 @@ test('main task selection preserves task options and session ownership', { skip:
           await f.open();
           if (status === 'completed') {
             await waitFor(() => generate(f.page).isEnabled(), 'A previous success should allow the next task');
+            await openDrawer(f.page);
             assert.equal(await f.page.getByText('任务执行记录', { exact: true }).count(), 0);
             assert.equal(await f.page.getByLabel('任务整体状态', { exact: true }).innerText(), '待开始');
             return;
           }
+          await openDrawer(f.page);
           await f.page.getByRole('button', { name: '展开记录', exact: true }).click();
           await f.page.getByRole('log', { name: '任务执行日志', exact: true }).getByText(historyMessage, { exact: true }).waitFor();
+          await closeDrawer(f.page);
           assert.equal(await isSelected(daily(f.page)), true);
           assert.equal(await weekly(f.page).isEnabled(), !active,
             'A captured scan in completed or failed history must not lock the next task selection');
@@ -397,9 +433,11 @@ test('main task selection preserves task options and session ownership', { skip:
             await selectTask(f.page, 'arena_weekly');
             await weeklyPanel(f.page).waitFor();
             assert.equal(await f.page.locator('.login-shell').getAttribute('data-main-task'), 'arena_weekly');
+            await openDrawer(f.page);
+            await f.page.getByRole('button', { name: '展开记录', exact: true }).click();
             assert.equal(await f.page.getByRole('log', { name: '任务执行日志', exact: true })
               .getByText(historyMessage, { exact: true }).isVisible(), true, 'Switching the next task preserves execution history');
-            assert.equal(await f.page.locator('code').getByText(sessionId, { exact: true }).isVisible(), true);
+            await taskDrawer(f.page).getByText('申请编号', { exact: false }).getByText(sessionId, { exact: true }).waitFor();
           }
           assert.deepEqual(loginCalls(f.state), [], 'Restoring history and switching tasks must not create or recover a login session');
         } finally { await f.close(); }
@@ -440,7 +478,7 @@ test('main task selection preserves task options and session ownership', { skip:
         assert.equal(await isSelected(weekly(f.page)), true);
         assert.equal(await weekly(f.page).isDisabled(), true, 'An unconfirmed saved intent cannot change task type');
         assert.equal(posts(f.state).length, beforeReload, 'Restoration must not resubmit an unconfirmed intent');
-        assert.equal(await channel.locator('strong').innerText(), 'iOS 微信区');
+        await expectLockedOptions(f.page, '决斗场周胜', 'iOS 微信区');
         await resume.click();
         await f.page.locator('img[src^="blob:"]').waitFor();
         assert.equal(posts(f.state).length, 2);

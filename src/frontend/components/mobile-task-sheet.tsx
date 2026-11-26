@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { ChevronUp, ListChecks, X } from 'lucide-react';
+import { ChevronRight, ListChecks, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { useMediaQuery } from '@/hooks/use-media-query';
 import type { MainTask } from '../../shared/user-options';
+import './task-sheet.css';
 
 export function MobileTaskSheet({ open, onOpenChange, children, mainTask = 'daily' }: {
   open: boolean;
@@ -11,15 +11,12 @@ export function MobileTaskSheet({ open, onOpenChange, children, mainTask = 'dail
   children: ReactNode;
   mainTask?: MainTask;
 }) {
-  const mobile = useMediaQuery('(max-width: 639px)');
+  const opener = useRef<HTMLElement | null>(null);
   const gesture = useRef<{ y: number; time: number; distance: number } | null>(null);
   const suppressClick = useRef(false);
   const [drag, setDrag] = useState(0);
   const [dragging, setDragging] = useState(false);
 
-  useEffect(() => {
-    if (!mobile && open) onOpenChange(false);
-  }, [mobile, open, onOpenChange]);
   useEffect(() => {
     if (!open) { gesture.current = null; setDrag(0); setDragging(false); }
   }, [open]);
@@ -27,13 +24,24 @@ export function MobileTaskSheet({ open, onOpenChange, children, mainTask = 'dail
   const resetGesture = () => { gesture.current = null; setDrag(0); setDragging(false); };
 
   return (
-    <Dialog open={mobile && open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
-        <Button type="button" variant="outline" className="mobile-task-toggle mt-3 w-full gap-2 sm:hidden">
-          <ListChecks aria-hidden="true" /><span>任务进度与记录</span><ChevronUp aria-hidden="true" />
+        <Button type="button" variant="outline" className="mobile-task-toggle task-sheet-toggle w-full gap-2" aria-label="任务进度与记录">
+          <ListChecks aria-hidden="true" /><span>任务进度与记录</span><ChevronRight aria-hidden="true" />
         </Button>
       </DialogTrigger>
-      <DialogContent className="mobile-task-sheet" showCloseButton={false} data-dragging={dragging}
+      <DialogContent className="mobile-task-sheet task-drawer" showCloseButton={false} data-dragging={dragging}
+        onOpenAutoFocus={() => {
+          const active = document.activeElement;
+          opener.current = active instanceof HTMLElement && active !== document.body ? active : null;
+        }}
+        onCloseAutoFocus={event => {
+          if (opener.current?.isConnected) {
+            event.preventDefault();
+            opener.current.focus({ preventScroll: true });
+          }
+          opener.current = null;
+        }}
         style={{ '--sheet-drag': `${drag}px` } as CSSProperties}>
         <button type="button" className="task-sheet-grip" aria-label="关闭任务进度，可下滑关闭" onClick={() => {
           if (suppressClick.current) { suppressClick.current = false; return; }

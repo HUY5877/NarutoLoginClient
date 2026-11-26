@@ -10,14 +10,11 @@ import {
   LogIn,
   LogOut,
   ListChecks,
-  MessageCircle,
   QrCode,
   RefreshCw,
-  ScanLine,
   Settings2,
   ShieldCheck,
   Smartphone,
-  Sparkles,
   TimerOff,
   UserRound,
 } from 'lucide-react';
@@ -26,21 +23,12 @@ import { RobotBindingMenu } from '@/components/robot-binding-menu';
 import { McpBindingDialog } from '@/components/mcp-binding-dialog';
 import { AdminMenu } from '@/components/admin-menu';
 import { VillageParticles } from '@/components/village-particles';
-import { ChakraSeal } from '@/components/chakra-seal';
 import { MobileVillageHero } from '@/components/mobile-village-hero';
-import { KonanPortrait } from '@/components/konan-portrait';
 import { MobileTaskSheet } from '@/components/mobile-task-sheet';
 import { TaskProgressCards } from '@/components/task-progress-cards';
 import { SiteEnvironmentBadge } from '@/components/site-environment-badge';
-import { SiteAchievement } from '@/components/site-achievement';
-import { RegistrationNotice } from '@/components/registration-notice';
+import { VillageResources } from '@/components/village-resources';
 import { MainTaskSwitch } from '@/components/main-task-switch';
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from '@/components/ui/accordion';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -49,7 +37,6 @@ import {
   CardAction,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
@@ -62,13 +49,6 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from '@/components/ui/empty';
-import {
   Item,
   ItemContent,
   ItemDescription,
@@ -77,7 +57,6 @@ import {
   ItemTitle,
 } from '@/components/ui/item';
 import { Separator } from '@/components/ui/separator';
-import { Skeleton } from '@/components/ui/skeleton';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -104,9 +83,8 @@ const secretRealmChoices: Array<{ value: SecretRealmMode; title: string }> = [
 ];
 
 function ChannelBadge({ app }: { app: 'QQ' | '微信' }) {
-  return <span className="channel-app-badge" data-app={app === 'QQ' ? 'qq' : 'wechat'} aria-hidden="true">
-    {app === 'QQ' ? <span>QQ</span> : <MessageCircle className="size-5" />}
-  </span>;
+  return <img className="ink-field-icon" src={app === 'QQ' ? '/icons/ink-qq.png' : '/icons/ink-wechat.png'}
+    alt="" width="28" height="28" />;
 }
 
 const channelDevice = (type: string) => type.startsWith('ios_') ? 'iOS' : '安卓';
@@ -115,9 +93,9 @@ function LoginHelp({ mainTask = 'daily' }: { mainTask?: MainTask }) {
   return (
     <Dialog>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="sm" className="gap-2 text-muted-foreground">
+        <Button variant="ghost" size="sm" aria-label="使用帮助" title="使用帮助" className="scene-nav-button gap-2">
           <CircleHelp aria-hidden="true" />
-          使用帮助
+          <span>使用帮助</span>
         </Button>
       </DialogTrigger>
       <DialogContent className="login-help-dialog sm:max-w-lg">
@@ -170,7 +148,6 @@ export default function App() {
     canResumePending,
     remainingSeconds,
     countdown,
-    isError,
     statusLabel,
     startLogin,
     refreshQr,
@@ -226,7 +203,6 @@ export default function App() {
   const scanApp = loginScanApp(displayedLoginType);
   const ready = progressInput.qrReady && !scanComplete;
   const qrPending = pending && !scanComplete;
-  const qrError = isError && !scanComplete;
   const progress = deriveTaskProgress({ ...progressInput, qrReady: ready, mainTask });
   const ended = !pending && !canRetryQuery && (
     terminalRun || (!authorizedRun && (phase === 'expired' || phase === 'failed'))
@@ -249,10 +225,10 @@ export default function App() {
       confirmLogin(session.id, isRunTerminal(currentRun.status));
     }
   }, [session?.id, currentRun?.taskId, currentRun?.status, currentRun?.authorizedAt, currentRun?.startedAt, confirmLogin]);
-  const stepIcons = { submission: ArrowRight, qr: QrCode, script: ListChecks };
+  const lockedSettings = Boolean(auth.user && !ended && !canEditShownOptions);
 
   return (
-    <div className="login-shell min-h-svh text-foreground" data-main-task={mainTask}>
+    <div className="login-shell min-h-svh text-foreground" data-main-task={mainTask} data-running={lockedSettings}>
       <div className="village-backdrop" aria-hidden="true">
         <picture>
           <source media="(max-width: 639px)" srcSet="/images/konoha-background-mobile.webp" />
@@ -260,19 +236,25 @@ export default function App() {
         </picture>
         <VillageParticles />
       </div>
-      <header className="village-header border-b border-white/50">
-        <div className="village-header-inner mx-auto flex min-h-18 max-w-5xl flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 py-3 sm:px-8">
-          <div className="flex items-center gap-3" aria-label="忍者日常">
-            <span className="headband-mark" aria-hidden="true">
-              <img src="/icons/leaf-village.svg" alt="" width="32" height="32" />
-            </span>
+      <header className="village-header">
+        <div className="village-header-inner">
+          <div className="village-brand" aria-label="忍者日常">
+            <img src="/icons/ink-leaf.png" alt="" width="34" height="34" />
             <span className="text-base font-bold tracking-wide">忍者日常<SiteEnvironmentBadge /></span>
           </div>
-          <div className="village-account flex flex-wrap items-center justify-end gap-1.5 sm:gap-3">
+          <div className="scene-resources">
+            <VillageResources />
+            <Button type="button" variant="ghost" size="sm" className="scene-nav-button scene-record-link"
+              aria-label="打开任务记录" title="打开任务记录" onClick={() => setMobileDetailsOpen(true)}>
+              <ListChecks aria-hidden="true" /><span>任务记录</span>
+            </Button>
+            <LoginHelp mainTask={mainTask} />
+          </div>
+          <div className="village-account">
             {auth.loading ? <Spinner aria-label="正在读取账户状态" className="size-4" /> : auth.user ? (
               <>
-                <RobotBindingMenu key={auth.user.id} userId={auth.user.id} busy={auth.busy} onUnauthorized={auth.handleUnauthorized} />
-                {auth.user.isAdmin === true ? <AdminMenu key={auth.user.id} userId={auth.user.id} refreshAuth={auth.refresh}
+                <RobotBindingMenu key={`binding-${auth.user.id}`} userId={auth.user.id} busy={auth.busy} onUnauthorized={auth.handleUnauthorized} />
+                {auth.user.isAdmin === true ? <AdminMenu key={`admin-${auth.user.id}`} userId={auth.user.id} refreshAuth={auth.refresh}
                   mobileAccount={{ username: auth.user.username, busy: auth.busy, logout: () => { void auth.logout(); } }} /> : (
                   <DropdownMenu modal={false}>
                     <DropdownMenuTrigger asChild>
@@ -297,13 +279,13 @@ export default function App() {
                 <LogIn aria-hidden="true" />登录 / 注册
               </Button>
             )}
-            <span className="hidden sm:block"><LoginHelp mainTask={mainTask} /></span>
           </div>
         </div>
       </header>
 
-      <main className="village-main mx-auto max-w-5xl px-5 py-6 sm:px-8 sm:py-8" data-mobile-qr-ready={ready}>
+      <main className="village-main" data-mobile-qr-ready={ready}>
         <h1 className="sr-only">任务中心</h1>
+        <MobileVillageHero />
         {auth.error && !authOpen && (
           <Alert variant="destructive" className="village-glass auth-notice mb-5" role="alert">
             <CircleAlert aria-hidden="true" />
@@ -316,23 +298,16 @@ export default function App() {
           </Alert>
         )}
         <MainTaskSwitch value={mainTask} disabled={auth.loading || auth.busy || Boolean(auth.user && !canEditShownOptions)}
-          locked={Boolean(auth.user && !canEditShownOptions)} onChange={setMainTask}
-          achievement={<SiteAchievement />}
-          notice={<RegistrationNotice className="registration-home-notice" />}>
-        <MobileVillageHero />
-
-        <div className="village-workspace grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6">
-          <div className="min-w-0">
-          <Card className="village-glass login-card gap-0 overflow-hidden shadow-sm" data-authorized={authorizationComplete} data-phase={ended ? 'result' : ready ? 'qr_ready' : authorizationComplete ? 'authorized' : scanCaptured ? 'scan_captured' : phase}>
+          locked={Boolean(auth.user && !canEditShownOptions)} onChange={setMainTask}>
+          <Card className="login-card gap-0" data-authorized={authorizationComplete} data-phase={ended ? 'result' : ready ? 'qr_ready' : authorizationComplete ? 'authorized' : scanCaptured ? 'scan_captured' : phase}>
             <CardHeader className="gap-2 px-6 pb-5 sm:px-8">
               <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-lg font-semibold">
-                <ScanLine className="size-5 text-primary" aria-hidden="true" />
                 任务工作台
               </CardTitle>
               {phase === 'idle' && !ended && !scanComplete && !resumeSaved && <CardDescription className="text-sm">
                 {auth.user ? '选择区服及策略，再获取授权二维码。' : '先登录忍者日常账户，再获取二维码。'}
               </CardDescription>}
-              {!ended && <CardAction>
+              {auth.user && !ended && !lockedSettings && <CardAction>
                 <Badge variant="secondary" className="gap-1.5 font-normal">
                   <Smartphone aria-hidden="true" />
                   {loginTypeLabels[displayedLoginType]}
@@ -362,29 +337,16 @@ export default function App() {
                       onError={handleQrError}
                     />
                   ) : (
-                    <>
-                      {qrPending && <Skeleton className="absolute inset-0 size-full rounded-none bg-white/20 motion-reduce:animate-none" />}
-                      <Empty className="relative h-full gap-4 border-0 p-5 md:p-5">
-                        <EmptyHeader className="gap-2.5">
-                          <EmptyMedia variant="icon" className={`mb-1 size-16 rounded-2xl ${qrError ? 'bg-destructive/10 text-destructive' : 'qr-emblem text-muted-foreground'}`}>
-                            <ChakraSeal active={qrPending || scanComplete} complete={scanComplete} />
-                            {scanComplete ? <CheckCheck className="text-primary" aria-hidden="true" />
-                              : qrPending ? <Spinner aria-hidden="true" className="size-6 motion-reduce:animate-none" />
-                              : phase === 'expired' ? <TimerOff aria-hidden="true" />
-                                : isError ? <CircleAlert aria-hidden="true" />
-                                  : <img src="/icons/leaf-village.svg" alt="" width="42" height="42" aria-hidden="true" />}
-                          </EmptyMedia>
-                          <div className="qr-copy" role="status">
-                            <EmptyTitle className="text-base">
-                              {scanComplete ? progress.summary : statusLabel}
-                            </EmptyTitle>
-                            <EmptyDescription className="text-sm leading-6">
-                              {scanComplete ? progress.hint : '二维码准备好后会自动显示。'}
-                            </EmptyDescription>
-                          </div>
-                        </EmptyHeader>
-                      </Empty>
-                    </>
+                    <div className="workbench-status">
+                      <div className="workbench-status-icon" aria-hidden="true">
+                        {scanComplete ? <CheckCheck /> : qrPending ? <Spinner className="motion-reduce:animate-none" />
+                          : <img src="/icons/ink-leaf.png" alt="" width="26" height="26" />}
+                      </div>
+                      <div className="qr-copy" role="status">
+                        <h3>{scanComplete ? progress.summary : statusLabel}</h3>
+                        <p>{scanComplete ? progress.hint : '二维码准备好后会自动显示。'}</p>
+                      </div>
+                    </div>
                   )}
                 </div>
               </div>}
@@ -432,7 +394,13 @@ export default function App() {
                 </div>
                 {!optionsOpen && <p>{settingsPreview}</p>}
               </div>}
-              <div id="run-options" className="run-options w-full max-w-sm" hidden={ended && (!canStart || !optionsOpen)}>
+              {lockedSettings && (progress.taskId || awaitingSubmission || canResumePending) && (
+                <section className="locked-config" aria-label="本次任务配置">
+                  <Settings2 aria-hidden="true" />
+                  <div><h3>本次任务配置</h3><p>{settingsPreview}</p></div>
+                </section>
+              )}
+              <div id="run-options" className="run-options w-full max-w-sm" hidden={lockedSettings || (ended && (!canStart || !optionsOpen))}>
               {auth.user && (
                 <div className="login-channel mt-6 w-full max-w-sm space-y-2">
                   <label id="login-channel-label" htmlFor="login-channel-trigger" className="text-sm font-medium">账号归属</label>
@@ -502,7 +470,7 @@ export default function App() {
                         aria-labelledby="secret-realm-mode-label" aria-describedby="secret-realm-mode-value" disabled={auth.busy || !canEditShownOptions}
                         className="login-channel-trigger w-full justify-between font-normal">
                         <span className="login-channel-selection">
-                          <span className="channel-app-badge" aria-hidden="true"><Sparkles className="size-5" /></span>
+                          <img className="ink-field-icon" src="/icons/ink-scroll.png" alt="" width="28" height="28" />
                           <span className="login-channel-copy"><strong id="secret-realm-mode-value">{secretRealmTitle}</strong></span>
                         </span>
                         <span className="channel-chevron"><ChevronDown aria-hidden="true" className="size-4" /></span>
@@ -536,68 +504,14 @@ export default function App() {
                 <ShieldCheck className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
                 {session?.loginStartedAt ? '实例保留 10 分钟供扫码，刷新不会延长占用' : '同一账户共用一个实例，分配后有 10 分钟扫码时间'}
               </p>}
-              {auth.user && <>
-                <div className="mobile-progress-overview sm:hidden" aria-label="任务进度概览">
-                  {progress.steps.map(({ id, title, description, state }) => {
-                    const waitingForScan = id === 'qr' && ready;
-                    const scanned = id === 'qr' && scanComplete;
-                    const label = scanned ? '已扫码' : waitingForScan ? '待扫码'
-                      : id === 'submission' ? state === 'completed' ? '已提交' : '提交申请'
-                        : id === 'qr' ? '二维码'
-                          : currentRun?.status === 'finishing_login' ? '进入游戏'
-                            : state === 'completed' ? '已完成' : initialDailyCompletion ? '初步完成' : progress.mainTask === 'arena_weekly' ? '刷周胜' : '清日常';
-                    const stateLabel = waitingForScan ? 'active' : state;
-                    const StepIcon = stepIcons[id];
-                    return <span key={id} data-stage={id} data-state={stateLabel} aria-label={`${title}：${description}`}>
-                      <span className="progress-step-symbol">
-                        {state === 'failed' ? <CircleAlert aria-hidden="true" />
-                          : waitingForScan ? <QrCode aria-hidden="true" />
-                            : scanned || state === 'completed' ? <Check aria-hidden="true" />
-                              : state === 'active' ? <Spinner aria-hidden="true" className="motion-reduce:animate-none" />
-                                : <StepIcon aria-hidden="true" />}
-                      </span>
-                      <span>{label}</span>
-                    </span>;
-                  })}
-                </div>
-                <MobileTaskSheet open={mobileDetailsOpen} onOpenChange={setMobileDetailsOpen} mainTask={progress.mainTask}>
-                  <div className="task-sheet-progress space-y-4"><TaskProgressCards progress={progress} /></div>
-                  {(visibleRun.task || visibleRun.error) && <TaskRunPanel view={visibleRun} retry={taskRun.retry} />}
+              <MobileTaskSheet open={mobileDetailsOpen} onOpenChange={setMobileDetailsOpen} mainTask={progress.mainTask}>
+                <TaskProgressCards progress={progress}>
+                  {auth.user && (visibleRun.task || visibleRun.error) && <TaskRunPanel view={visibleRun} retry={taskRun.retry} />}
                   {progress.taskId && <p className="task-sheet-session">申请编号 <code>{progress.taskId}</code></p>}
-                </MobileTaskSheet>
-              </>}
+                </TaskProgressCards>
+              </MobileTaskSheet>
             </CardContent>
-
-            <CardFooter className="login-card-footer flex-col items-stretch gap-4 border-t px-6 py-5 sm:px-8">
-              {progress.taskId && (
-                <Accordion type="single" collapsible className="login-session-details">
-                  <AccordionItem value="session" className="border-b-0 border-t">
-                    <AccordionTrigger className="py-3 text-sm font-normal text-muted-foreground">本次申请详情</AccordionTrigger>
-                    <AccordionContent className="space-y-3 pb-1 text-sm">
-                      <div className="space-y-1.5">
-                        <p className="text-muted-foreground">申请编号</p>
-                        <code className="block break-all rounded-md border bg-background px-3 py-2 font-mono text-xs leading-5">{progress.taskId}</code>
-                      </div>
-                    </AccordionContent>
-                  </AccordionItem>
-                </Accordion>
-              )}
-              <div className="mobile-login-help flex flex-wrap items-center justify-center gap-x-2 gap-y-1 sm:hidden">
-                <LoginHelp mainTask={mainTask} />
-                {auth.user && !isArenaWeekly && !canEditShownOptions && <span className="text-xs text-muted-foreground">{displayedUserOptions.equipmentStamina ? '装备栏体力刷取已开启' : '装备栏体力刷取未开启'}</span>}
-              </div>
-            </CardFooter>
           </Card>
-
-          <div id="task-run-details" className="task-run-details">
-            {auth.user && (visibleRun.task || visibleRun.error) && <TaskRunPanel view={visibleRun} retry={taskRun.retry} />}
-          </div>
-          </div>
-          <div id="login-progress-details" className="village-side-panels space-y-5 lg:space-y-6">
-            <div className="village-portrait-stage"><KonanPortrait className="village-portrait" /></div>
-            <TaskProgressCards progress={progress} />
-          </div>
-        </div>
         </MainTaskSwitch>
       </main>
       <McpBindingDialog user={auth.user} authLoading={auth.loading} loginOpen={authOpen}
