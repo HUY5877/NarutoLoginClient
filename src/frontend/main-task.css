@@ -35,14 +35,20 @@
 .village-header button:focus-visible, .main-task-tabs button:focus-visible {
   outline: 2px solid var(--scene-ivory); outline-offset: 2px;
 }
-.village-main { min-height: calc(100svh - 3rem); max-width: none; margin: 0; padding: clamp(1.25rem, 5vh, 4.5rem) var(--scene-gutter) 2.5rem; }
+.village-main { position: relative; min-height: calc(100svh - 3rem); max-width: none; margin: 0; padding: clamp(1.25rem, 5vh, 4.5rem) var(--scene-gutter) 2.5rem; }
+.village-achievement {
+  position: absolute; inset: 1rem var(--scene-gutter) auto;
+  display: grid; grid-template-columns: minmax(calc(var(--scene-rail) + .75rem), 1fr) auto minmax(0, 1fr);
+  pointer-events: none;
+}
+.village-achievement > .site-achievement { grid-column: 2; pointer-events: auto; }
 .auth-notice { width: min(100%, var(--scene-rail)); margin: 0 0 1rem; }
 .mobile-village-hero {
-  position: fixed; display: block; inset: auto 0 0 auto; z-index: -1;
-  width: min(32vw, 34rem); height: min(70svh, 51rem); pointer-events: none;
+  position: fixed; display: block; inset: auto 0 0 auto; z-index: 0;
+  width: min(32vw, 34rem, 46.667svh); aspect-ratio: 2 / 3; pointer-events: none;
 }
-.mobile-character-scene { position: absolute; inset: 0; display: flex; justify-content: flex-end; align-items: flex-end; }
-.mobile-character { height: 100%; width: auto; max-width: 100%; mask-image: linear-gradient(#000 90%, transparent); }
+.mobile-character-scene { position: relative; width: 100%; height: 100%; }
+.mobile-character { height: 100%; width: 100%; mask-image: linear-gradient(#000 90%, transparent); }
 .main-task-tabs {
   position: relative; width: var(--scene-rail); max-width: 100%; min-width: 0; gap: 0;
   padding: 0 clamp(1rem, 1.9vw, 1.75rem) 1.125rem; color: var(--scene-ivory);
@@ -103,10 +109,17 @@
 .registration-notice-description-compact { display: none; }
 
 @media (min-width: 640px) and (max-width: 979px) {
-  .scene-nav-button span, .scene-resources .village-resource-trigger span { display: none; }
-  .scene-nav-button, .scene-resources .village-resource-trigger { width: 2.25rem; padding: 0; }
+  .scene-nav-button span { display: none; }
+  .scene-nav-button { width: 2.25rem; padding: 0; }
   .village-header-inner { gap: 0 .5rem; padding-inline: 1rem; }
   .village-account { gap: .25rem; margin-inline-start: auto; }
+}
+@media (min-width: 640px) and (max-width: 799px) {
+  .village-main { padding-top: .75rem; }
+  .village-achievement { position: static; display: flex; justify-content: center; margin-bottom: .75rem; }
+}
+@media (min-width: 640px) and (max-width: 979px) and (max-height: 600px) {
+  .mobile-village-hero { width: min(23vw, 38svh); }
 }
 @media (max-width: 639px) {
   .village-header-inner { display: grid; grid-template-columns: auto 1fr auto; gap: 0 .4rem; min-height: 3rem; padding: .125rem .75rem; }
@@ -118,9 +131,13 @@
   .village-account { gap: .25rem; padding: 0; border: 0; justify-content: flex-end; min-width: 0; }
   .village-account > button { min-height: 2.5rem; padding-inline: .45rem; background: transparent; }
   .village-main { min-height: auto; padding: 0 .75rem max(1.25rem, env(safe-area-inset-bottom)); }
-  .village-main .mobile-village-hero, .village-main[data-mobile-qr-ready='true'] .mobile-village-hero { position: relative; inset: auto; z-index: 0; width: 100%; height: min(21svh, 11rem); min-height: 0; margin: 0; overflow: hidden; }
-  .village-main .mobile-character { align-self: flex-start; height: 115%; width: auto; max-width: 53%; margin-top: .3rem; mask-image: none; }
-  .mobile-character-scene { justify-content: flex-end; right: 4%; }
+  .village-achievement { position: static; display: flex; justify-content: center; padding-top: .625rem; }
+  .village-main .mobile-village-hero, .village-main[data-mobile-qr-ready='true'] .mobile-village-hero {
+    position: relative; inset: auto; display: flex; justify-content: flex-end; width: 100%; aspect-ratio: auto;
+    height: clamp(8rem, 21svh, 11rem); min-height: 0; margin: 0; padding-right: 4%; overflow: hidden;
+  }
+  .mobile-character-scene { inset: auto; display: block; height: 115%; width: auto; max-width: 48%; aspect-ratio: 2 / 3; margin-top: .3rem; }
+  .village-main .mobile-character, .village-main[data-mobile-qr-ready='true'] .mobile-character { width: 100%; mask-image: none; }
   .main-task-tabs { width: 100%; padding: 0 1rem .9rem; }
   .main-task-tabs .login-card [data-slot='card-header'] { padding-top: .9rem; padding-bottom: .625rem; }
   .main-task-trigger { min-height: 2.6rem; }

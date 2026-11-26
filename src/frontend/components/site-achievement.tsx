@@ -66,10 +66,7 @@ export function SiteAchievement() {
   return (
     <section className="site-achievement" aria-labelledby={titleId} data-status={achievement.status}>
       <img className="site-achievement-avatar" src="/images/konan-achievement.webp?v=98b569de" alt="" width="42" height="42" />
-      <div className="site-achievement-copy">
-        <h2 id={titleId}>全站成就</h2>
-        <p>日常与周胜</p>
-      </div>
+      <h2 id={titleId}>全站成就</h2>
       <div className="site-achievement-counter" aria-live="polite" aria-atomic="true">
         {total !== null ? <>
           <span className="site-achievement-label">累计申请</span>

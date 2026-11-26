@@ -69,17 +69,14 @@ test('the public site achievement shows only task request totals', { skip: skip 
         document.dispatchEvent(new Event('visibilitychange'));
       };
     });
-    const trigger = page.getByRole('button', { name: '全站成就', exact: true });
-    const dialog = page.getByRole('dialog', { name: '全站成就', exact: true });
-    const card = dialog.getByRole('region', { name: '全站成就' });
-    return { page, trigger, dialog, card, total: card.locator('strong'), calls,
+    const card = page.getByRole('region', { name: '全站成就', exact: true });
+    return { page, card, total: card.locator('.site-achievement-value strong'), calls,
       respond(handler) { response = handler; },
       async open() {
         await page.goto(origin);
-        await trigger.waitFor();
-        assert.equal(calls.length, 0, 'the closed dialog does not fetch statistics');
-        await trigger.click();
         await card.waitFor();
+        assert.equal(await page.getByRole('banner').getByRole('button', { name: '全站成就', exact: true }).count(), 0);
+        assert.equal(await page.getByRole('dialog').count(), 0);
       },
       async focus() { await page.evaluate(() => window.dispatchEvent(new Event('focus'))); },
       async setVisible(visible) { await page.evaluate(visible => window.setTestVisibility(visible), visible); },
@@ -128,6 +125,10 @@ test('the public site achievement shows only task request totals', { skip: skip 
     await f.page.clock.install();
     await f.open();
     await f.total.filter({ hasText: /^12,864$/ }).waitFor();
+    await f.page.setViewportSize({ width: 390, height: 844 });
+    await f.page.getByRole('tab', { name: '决斗场周胜', exact: true }).click();
+    await f.page.setViewportSize({ width: 1280, height: 900 });
+    assert.equal(await f.card.count(), 1, 'Desktop and mobile share the same counter');
     f.respond(() => ({ json: { totalRequests: 12865 } }));
     await f.page.clock.fastForward(61_000);
     await f.total.filter({ hasText: /^12,865$/ }).waitFor();
@@ -138,6 +139,7 @@ test('the public site achievement shows only task request totals', { skip: skip 
     f.respond(() => ({ json: { totalRequests: 12866 } }));
     await f.setVisible(true);
     await f.total.filter({ hasText: /^12,866$/ }).waitFor();
+    assert.deepEqual(f.calls, ['GET', 'GET', 'GET']);
   });
 
   await t.test('a stalled request times out and can be retried on focus', async t => {
@@ -157,13 +159,21 @@ test('the public site achievement shows only task request totals', { skip: skip 
     }
   });
 
-  await t.test('desktop and mobile keep the task controls accessible', async t => {
+  await t.test('the home counter and Konan’s registration notice remain accessible at all screen sizes', async t => {
     for (const width of [1280, 768, 390, 320]) {
       const f = await fixture(t, { viewport: { width, height: width < 640 ? 844 : 900 },
-        reducedMotion: width === 320 ? 'reduce' : 'no-preference' });
+        hasTouch: width < 640, reducedMotion: width === 320 ? 'reduce' : 'no-preference' });
       if (width === 320) f.respond(() => ({ json: { totalRequests: Number.MAX_SAFE_INTEGER } }));
       await f.open();
       await f.total.filter({ hasText: width === 320 ? /^9,007,199,254,740,991$/ : /^12,864$/ }).waitFor();
+      const avatar = f.card.locator('img[src="/images/konan-achievement.webp?v=98b569de"]');
+      await avatar.waitFor();
+      await avatar.evaluate(image => image.decode());
+      const avatarBox = await avatar.boundingBox();
+      assert.ok(avatarBox && avatarBox.width > 0 && avatarBox.height > 0
+        && avatarBox.x >= 0 && avatarBox.x + avatarBox.width <= width
+        && avatarBox.y >= 0 && avatarBox.y + avatarBox.height <= f.page.viewportSize().height,
+        `The original achievement portrait is visible at ${width}px`);
       assert.equal(await f.card.getByText('累计申请', { exact: true }).isVisible(), true);
       const dimensions = await f.card.evaluate(card => ({
         viewportWidth: document.documentElement.clientWidth,
@@ -193,16 +203,18 @@ test('the public site achievement shows only task request totals', { skip: skip 
         await f.page.screenshot({ path: screenshot });
         t.diagnostic(screenshot);
       }
-      await f.page.keyboard.press('Escape');
-      await f.dialog.waitFor({ state: 'hidden' });
-      assert.equal(await f.trigger.evaluate(element => element === document.activeElement), true);
-      const notice = f.page.getByRole('button', { name: '注册须知', exact: true });
-      await notice.focus();
-      await f.page.keyboard.press('Enter');
+      const notice = f.page.getByRole('region', { name: '小南立绘', exact: true }).getByRole('button', { name: /注册须知/ });
+      assert.match(await notice.innerText(), /加群/);
+      assert.equal(await notice.getByText('993904975', { exact: true }).isVisible(), true);
+      assert.equal(await f.page.getByRole('banner').getByRole('button', { name: /注册须知/ }).count(), 0);
+      if (width < 640) await notice.tap();
+      else if (width === 768) await notice.click();
+      else await notice.press('Enter');
       const registration = f.page.getByRole('dialog', { name: '注册须知', exact: true });
       await registration.getByRole('note', { name: '注册审核提醒' }).waitFor();
       assert.equal(await registration.getByText('进群找群主审核，陌生账号不予通过。').isVisible(), true);
-      await registration.getByRole('button', { name: '关闭', exact: true }).click();
+      if (width === 1280) await f.page.keyboard.press('Escape');
+      else await registration.getByRole('button', { name: '关闭', exact: true }).click();
       await registration.waitFor({ state: 'hidden' });
       assert.equal(await notice.evaluate(element => element === document.activeElement), true);
       const weekly = f.page.getByRole('tab', { name: '决斗场周胜', exact: true });
@@ -210,7 +222,9 @@ test('the public site achievement shows only task request totals', { skip: skip 
       assert.equal(await weekly.getAttribute('aria-selected'), 'true');
       assert.deepEqual(f.calls, ['GET'], 'task selection does not reload the whole-site count');
       await f.page.getByRole('button', { name: '登录 / 注册', exact: true }).first().click();
-      await f.page.getByRole('dialog').waitFor();
+      const auth = f.page.getByRole('dialog');
+      await auth.getByRole('button', { name: '注册账户', exact: true }).click();
+      await auth.getByRole('note', { name: '注册审核提醒' }).getByText('993904975', { exact: true }).waitFor();
     }
   });
 });

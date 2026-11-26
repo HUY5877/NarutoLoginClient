@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { KonanPortrait } from '@/components/konan-portrait';
+import { RegistrationBubble } from '@/components/registration-notice';
 
 export function MobileVillageHero() {
   const scene = useRef<HTMLElement>(null);
@@ -34,8 +35,9 @@ export function MobileVillageHero() {
 
   return (
     <section ref={scene} className="mobile-village-hero" aria-label="小南立绘">
-      <div className="mobile-character-scene" aria-hidden="true">
+      <div className="mobile-character-scene">
         <KonanPortrait className="mobile-character" decorative />
+        <RegistrationBubble />
       </div>
     </section>
   );

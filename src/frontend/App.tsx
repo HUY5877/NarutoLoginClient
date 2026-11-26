@@ -27,7 +27,7 @@ import { MobileVillageHero } from '@/components/mobile-village-hero';
 import { MobileTaskSheet } from '@/components/mobile-task-sheet';
 import { TaskProgressCards } from '@/components/task-progress-cards';
 import { SiteEnvironmentBadge } from '@/components/site-environment-badge';
-import { VillageResources } from '@/components/village-resources';
+import { SiteAchievement } from '@/components/site-achievement';
 import { MainTaskSwitch } from '@/components/main-task-switch';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -243,7 +243,6 @@ export default function App() {
             <span className="text-base font-bold tracking-wide">忍者日常<SiteEnvironmentBadge /></span>
           </div>
           <div className="scene-resources">
-            <VillageResources />
             <Button type="button" variant="ghost" size="sm" className="scene-nav-button scene-record-link"
               aria-label="打开任务记录" title="打开任务记录" onClick={() => setMobileDetailsOpen(true)}>
               <ListChecks aria-hidden="true" /><span>任务记录</span>
@@ -285,6 +284,7 @@ export default function App() {
 
       <main className="village-main" data-mobile-qr-ready={ready}>
         <h1 className="sr-only">任务中心</h1>
+        <div className="village-achievement"><SiteAchievement /></div>
         <MobileVillageHero />
         {auth.error && !authOpen && (
           <Alert variant="destructive" className="village-glass auth-notice mb-5" role="alert">

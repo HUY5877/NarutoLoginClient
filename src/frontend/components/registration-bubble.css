@@ -1,0 +1,58 @@
+.registration-bubble {
+  --paper: #fff5df;
+  position: absolute;
+  z-index: 2;
+  top: 8%;
+  right: 71%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: .25rem;
+  width: 13rem;
+  padding: .75rem 1rem .85rem;
+  border: 1px solid #a28a65;
+  border-radius: .9rem .9rem .25rem .9rem;
+  background: var(--paper);
+  box-shadow: 0 .25rem .95rem #251d1840;
+  color: #352b25;
+  text-align: left;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.registration-bubble::after {
+  content: '';
+  position: absolute;
+  top: 48%;
+  right: -.42rem;
+  width: .75rem;
+  height: .75rem;
+  border: solid #a28a65;
+  border-width: 1px 1px 0 0;
+  background: var(--paper);
+  transform: skewY(15deg) rotate(45deg);
+}
+.registration-bubble:is(:hover, :focus-visible) { --paper: #fffaf0; }
+.registration-bubble:focus-visible { outline: 3px solid #995e23; outline-offset: 3px; }
+.bubble-heading { display: flex; align-items: center; justify-content: space-between; color: #78552c; font-size: .75rem; font-weight: 700; }
+.bubble-heading svg { width: .9rem; height: .9rem; }
+.bubble-message { font-size: .875rem; line-height: 1.5; text-wrap: balance; }
+.bubble-group { display: flex; align-items: baseline; gap: .4rem; color: #64401c; font-size: .75rem; font-weight: 600; white-space: nowrap; }
+.bubble-group strong { font-size: 1.2rem; line-height: 1.25; font-variant-numeric: tabular-nums; letter-spacing: .035em; }
+
+.registration-dialog { gap: 1rem; border: 1px solid #b8ad91; border-radius: .5rem; background: #faf6e9; color: #272721; }
+.registration-dialog-heading { display: flex; align-items: center; justify-content: space-between; }
+.registration-dialog .registration-notice[data-surface='dialog'] { border-color: #d9ceb5; background: #f2eddf; }
+
+@media (min-width: 640px) and (max-width: 979px) {
+  .registration-bubble { top: auto; right: 1rem; bottom: calc(100% - .75rem); }
+  .registration-bubble::after { top: auto; right: 40%; bottom: -.42rem; transform: rotate(135deg); }
+}
+@media (min-width: 640px) and (max-width: 979px) and (max-height: 600px) {
+  .registration-bubble { top: 8%; right: 69%; bottom: auto; width: 12rem; }
+  .registration-bubble::after { top: 34%; right: -.42rem; bottom: auto; transform: skewY(15deg) rotate(45deg); }
+}
+@media (max-width: 639px) {
+  .registration-bubble { top: 8%; right: 82%; width: clamp(10.75rem, 44vw, 13rem); padding: .6rem .75rem; }
+  .registration-bubble::after { top: 27%; }
+  .bubble-message { font-size: .8125rem; }
+  .bubble-group strong { font-size: 1.05rem; letter-spacing: .015em; }
+}
