@@ -1,7 +1,6 @@
 .mobile-village-hero,
 .chakra-seal,
-.equipment-switch-track,
-.mobile-option-caption { display: none; }
+.equipment-switch-track { display: none; }
 .chakra-check { display: none; }
 
 @media (max-width: 639px) {
@@ -157,9 +156,7 @@
   .login-card[data-phase='idle'] .login-status,
   .login-card[data-phase='failed'] .login-status,
   .login-card[data-phase='expired'] .login-status,
-  .qr-ready-note,
   .qr-sharing-note,
-  .login-explanation,
   .login-session-details { display: none; }
   .equipment-options { width: 100%; min-height: 3.5rem; margin-top: 0.875rem; padding: 0.625rem 0.75rem; border: 1px solid #d5c4da29; border-radius: 0.75rem; background: linear-gradient(100deg, #e4d1ef0a, #d7c0e60d); align-items: center; flex-direction: row-reverse; justify-content: space-between; gap: 0.625rem; cursor: pointer; }
   .login-channel { margin-top: 0.875rem; }
@@ -169,7 +166,6 @@
   .secret-realm-options { margin-top: .875rem; }
   .secret-realm-options > label { font-size: .75rem; color: #eee4ef; }
   .equipment-options [id='equipment-stamina-label'] { font-size: 0.75rem; color: #eee4ef; }
-  .mobile-option-caption { display: block; margin-top: 0.1875rem; color: #b2a2b6; font-size: 0.625rem; }
   .equipment-options [id='equipment-stamina-help'],
   .equipment-options[data-editable='false'] { display: none; }
   .equipment-switch { position: relative; display: block; width: 2.75rem; height: 1.625rem; flex-shrink: 0; }

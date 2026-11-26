@@ -462,6 +462,46 @@
   padding-top: 0.4rem;
 }
 
+.task-result {
+  --result-accent: #b9dec3;
+  --result-surface: #94c7a3;
+  display: grid;
+  width: 100%;
+  max-width: 24rem;
+  justify-items: center;
+  gap: .375rem;
+  padding: 1.5rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--result-surface) 35%, transparent);
+  border-radius: 1rem;
+  background: linear-gradient(150deg, color-mix(in srgb, var(--result-surface) 15%, transparent), color-mix(in srgb, var(--result-surface) 4%, transparent));
+  text-align: center;
+}
+.task-result[data-tone='partial'] { --result-accent: #f2d395; --result-surface: #d4ab66; }
+.task-result[data-tone='danger'] { --result-accent: #ffc5bd; --result-surface: #d58a80; }
+.task-result-icon {
+  display: grid;
+  width: 2.75rem;
+  height: 2.75rem;
+  place-items: center;
+  margin-bottom: .375rem;
+  border-radius: 50%;
+  color: var(--result-accent);
+  background: color-mix(in srgb, var(--result-surface) 17%, transparent);
+}
+.task-result h3 { font-size: 1.25rem; font-weight: 650; }
+.task-result-meta, .next-run-config p { color: var(--muted-foreground); font-size: .8125rem; line-height: 1.65; }
+.task-result-detail { margin-top: .25rem; font-size: .8125rem; line-height: 1.65; }
+.next-run-config { width: 100%; max-width: 24rem; margin-top: 1.25rem; }
+.next-run-heading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+.next-run-heading h3 { font-size: .875rem; font-weight: 600; }
+.next-run-heading button { min-height: 2.75rem; color: var(--primary); }
+.next-run-config p { text-wrap: pretty; }
+.login-card[data-phase='idle'] .login-channel { margin-top: 0; }
+.login-card-footer:not(:has(.login-session-details)) { display: none; }
+@media (max-width: 639px) {
+  .login-card-footer:not(:has(.login-session-details)) { display: flex; }
+}
+
 .login-action {
   border: 1px solid #e5d6eb80;
   background: linear-gradient(110deg, #f2e8f5, #b9a3cc 72%, #cfb6df);

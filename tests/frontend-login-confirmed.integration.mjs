@@ -91,7 +91,7 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         return route.fulfill({ status: 200, json: body }).catch(() => {});
       });
       await page.goto(origin, { waitUntil: 'domcontentloaded' });
-      await page.getByRole('button', { name: '启动模拟器获取二维码', exact: true }).waitFor();
+      await page.getByRole('tablist', { name: '主任务' }).waitFor();
       return { context, page, state, async close() { state.oldGate.resolve(); await context.close(); assert.deepEqual(state.errors, []); } };
     }
 
@@ -99,8 +99,8 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
       await t.test(`unclaimed task expiry from ${source} shows capacity message and allows retry`, async () => {
         const f = await fixture({ sessionStatus: 'queued', runStatus: null });
         try {
-          await f.page.getByRole('button', { name: '启动模拟器获取二维码', exact: true }).click();
-          await f.page.getByText('申请已收到，正在排队', { exact: true }).waitFor();
+          await f.page.getByRole('button', { name: '获取授权二维码', exact: true }).click();
+          await f.page.locator('.qr-copy').getByText('申请已收到，正在排队', { exact: true }).waitFor();
           if (source === 'clock') await f.page.evaluate(() => { const now = Date.now; Date.now = () => now() + 120_000; });
           else if (source === 'api-expired') f.state.detailStatus = 'expired';
           else f.state.detailHttpStatus = 410;
@@ -109,7 +109,7 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
           assert.match(await qrStage.innerText(), /服务器可用实例紧张，请稍后再试/);
           assert.equal(await f.page.getByText('二维码已过期', { exact: true }).count(), 0);
           assert.equal(await f.page.getByLabel(/^剩余 \d+ 秒$/).count(), 0);
-          assert.equal(await f.page.getByRole('button', { name: '启动模拟器获取二维码', exact: true }).isEnabled(), true);
+          assert.equal(await f.page.getByRole('button', { name: '再次运行', exact: true }).isEnabled(), true);
         } finally { await f.close(); }
       });
     }
@@ -118,11 +118,12 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
       await t.test(`claimed ${sessionStatus} session does not report capacity pressure at expiry`, async () => {
         const f = await fixture({ sessionStatus, runStatus: sessionStatus === 'queued' ? 'starting_emulator' : null });
         try {
-          await f.page.getByRole('button', { name: '启动模拟器获取二维码', exact: true }).click();
+          await f.page.getByRole('button', { name: '获取授权二维码', exact: true }).click();
+          if (sessionStatus === 'qr_ready') await f.page.locator('img[src^="blob:"]').waitFor();
           await f.page.getByLabel(/^剩余 \d+ 秒$/).waitFor();
           await until(() => f.state.calls.includes(`/api/task-runs/${taskId}/events`));
           await f.page.evaluate(() => { const now = Date.now; Date.now = () => now() + 120_000; });
-          await f.page.getByText('二维码已过期', { exact: true }).first().waitFor();
+          await f.page.locator('.task-result').getByRole('heading', { name: '等待登录超时', exact: true }).waitFor();
           assert.doesNotMatch(await f.page.locator('body').innerText(), /实例紧张|排队超时/);
         } finally { await f.close(); }
       });
@@ -131,7 +132,7 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
     await t.test('matching authorization hides the real QR and countdown before the original expiry', async () => {
       const f = await fixture();
       try {
-        await f.page.getByRole('button', { name: '启动模拟器获取二维码', exact: true }).click();
+        await f.page.getByRole('button', { name: '获取授权二维码', exact: true }).click();
         const image = f.page.locator('img[src^="blob:"]');
         const countdown = f.page.getByLabel(/^剩余 \d+ 秒$/);
         await image.waitFor();
@@ -139,13 +140,13 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         assert.match(await image.getAttribute('alt'), /手机QQ扫码授权/);
         assert.doesNotMatch(await f.page.locator('body').innerText(), /模拟二维码|模拟登录演示|不能授权或登录真实账号/);
         f.state.status = 'finishing_login';
-        await f.page.getByText('扫码授权已完成', { exact: true }).waitFor();
+        await f.page.locator('.login-card').getByText('正在进入游戏', { exact: true }).first().waitFor();
         assert.equal(await image.count(), 0);
         assert.equal(await countdown.count(), 0);
         const before = f.state.calls.filter(value => value.startsWith('/api/login-sessions')).length;
         await f.page.evaluate(() => { const now = Date.now; Date.now = () => now() + 120_000; });
         await f.page.waitForTimeout(1_100); // Exercise the existing once-per-second expiry effect.
-        assert.equal(await f.page.getByText('扫码授权已完成', { exact: true }).isVisible(), true);
+        assert.equal(await f.page.locator('.login-card').getByText('正在进入游戏', { exact: true }).first().isVisible(), true);
         assert.equal(await f.page.getByText('二维码已过期', { exact: true }).count(), 0);
         assert.equal(await countdown.count(), 0);
         assert.equal(f.state.calls.filter(value => value.startsWith('/api/login-sessions')).length, before);
@@ -215,6 +216,7 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
           await details.getByText(/^日常任务已完成；后续秘境扫荡已停止/).waitFor();
           await log.getByText(error, { exact: true }).waitFor();
           assert.equal(await log.getByText('错误', { exact: true }).count(), 1);
+          await f.page.getByRole('button', { name: '修改配置', exact: true }).click();
           assert.equal(await f.page.getByRole('button', { name: '秘境探险', exact: true }).isEnabled(), true);
           await f.page.reload({ waitUntil: 'domcontentloaded' });
           await summary.filter({ hasText: /^任务已完成$/ }).waitFor();
@@ -231,7 +233,7 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         try {
           let details = f.page.locator('#task-run-details');
           const option = f.page.getByRole('button', { name: '秘境探险', exact: true });
-          await option.getByText('只刷一次就退出', { exact: true }).waitFor();
+          await option.getByText('仅刷一次', { exact: true }).waitFor();
           assert.equal(await option.isDisabled(), true);
           if (mobile) {
             await f.page.getByRole('button', { name: '任务进度与记录', exact: true }).click();
@@ -272,10 +274,10 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
       const f = await fixture({ old: true });
       try {
         await until(() => f.state.oldRequested);
-        assert.equal(await f.page.getByRole('button', { name: '启动模拟器获取二维码', exact: true }).isDisabled(), true);
+        assert.equal(await f.page.getByRole('button', { name: /^(获取授权二维码|再次运行)$/, disabled: false }).count(), 0);
         assert.equal(await f.page.locator('img[src^="blob:"]').count(), 0);
         f.state.oldGate.resolve();
-        await f.page.getByText('扫码授权已完成', { exact: true }).waitFor();
+        await f.page.locator('.login-card').getByText('正在进入游戏', { exact: true }).first().waitFor();
         assert.equal(f.state.calls.some(value => value.startsWith('/api/login-sessions')), false);
       } finally { await f.close(); }
     });

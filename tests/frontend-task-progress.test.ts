@@ -38,7 +38,7 @@ test('抓号完成立即显示扫码成功，但不冒充游戏授权或脚本�
     assert.equal(hasGameAuthorization(current.view.run), false);
     assert.deepEqual(progress.steps.map(step => step.state), ['completed', 'completed', 'pending']);
     assert.equal(progress.summary, '扫码成功');
-    assert.match(progress.steps[1].description, /扫码已完成/);
+    assert.equal(progress.steps[1].description, '已收到扫码结果');
     assert.match(progress.steps[2].description, /正在登录游戏/);
     assert.doesNotMatch(progress.hint, /再次扫码/);
   }
@@ -51,7 +51,7 @@ test('抓号完成后登录失败或超时仍保留扫码成功证据，不显�
     Object.assign(current.view.run!, { scanCapturedAt: at, errorCode: 'login_failed' });
     const progress = deriveTaskProgress(current);
     assert.equal(progress.steps[1].state, 'completed');
-    assert.match(progress.steps[1].description, /扫码已完成/);
+    assert.equal(progress.steps[1].description, '已收到扫码结果');
     assert.equal(progress.steps[2].state, 'failed');
     assert.equal(progress.tone, 'danger');
     assert.match(progress.summary, /游戏登录/);
@@ -99,7 +99,7 @@ test('unclaimed expiry reports capacity pressure only without execution evidence
 });
 
 test('统一运行记录的queued状态仍显示等待领取', () => {
-  assert.equal(deriveTaskProgress(input('queued')).steps[1].description, '申请正在排队，等待执行服务器领取');
+  assert.equal(deriveTaskProgress(input('queued')).steps[1].description, '等待空闲服务器');
 });
 
 test('统一运行记录的排队超时保留服务器容量提示', () => {
@@ -110,7 +110,7 @@ test('统一运行记录的排队超时保留服务器容量提示', () => {
 
 test('right-side steps have three fixed titles and progress from submission through QR to script', () => {
   const fresh = input(undefined, { phase: 'idle', session: null, view: emptyTaskRun() });
-  assert.deepEqual(deriveTaskProgress(fresh).steps.map(step => step.title), ['提交登录申请', '二维码获取状态', '执行脚本']);
+  assert.deepEqual(deriveTaskProgress(fresh).steps.map(step => step.title), ['申请任务', '获取二维码', '执行任务']);
   assert.deepEqual(states(fresh), ['pending', 'pending', 'pending']);
   assert.deepEqual(states({ ...fresh, phase: 'restoring', awaitingSubmission: true }), ['active', 'pending', 'pending']);
   assert.deepEqual(states(input()), ['completed', 'active', 'pending']);
@@ -165,7 +165,7 @@ test('mock completed run without daily startedAt never reports script completion
   const result = deriveTaskProgress(mock);
   assert.deepEqual(states(mock), ['completed', 'completed', 'pending']);
   assert.equal(result.summary, '模拟流程完成');
-  assert.equal(result.steps[2].description, '本次未执行脚本');
+  assert.equal(result.steps[2].description, '仅生成二维码，未执行游戏任务');
 });
 
 test('previous task progress and logs cannot be associated with a new request or mismatched session', () => {
@@ -190,6 +190,9 @@ test('QR readiness alone waits for confirmed scan and failed session reasons rem
   const ready = input(undefined, { phase: 'qr_ready', session: { ...session, status: 'qr_ready' }, qrReady: true });
   assert.deepEqual(states(ready), ['completed', 'completed', 'pending']);
   assert.equal(deriveTaskProgress(ready).summary, '等待扫码');
+  assert.equal(deriveTaskProgress(ready).steps[1].description, '用手机 QQ 扫码');
+  ready.session!.loginType = 'ios_wechat';
+  assert.equal(deriveTaskProgress(ready).steps[1].description, '用手机微信扫码');
   const failed = input(undefined, { phase: 'failed', session: { ...session, status: 'failed', errorCode: 'worker_clock_skew', error: 'private secret' } });
   assert.deepEqual(states(failed), ['completed', 'failed', 'pending']);
   assert.doesNotMatch(JSON.stringify(deriveTaskProgress(failed)), /private secret/);

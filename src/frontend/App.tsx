@@ -14,6 +14,7 @@ import {
   QrCode,
   RefreshCw,
   ScanLine,
+  Settings2,
   ShieldCheck,
   Smartphone,
   Sparkles,
@@ -90,15 +91,15 @@ import { useLoginSession } from '@/hooks/use-login-session';
 import { useAuth } from '@/hooks/use-auth';
 import { useTaskRun } from '@/hooks/use-task-run';
 import { TaskRunPanel } from '@/components/task-run-panel';
-import { deriveTaskProgress, hasCapturedScan, hasGameAuthorization, isUnclaimedQueueTimeout, selectProgressRun } from '@/lib/task-progress';
+import { deriveTaskProgress, hasCapturedScan, hasGameAuthorization, selectProgressRun } from '@/lib/task-progress';
 import { isRunTerminal } from '@/lib/task-run';
 import { deriveDailyCompletion } from '@/lib/daily-completion';
 import { DEFAULT_USER_OPTIONS, getMainTask, parseUserOptions, type MainTask, type SecretRealmMode } from '../shared/user-options';
 import { DEFAULT_LOGIN_TYPE, loginTypes, loginTypeLabels, loginScanApp, parseLoginType } from '../shared/login-types';
 
 const secretRealmChoices: Array<{ value: SecretRealmMode; title: string }> = [
-  { value: 'once', title: '只刷一次就退出' },
-  { value: 'all', title: '用完所有扫荡卷' },
+  { value: 'once', title: '仅刷一次' },
+  { value: 'all', title: '消耗全部扫荡卷' },
   { value: 'skip', title: '不刷秘境' },
 ];
 
@@ -121,14 +122,14 @@ function LoginHelp({ mainTask = 'daily' }: { mainTask?: MainTask }) {
       </DialogTrigger>
       <DialogContent className="login-help-dialog sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>如何准备登录二维码</DialogTitle>
-          <DialogDescription>先登录忍者日常账户，再准备游戏登录二维码。</DialogDescription>
+          <DialogTitle>扫码登录指南</DialogTitle>
+          <DialogDescription>QQ 区用手机 QQ，微信区用微信。</DialogDescription>
         </DialogHeader>
         <ItemGroup className="py-1">
           {[
-            ['启动模拟器', '登录账户，选择登录渠道并点击「启动模拟器获取二维码」。同账户的多个页面共用一个实例。'],
-            ['等待准备完成', '保持页面打开，页面会自动更新准备进度和二维码。'],
-            ['扫码授权并执行', `QQ 区使用手机 QQ，微信区使用微信扫描二维码并确认授权；进入游戏后自动继续执行${mainTask === 'arena_weekly' ? '决斗场周胜任务' : '日常脚本'}。`],
+            ['获取授权二维码', '登录后选择账号归属和任务配置。二维码准备好后会自动显示。'],
+            ['扫码并确认', '用对应的手机应用扫描二维码，在手机上确认登录。'],
+            ['等待自动登录游戏', `进入游戏后自动执行${mainTask === 'arena_weekly' ? '决斗场周胜' : '日常任务'}，可在执行记录中查看进度。`],
           ].map(([title, description], index) => (
             <Item key={title} role="listitem" size="sm" className="items-start px-0">
               <ItemMedia variant="icon" className="size-8 rounded-lg bg-primary/10 text-primary">
@@ -155,6 +156,7 @@ export default function App() {
   const auth = useAuth();
   const [authOpen, setAuthOpen] = useState(false);
   const [mobileDetailsOpen, setMobileDetailsOpen] = useState(false);
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const [submissionRevision, setSubmissionRevision] = useState<number | null>(null);
   const {
     phase,
@@ -192,8 +194,12 @@ export default function App() {
     if (taskRun.restored) restoreTask(taskRun.task, taskRun.run);
     else if (taskRun.error) failTaskRestore();
   }, [auth.user?.id, taskRun.restored, taskRun.task, taskRun.run, taskRun.error, restoreTask, failTaskRestore]);
-  useEffect(() => { setSubmissionRevision(null); setMobileDetailsOpen(false); }, [auth.user?.id]);
-  const awaitingSubmission = submissionRevision !== null && acceptedRevision === submissionRevision;
+  useEffect(() => { setSubmissionRevision(null); setMobileDetailsOpen(false); setOptionsOpen(false); }, [auth.user?.id]);
+  const resumeSaved = canResumePending && showGetButton;
+  useEffect(() => {
+    if (resumeSaved) setSubmissionRevision(acceptedRevision);
+  }, [resumeSaved, acceptedRevision]);
+  const awaitingSubmission = resumeSaved || (submissionRevision !== null && acceptedRevision === submissionRevision);
 
   function openLogin() {
     auth.clearError();
@@ -209,8 +215,8 @@ export default function App() {
   const authorizationComplete = phase === 'login_confirmed' || authorizedRun;
   const scanCaptured = hasCapturedScan(progressInput);
   const scanComplete = authorizationComplete || scanCaptured;
-  const restoringAuthorizedRun = !session && (authorizedRun || scanCaptured)
-    && currentRun?.status !== 'completed' && currentRun?.status !== 'failed';
+  const terminalRun = Boolean(currentRun && isRunTerminal(currentRun.status));
+  const restoringAuthorizedRun = !session && (authorizedRun || scanCaptured) && !terminalRun;
   const displayedUserOptions = restoringAuthorizedRun
     ? parseUserOptions(visibleRun.task?.userOptions) ?? DEFAULT_USER_OPTIONS : userOptions;
   const mainTask = getMainTask(displayedUserOptions);
@@ -218,11 +224,26 @@ export default function App() {
   const canEditShownOptions = canEditUserOptions && !restoringAuthorizedRun;
   const displayedLoginType = restoringAuthorizedRun ? parseLoginType(visibleRun.task?.loginType) ?? DEFAULT_LOGIN_TYPE : loginType;
   const scanApp = loginScanApp(displayedLoginType);
-  const queueTimedOut = phase === 'expired' && isUnclaimedQueueTimeout(session, currentRun);
   const ready = progressInput.qrReady && !scanComplete;
   const qrPending = pending && !scanComplete;
   const qrError = isError && !scanComplete;
   const progress = deriveTaskProgress({ ...progressInput, qrReady: ready, mainTask });
+  const ended = !pending && !canRetryQuery && (
+    terminalRun || (!authorizedRun && (phase === 'expired' || phase === 'failed'))
+  );
+  const canStart = showGetButton && taskRun.restored && !pending && !canRetryQuery
+    && (!scanComplete || ended);
+  const canRefresh = !ended && !scanComplete && session && progress.taskId === session.id && remainingSeconds > 0
+    && (ready || (canRetryQuery && session.status === 'qr_ready'));
+  const resultTask = progress.taskId ? session ?? visibleRun.task : null;
+  const resultTone = initialDailyCompletion ? 'partial' : progress.tone;
+  const resultExpired = currentRun?.status === 'expired' || (!currentRun && phase === 'expired');
+  const ResultIcon = resultTone === 'success' ? Check : resultExpired ? TimerOff : CircleAlert;
+  const secretRealmTitle = secretRealmChoices.find(choice => choice.value === displayedUserOptions.secretRealmMode)!.title;
+  const settingsPreview = [
+    isArenaWeekly ? '决斗场周胜' : '日常任务', loginTypeLabels[displayedLoginType],
+    ...(isArenaWeekly ? [] : [displayedUserOptions.equipmentStamina ? '已开启自动刷取装备' : '已停止自动刷取装备', secretRealmTitle]),
+  ].join(' · ');
   useEffect(() => {
     if (session && currentRun?.taskId === session.id && hasGameAuthorization(currentRun)) {
       confirmLogin(session.id, isRunTerminal(currentRun.status));
@@ -301,28 +322,37 @@ export default function App() {
         <MobileVillageHero />
 
         <div className="village-workspace grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6">
-          <Card className="village-glass login-card gap-0 overflow-hidden shadow-sm" data-authorized={authorizationComplete} data-phase={ready ? 'qr_ready' : authorizationComplete ? 'authorized' : scanCaptured ? 'scan_captured' : phase}>
-            <CardHeader className="gap-2 px-6 pb-6 sm:px-8">
+          <div className="min-w-0">
+          <Card className="village-glass login-card gap-0 overflow-hidden shadow-sm" data-authorized={authorizationComplete} data-phase={ended ? 'result' : ready ? 'qr_ready' : authorizationComplete ? 'authorized' : scanCaptured ? 'scan_captured' : phase}>
+            <CardHeader className="gap-2 px-6 pb-5 sm:px-8">
               <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-lg font-semibold">
                 <ScanLine className="size-5 text-primary" aria-hidden="true" />
-                <span className="hidden sm:inline">扫码登录</span>
-                <span className="sm:hidden">{scanComplete ? '本次登录' : '扫码登录'}</span>
+                任务工作台
               </CardTitle>
-              <CardDescription className="text-sm">
-                <span className="hidden sm:inline">{scanComplete ? '扫码已完成，请查看本次任务进度。' : `生成二维码后，用手机${scanApp}扫一扫。`}</span>
-                <span className="sm:hidden">{scanComplete ? '扫码已完成，请查看本次任务进度。' : `用手机${scanApp}扫码，再确认登录。`}</span>
-              </CardDescription>
-              <CardAction>
+              {phase === 'idle' && !ended && !scanComplete && !resumeSaved && <CardDescription className="text-sm">
+                {auth.user ? '选择区服及策略，再获取授权二维码。' : '先登录忍者日常账户，再获取二维码。'}
+              </CardDescription>}
+              {!ended && <CardAction>
                 <Badge variant="secondary" className="gap-1.5 font-normal">
                   <Smartphone aria-hidden="true" />
                   {loginTypeLabels[displayedLoginType]}
                 </Badge>
-              </CardAction>
+              </CardAction>}
             </CardHeader>
             <Separator />
 
             <CardContent className="flex flex-col items-center px-6 py-8 sm:px-8 sm:py-9">
-              <div key={ready ? 'qr' : authorizationComplete ? 'authorized' : scanCaptured ? 'scan_captured' : phase} className="qr-frame w-full max-w-64" data-ready={ready ? 'true' : undefined} aria-busy={qrPending}>
+              {ended ? (
+                <section className="task-result" data-tone={resultTone} role="status" aria-live="polite" aria-atomic="true">
+                  <span className="task-result-icon"><ResultIcon aria-hidden="true" /></span>
+                  <h3>{progress.summary}</h3>
+                  {resultTask && <p className="task-result-meta">
+                    {progress.mainTask === 'arena_weekly' ? '决斗场周胜' : '日常任务'} · {loginTypeLabels[parseLoginType(resultTask.loginType) ?? DEFAULT_LOGIN_TYPE]}
+                  </p>}
+                  {(resultTone !== 'success' || !hasGameAuthorization(currentRun)) &&
+                    <p className="task-result-detail">{progress.hint}</p>}
+                </section>
+              ) : !canRetryQuery && (phase !== 'idle' || scanComplete) && <div key={ready ? 'qr' : authorizationComplete ? 'authorized' : scanCaptured ? 'scan_captured' : phase} className="qr-frame w-full max-w-64" data-ready={ready ? 'true' : undefined} aria-busy={qrPending}>
                 <div className="qr-content relative aspect-square overflow-hidden rounded-xl border border-dashed border-foreground/20 bg-transparent">
                   {ready && qrUrl ? (
                     <img
@@ -344,25 +374,12 @@ export default function App() {
                                 : isError ? <CircleAlert aria-hidden="true" />
                                   : <img src="/icons/leaf-village.svg" alt="" width="42" height="42" aria-hidden="true" />}
                           </EmptyMedia>
-                          <div className="qr-copy">
+                          <div className="qr-copy" role="status">
                             <EmptyTitle className="text-base">
-                              {scanComplete ? <>
-                                <span className="hidden sm:inline">{authorizationComplete ? '扫码授权已完成' : '扫码成功'}</span>
-                                <span className="sm:hidden" role="status" aria-live="polite">{progress.summary}</span>
-                              </> : queueTimedOut ? '排队超时' : phase === 'expired' ? '二维码已过期'
-                                : canRetryQuery ? '等待查询确认' : isError ? '二维码准备失败'
-                                  : phase === 'restoring' ? '正在查询登录申请' : pending ? '正在准备二维码' : '登录二维码'}
+                              {scanComplete ? progress.summary : statusLabel}
                             </EmptyTitle>
                             <EmptyDescription className="text-sm leading-6">
-                              {scanCaptured && !authorizationComplete ? <span>{progress.hint}</span> : authorizationComplete ? <>
-                                <span className="hidden sm:inline">{currentRun?.status === 'finishing_login' ? '正在进入游戏，无需再次扫码' : '无需再次扫码，请在执行记录中查看后续进度'}</span>
-                                <span className="sm:hidden">{currentRun && isRunTerminal(currentRun.status) ? progress.hint : '扫码已完成，无需再次扫码'}</span>
-                              </>
-                                : queueTimedOut ? '本次申请未被领取，请稍后重新生成二维码'
-                                : canRetryQuery ? canResumePending ? '点击「继续本次申请」恢复已保存的申请' : '点击「重试查询」继续查看本次申请'
-                                : isError ? '确认本次申请结束后，可以重新获取'
-                                : pending ? '保持页面打开，二维码准备好后会自动显示'
-                                  : auth.user ? '点击下方按钮，生成本次登录二维码' : '先登录忍者日常账户，再获取二维码'}
+                              {scanComplete ? progress.hint : '二维码准备好后会自动显示。'}
                             </EmptyDescription>
                           </div>
                         </EmptyHeader>
@@ -370,34 +387,55 @@ export default function App() {
                     </>
                   )}
                 </div>
-              </div>
+              </div>}
 
-              <div className="login-status mt-5 flex min-h-6 flex-wrap items-center justify-center gap-x-3 gap-y-2 text-sm" role="status" aria-live="polite" aria-atomic="true">
-                <span className={`inline-flex items-center gap-2 ${qrError ? 'text-destructive' : 'text-muted-foreground'}`}>
-                  {qrPending ? <Spinner aria-hidden="true" className="size-3.5 motion-reduce:animate-none" />
-                    : ready || scanComplete ? <Check className="size-4 text-primary" aria-hidden="true" />
-                      : <Clock3 className="size-3.5" aria-hidden="true" />}
-                  {auth.loading ? '正在读取账户状态' : !auth.user ? '登录后即可获取二维码' : scanComplete ? progress.summary : queueTimedOut ? '排队等待超时' : retrying ? '连接暂时中断，正在重试…' : statusLabel}
-                </span>
-                {auth.user && !scanComplete && remainingSeconds > 0 && !showGetButton && (
+              {!ended && !scanComplete && !canRetryQuery && (ready || retrying || remainingSeconds > 0) && <div className="login-status mt-5 flex min-h-6 flex-wrap items-center justify-center gap-x-3 gap-y-2 text-sm" role="status" aria-live="polite" aria-atomic="true">
+                {(ready || retrying) && <span className="inline-flex items-center gap-2 text-muted-foreground">
+                  {ready ? <Check className="size-4 text-primary" aria-hidden="true" /> : <Spinner aria-hidden="true" className="size-3.5 motion-reduce:animate-none" />}
+                  {ready ? `请用手机${scanApp}扫码，并在${scanApp}中确认登录。` : '连接暂时中断，正在重试…'}
+                </span>}
+                {remainingSeconds > 0 && !showGetButton && (
                   <Badge variant="secondary" className="gap-1.5 font-mono tabular-nums" aria-label={`剩余 ${remainingSeconds} 秒`}>
                     <Clock3 aria-hidden="true" />
                     {countdown}
                   </Badge>
                 )}
-              </div>
+              </div>}
 
-              {!scanComplete && error && (phase === 'failed' || canRetryQuery || queueTimedOut) && (
+              {canRetryQuery && error && (
                 <Alert variant="destructive" className="mt-5">
                   <CircleAlert aria-hidden="true" />
-                  <AlertTitle>{canRetryQuery ? '申请状态暂时无法确认' : queueTimedOut ? '排队等待超时' : '本次二维码准备失败'}</AlertTitle>
+                  <AlertTitle>申请状态暂时无法确认</AlertTitle>
                   <AlertDescription>{error}</AlertDescription>
                 </Alert>
               )}
 
+              {canRetryQuery && auth.user && (
+                <Button type="button" size="lg" className="login-action mt-6 h-12 w-full max-w-sm gap-2"
+                  disabled={auth.busy} onClick={() => { if (!taskRun.restored) taskRun.retry(); else void retryQuery(); }}>
+                  <RefreshCw aria-hidden="true" />{taskRun.restored && canResumePending ? '继续本次申请' : '重试连接'}
+                </Button>
+              )}
+              {canRefresh && <Button type="button" size="lg" variant={ready ? 'default' : 'outline'}
+                className={`qr-refresh-action mt-3 h-11 w-full max-w-sm gap-2 ${ready ? 'login-action' : ''}`}
+                disabled={auth.busy} onClick={() => { void refreshQr(); }}>
+                <RefreshCw aria-hidden="true" />刷新二维码
+              </Button>}
+
+              {auth.user && ended && canStart && <div className="next-run-config">
+                <div className="next-run-heading">
+                  <h3>下次运行计划</h3>
+                  <Button variant="ghost" type="button" size="sm" aria-expanded={optionsOpen} aria-controls="run-options"
+                    onClick={() => setOptionsOpen(open => !open)}>
+                    <Settings2 aria-hidden="true" />{optionsOpen ? '隐藏配置' : '修改配置'}
+                  </Button>
+                </div>
+                {!optionsOpen && <p>{settingsPreview}</p>}
+              </div>}
+              <div id="run-options" className="run-options w-full max-w-sm" hidden={ended && (!canStart || !optionsOpen)}>
               {auth.user && (
                 <div className="login-channel mt-6 w-full max-w-sm space-y-2">
-                  <label id="login-channel-label" htmlFor="login-channel-trigger" className="text-sm font-medium">登录渠道</label>
+                  <label id="login-channel-label" htmlFor="login-channel-trigger" className="text-sm font-medium">账号归属</label>
                   {/* 非模态菜单保持页面滚动、固定背景和玻璃面板稳定。 */}
                   <DropdownMenu modal={false}>
                     <DropdownMenuTrigger asChild>
@@ -447,8 +485,7 @@ export default function App() {
                     <span className="equipment-switch-track" aria-hidden="true" />
                   </span>
                   <span>
-                    <span id="equipment-stamina-label" className="block text-sm font-medium">装备栏体力刷取</span>
-                    <span className="mobile-option-caption" aria-hidden="true">本次任务设置</span>
+                    <span id="equipment-stamina-label" className="block text-sm font-medium">自动消耗体力刷取装备</span>
                     <span id="equipment-stamina-help" className="mt-1 block text-xs leading-5 text-muted-foreground">
                       {canEditShownOptions ? '开启后，本次日常会进行装备栏体力刷取。' : '本次申请的选择已保存，重新申请时可修改。'}
                     </span>
@@ -466,7 +503,7 @@ export default function App() {
                         className="login-channel-trigger w-full justify-between font-normal">
                         <span className="login-channel-selection">
                           <span className="channel-app-badge" aria-hidden="true"><Sparkles className="size-5" /></span>
-                          <span className="login-channel-copy"><strong id="secret-realm-mode-value">{secretRealmChoices.find(choice => choice.value === displayedUserOptions.secretRealmMode)?.title ?? '用完所有扫荡卷'}</strong></span>
+                          <span className="login-channel-copy"><strong id="secret-realm-mode-value">{secretRealmTitle}</strong></span>
                         </span>
                         <span className="channel-chevron"><ChevronDown aria-hidden="true" className="size-4" /></span>
                       </Button>
@@ -482,35 +519,23 @@ export default function App() {
                 </div>
               )}
 
-              {!auth.loading && <Button
+              </div>
+              {!auth.loading && (!auth.user || canStart) && <Button
                 type="button"
                 size="lg"
                 className="login-action mt-6 h-12 w-full max-w-sm gap-2 text-sm font-semibold"
-                onClick={() => { if (auth.user) { setSubmissionRevision(acceptedRevision); void startLogin(); } else openLogin(); }}
-                disabled={auth.busy || pending || Boolean(auth.user && (!taskRun.restored || !showGetButton || authorizationComplete && !(currentRun && isRunTerminal(currentRun.status))))}
+                onClick={() => { if (auth.user) { setOptionsOpen(false); setSubmissionRevision(acceptedRevision); startLogin(); } else openLogin(); }}
+                disabled={auth.busy}
               >
                 {!auth.user ? <LogIn aria-hidden="true" /> : phase === 'idle' ? <QrCode aria-hidden="true" />
                     : <RefreshCw aria-hidden="true" />}
-                {!auth.user ? '登录后获取二维码' : '启动模拟器获取二维码'}
+                {!auth.user ? '登录后获取二维码' : resumeSaved ? '继续本次申请' : ended ? '再次运行' : '获取授权二维码'}
                 {phase === 'idle' && !auth.loading && <ArrowRight className="ml-1" aria-hidden="true" />}
               </Button>}
-              {!auth.loading && auth.user && !scanComplete && <Button type="button" variant="outline" size="lg"
-                className="qr-refresh-action mt-3 h-11 w-full max-w-sm gap-2"
-                disabled={auth.busy || pending || !session || !['qr_ready', 'query_failed'].includes(phase) || authorizationComplete || remainingSeconds <= 0}
-                onClick={() => { void refreshQr(); }}>
-                <RefreshCw aria-hidden="true" />刷新二维码
-              </Button>}
-              {!scanComplete && canRetryQuery && auth.user && (
-                <Button type="button" variant="outline" size="lg" className="mt-6 h-12 w-full max-w-sm gap-2 bg-white/40"
-                  disabled={auth.busy || pending} onClick={() => { if (!taskRun.restored) taskRun.retry(); else void retryQuery(); }}>
-                  <RefreshCw aria-hidden="true" />{!taskRun.restored ? '重试查询任务' : canResumePending ? '继续本次申请' : '重试查询'}
-                </Button>
-              )}
-              {auth.user && ready && <p className="qr-ready-note mt-5 text-sm font-medium text-primary">请用手机{scanApp}扫码，二维码失效可刷新</p>}
-              <p className="qr-sharing-note mt-3 flex items-start gap-1.5 text-center text-xs leading-5 text-muted-foreground">
+              {!ended && !scanComplete && <p className="qr-sharing-note mt-3 flex items-start gap-1.5 text-center text-xs leading-5 text-muted-foreground">
                 <ShieldCheck className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-                {scanComplete ? '扫码结果已收到，后续游戏登录与任务进度会继续更新' : session?.loginStartedAt ? '实例保留 10 分钟供扫码，刷新不会延长占用' : '同一账户共用一个实例，分配后有 10 分钟扫码时间'}
-              </p>
+                {session?.loginStartedAt ? '实例保留 10 分钟供扫码，刷新不会延长占用' : '同一账户共用一个实例，分配后有 10 分钟扫码时间'}
+              </p>}
               {auth.user && <>
                 <div className="mobile-progress-overview sm:hidden" aria-label="任务进度概览">
                   {progress.steps.map(({ id, title, description, state }) => {
@@ -538,29 +563,21 @@ export default function App() {
                 <MobileTaskSheet open={mobileDetailsOpen} onOpenChange={setMobileDetailsOpen} mainTask={progress.mainTask}>
                   <div className="task-sheet-progress space-y-4"><TaskProgressCards progress={progress} /></div>
                   {(visibleRun.task || visibleRun.error) && <TaskRunPanel view={visibleRun} retry={taskRun.retry} />}
-                  {session && <p className="task-sheet-session">申请编号 <code>{session.id}</code></p>}
+                  {progress.taskId && <p className="task-sheet-session">申请编号 <code>{progress.taskId}</code></p>}
                 </MobileTaskSheet>
               </>}
             </CardContent>
 
             <CardFooter className="login-card-footer flex-col items-stretch gap-4 border-t px-6 py-5 sm:px-8">
-              <Alert className="login-explanation border-0 bg-transparent p-0 text-muted-foreground">
-                <CircleAlert aria-hidden="true" />
-                <AlertTitle className="text-sm font-medium text-foreground">{isArenaWeekly ? '本次选择：决斗场周胜' : '确认登录后，日常会接着跑'}</AlertTitle>
-                <AlertDescription className="text-sm leading-6">
-                  {`在手机${scanApp}上确认登录就好。进入游戏后会自动${isArenaWeekly ? '刷周胜' : '清日常'}，下方可以查看进度。`}
-                </AlertDescription>
-              </Alert>
-              {session && (
+              {progress.taskId && (
                 <Accordion type="single" collapsible className="login-session-details">
                   <AccordionItem value="session" className="border-b-0 border-t">
                     <AccordionTrigger className="py-3 text-sm font-normal text-muted-foreground">本次申请详情</AccordionTrigger>
                     <AccordionContent className="space-y-3 pb-1 text-sm">
                       <div className="space-y-1.5">
                         <p className="text-muted-foreground">申请编号</p>
-                        <code className="block break-all rounded-md border bg-background px-3 py-2 font-mono text-xs leading-5">{session.id}</code>
+                        <code className="block break-all rounded-md border bg-background px-3 py-2 font-mono text-xs leading-5">{progress.taskId}</code>
                       </div>
-                      <p className="leading-6 text-muted-foreground">重新打开页面后，点击「启动模拟器获取二维码」可恢复当前实例。二维码失效时点击「刷新二维码」；占用超时后再启动新实例。</p>
                     </AccordionContent>
                   </AccordionItem>
                 </Accordion>
@@ -572,13 +589,14 @@ export default function App() {
             </CardFooter>
           </Card>
 
+          <div id="task-run-details" className="task-run-details">
+            {auth.user && (visibleRun.task || visibleRun.error) && <TaskRunPanel view={visibleRun} retry={taskRun.retry} />}
+          </div>
+          </div>
           <div id="login-progress-details" className="village-side-panels space-y-5 lg:space-y-6">
             <div className="village-portrait-stage"><KonanPortrait className="village-portrait" /></div>
             <TaskProgressCards progress={progress} />
           </div>
-        </div>
-        <div id="task-run-details" className="task-run-details">
-          {auth.user && (visibleRun.task || visibleRun.error) && <TaskRunPanel view={visibleRun} retry={taskRun.retry} />}
         </div>
         </MainTaskSwitch>
       </main>

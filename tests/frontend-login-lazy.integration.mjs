@@ -43,9 +43,9 @@ function deferred() {
   return { promise, resolve };
 }
 const callsToLogin = calls => calls.filter(call => call.path.startsWith('/api/login-sessions'));
-const generate = page => page.getByRole('button', { name: '启动模拟器获取二维码', exact: true });
+const generate = page => page.getByRole('button', { name: '获取授权二维码', exact: true });
 const equipmentStamina = page => page.locator('input[aria-labelledby="equipment-stamina-label"]');
-const secretRealmTitles = { once: '只刷一次就退出', all: '用完所有扫荡卷', skip: '不刷秘境' };
+const secretRealmTitles = { once: '仅刷一次', all: '消耗全部扫荡卷', skip: '不刷秘境' };
 const secretRealmTrigger = page => page.getByRole('button', { name: '秘境探险', exact: true });
 const secretRealmMode = (page, mode = 'once') => ({
   async check() {
@@ -70,7 +70,7 @@ async function expectStages(page, expected) {
   const progress = page.getByLabel('任务执行进度', { exact: true });
   await progress.waitFor();
   const stages = ['submission', 'qr', 'script'];
-  const titles = ['提交登录申请', '二维码获取状态', '执行脚本'];
+  const titles = ['申请任务', '获取二维码', '执行任务'];
   for (const [index, stage] of stages.entries()) {
     const item = progress.locator(`[data-stage="${stage}"][data-state="${expected[index]}"]`);
     await item.waitFor();
@@ -144,7 +144,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       });
       const page = await context.newPage();
       page.setDefaultTimeout(8_000);
-      return { context, page, state, async open() { await page.goto(origin, { waitUntil: 'networkidle' }); await generate(page).waitFor(); },
+      return { context, page, state, async open() { await page.goto(origin, { waitUntil: 'networkidle' }); await page.getByRole('tablist', { name: '主任务' }).waitFor(); },
         async close() { await context.close(); assert.deepEqual(state.errors, []); } };
     }
 
@@ -171,7 +171,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           });
           const before = await readLayout();
           assert.ok(before.scrollY > 0, 'exercise an already scrolled page');
-          const selector = f.page.getByRole('button', { name: '登录渠道', exact: true });
+          const selector = f.page.getByRole('button', { name: '账号归属', exact: true });
           if (touch) await selector.tap(); else await selector.click();
           await f.page.getByRole('menuitemradio', { name: '安卓 QQ 区', exact: true }).waitFor();
           assert.equal(await f.page.getByRole('menuitemradio').count(), 4);
@@ -225,7 +225,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           f.state.detail = () => activeTask;
           f.state.refresh = () => ({ ...activeTask, qrRevision: pendingId });
           await f.open();
-          const selector = f.page.getByRole('button', { name: '登录渠道', exact: true });
+          const selector = f.page.getByRole('button', { name: '账号归属', exact: true });
           await selector.click();
           await f.page.getByRole('menuitemradio', { name: label, exact: true }).click();
           await secretRealmMode(f.page).check();
@@ -365,13 +365,17 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         const menu = f.page.getByRole('menu');
         await menu.waitFor();
         assert.ok(await menu.evaluate(element => parseFloat(getComputedStyle(element).animationDuration) < .001));
+        await f.page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitemradio');
         await f.page.keyboard.press('End');
+        await f.page.locator('[role=menuitemradio]:focus').filter({ hasText: secretRealmTitles.skip }).waitFor();
         await f.page.keyboard.press('Enter');
         await menu.waitFor({ state: 'hidden' });
         assert.equal(await secretRealmMode(f.page, 'skip').isChecked(), true);
         await trigger.press('ArrowDown');
         await menu.waitFor();
+        await f.page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitemradio');
         await f.page.keyboard.press('Home');
+        await f.page.locator('[role=menuitemradio]:focus').filter({ hasText: secretRealmTitles.once }).waitFor();
         await f.page.keyboard.press('Enter');
         await menu.waitFor({ state: 'hidden' });
         assert.equal(await secretRealmMode(f.page).isChecked(), true);
@@ -432,13 +436,14 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         assert.equal(await equipmentStamina(f.page).isDisabled(), true);
         assert.equal(await secretRealmMode(f.page).isDisabled(), true);
         await f.page.reload({ waitUntil: 'networkidle' });
-        await generate(f.page).waitFor();
+        const resume = f.page.getByRole('button', { name: '继续本次申请', exact: true });
+        await resume.waitFor();
         assert.equal(await equipmentStamina(f.page).isChecked(), false);
         assert.equal(await equipmentStamina(f.page).isDisabled(), true);
         assert.equal(await secretRealmMode(f.page).isChecked(), true);
         assert.equal(await secretRealmMode(f.page).isDisabled(), true);
         assert.equal(callsToLogin(f.state.calls).filter(call => call.method === 'POST').length, 1);
-        await generate(f.page).click();
+        await resume.click();
         await f.page.locator('img[src^="blob:"]').waitFor();
         const posts = callsToLogin(f.state.calls).filter(call => call.method === 'POST');
         assert.equal(posts.length, 2);
@@ -505,9 +510,10 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           localStorage.setItem(`naruto-login:pending:${userId}`, JSON.stringify({ requestId, createdAt: now, expiresAt: now + 120_000 }));
         }, { userId: firstUser.id, requestId: pendingId });
         await f.page.reload({ waitUntil: 'networkidle' });
-        await generate(f.page).waitFor();
+        const resume = f.page.getByRole('button', { name: '继续本次申请', exact: true });
+        await resume.waitFor();
         assert.deepEqual(callsToLogin(f.state.calls), []);
-        await generate(f.page).click();
+        await resume.click();
         await f.page.locator('img[src^="blob:"]').waitFor();
         const posts = callsToLogin(f.state.calls).filter(call => call.method === 'POST');
         assert.equal(posts.length, 1);
@@ -524,12 +530,11 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         expiring.expiresAt = new Date(Date.now() + 1_800).toISOString();
         await generate(f.page).click();
         await f.page.locator('img[src^="blob:"]').waitFor();
-        await f.page.getByText('二维码已过期', { exact: true }).first().waitFor();
-        assert.ok(await f.page.getByText('二维码已过期', { exact: true }).count());
+        await f.page.locator('.task-result').getByRole('heading', { name: '等待登录超时', exact: true }).waitFor();
         assert.equal(await f.page.locator('img[src^="blob:"]').count(), 0);
         assert.equal(callsToLogin(f.state.calls).filter(call => call.path.endsWith('/active')).length, 2);
         f.state.active = () => ({ session: session('qr_ready', Date.now() + 60_000), showGetButton: false });
-        await generate(f.page).click();
+        await f.page.getByRole('button', { name: '再次运行', exact: true }).click();
         await f.page.locator('img[src^="blob:"]').waitFor();
         assert.equal(callsToLogin(f.state.calls).filter(call => call.path.endsWith('/active')).length, 3);
       } finally { await f.close(); }
@@ -623,7 +628,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         // Move only this isolated page's clock beyond the QR TTL; no fixed wait for the full TTL.
         await f.page.evaluate(() => { const realNow = Date.now; Date.now = () => realNow() + 120_000; });
         await f.page.waitForTimeout(1_100);
-        assert.equal(await generate(f.page).isEnabled(), false, 'Confirmed execution keeps QR generation unavailable');
+        assert.equal(await generate(f.page).isVisible(), false, 'Confirmed execution keeps QR generation unavailable');
         await expectStages(f.page, ['completed', 'completed', 'active']);
         assert.equal(await progressCard.getByText('脚本执行中', { exact: true }).isVisible(), true);
         assert.equal(await progressCard.getByText('获取失败', { exact: true }).count(), 0);
@@ -641,6 +646,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         runStatus = 'completed';
         milestone('日常脚本执行完成。');
         await expectStages(f.page, ['completed', 'completed', 'completed']);
+        await f.page.getByRole('button', { name: '修改配置', exact: true }).click();
         assert.equal(await equipmentStamina(f.page).isEnabled(), true, 'Completed tasks allow configuring the next request');
         await equipmentStamina(f.page).uncheck();
         assert.equal(await equipmentStamina(f.page).isChecked(), false);
@@ -781,7 +787,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         };
         await f.open();
         await generate(f.page).click();
-        const qrCard = f.page.locator('[data-slot="card"]').filter({ has: f.page.getByRole('heading', { name: '扫码登录', exact: true }) });
+        const qrCard = f.page.locator('.login-card');
         const runCard = f.page.locator('[data-slot="card"]').filter({ has: f.page.getByRole('heading', { name: '任务执行记录', exact: true }) });
         await qrCard.getByText(clockError, { exact: true }).waitFor();
         await runCard.getByRole('alert', { name: '任务失败原因' }).waitFor();
@@ -799,7 +805,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         assert.equal(await qrCard.getByText('二维码已过期', { exact: true }).count(), 0);
         assert.equal(callsToLogin(f.state.calls).length, loginCalls);
         await f.page.reload({ waitUntil: 'networkidle' });
-        await generate(f.page).waitFor();
+        await f.page.getByRole('button', { name: '再次运行', exact: true }).waitFor();
         await runCard.getByRole('alert', { name: '任务失败原因' }).waitFor();
         await expandRecords(f.page).click();
         await f.page.getByRole('log', { name: '任务执行日志' }).getByText(clockError, { exact: true }).waitFor();

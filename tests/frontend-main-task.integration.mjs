@@ -35,7 +35,7 @@ const daily = page => page.getByRole('tab', { name: '日常任务', exact: true 
 const weekly = page => page.getByRole('tab', { name: '决斗场周胜', exact: true });
 const isSelected = async tab => (await tab.getAttribute('aria-selected')) === 'true';
 const weeklyPanel = page => page.getByRole('tabpanel', { name: '决斗场周胜', exact: true });
-const generate = page => page.getByRole('button', { name: '启动模拟器获取二维码', exact: true });
+const generate = page => page.getByRole('button', { name: '获取授权二维码', exact: true });
 const equipment = page => page.locator('input[aria-labelledby="equipment-stamina-label"]');
 const secretRealm = page => page.getByRole('button', { name: '秘境探险', exact: true });
 const loginCalls = state => state.calls.filter(call => call.path.startsWith('/api/login-sessions'));
@@ -227,14 +227,14 @@ test('main task selection preserves task options and session ownership', { skip:
         await f.open();
         await equipment(f.page).uncheck();
         await secretRealm(f.page).click();
-        await f.page.getByRole('menuitemradio', { name: '只刷一次就退出', exact: true }).click();
+        await f.page.getByRole('menuitemradio', { name: '仅刷一次', exact: true }).click();
         await selectTask(f.page, 'arena_weekly');
         await weeklyPanel(f.page).waitFor();
         assert.equal(await equipment(f.page).isVisible(), false);
         assert.equal(await secretRealm(f.page).isVisible(), false);
         await selectTask(f.page, 'daily');
         assert.equal(await equipment(f.page).isChecked(), false);
-        assert.equal(await secretRealm(f.page).getByText('只刷一次就退出', { exact: true }).count(), 1);
+        assert.equal(await secretRealm(f.page).getByText('仅刷一次', { exact: true }).count(), 1);
         assert.deepEqual(loginCalls(f.state), []);
       } finally { await f.close(); }
     });
@@ -251,6 +251,7 @@ test('main task selection preserves task options and session ownership', { skip:
         await dialog.getByRole('button', { name: '登录', exact: true }).click();
         await dialog.waitFor({ state: 'hidden' });
         await f.page.getByTitle(user.username, { exact: true }).waitFor();
+        await generate(f.page).waitFor();
         assert.equal(await isSelected(weekly(f.page)), true);
         assert.deepEqual(loginCalls(f.state), [], 'Account login must not implicitly submit the chosen task');
         await generate(f.page).click();
@@ -281,7 +282,6 @@ test('main task selection preserves task options and session ownership', { skip:
         f.state.latest = () => ({ task: session('qr_ready', weeklyOptions) });
         const beforeReload = posts(f.state).length;
         await f.page.reload({ waitUntil: 'networkidle' });
-        await generate(f.page).waitFor();
         assert.equal(posts(f.state).length, beforeReload, 'Reload restores the QR without creating another task');
         await f.page.locator('img[src^="blob:"]').waitFor();
         assert.equal(await isSelected(weekly(f.page)), true);
@@ -300,11 +300,14 @@ test('main task selection preserves task options and session ownership', { skip:
     await t.test('reload restores weekly execution without reading QR; completion enables the next task', async () => {
       const f = await fixture();
       try {
-        const task = { ...session('expired', weeklyOptions), expiresAt: new Date(Date.now() - 60_000).toISOString() };
+        const task = { ...session('expired', weeklyOptions), id: revisionId, expiresAt: new Date(Date.now() - 60_000).toISOString() };
         let status = 'running_daily'; // Existing worker status remains compatible with the selected main task.
         f.state.latest = () => ({ task });
         f.state.events = (taskId, url) => {
           const now = new Date().toISOString();
+          if (taskId !== task.id) return { task: session('queued', posts(f.state)[0].body.userOptions),
+            run: { taskId, status: 'queued', updatedAt: now, startedAt: null, finishedAt: null },
+            logs: [], nextCursor: '0-0', hasMore: false, truncated: false };
           return { task, run: { taskId, status, updatedAt: now, startedAt: now,
             finishedAt: status === 'completed' ? now : null }, logs: [],
             nextCursor: url.searchParams.get('after') || '0-0', hasMore: false, truncated: false };
@@ -321,10 +324,39 @@ test('main task selection preserves task options and session ownership', { skip:
         assert.deepEqual(loginCalls(f.state), []);
         status = 'completed';
         await waitFor(() => daily(f.page).isEnabled(), 'Completed execution should allow configuring the next task');
+        const card = f.page.locator('.login-card');
+        const rerun = card.getByRole('button', { name: '再次运行', exact: true });
+        const edit = card.getByRole('button', { name: '修改配置', exact: true });
+        const result = card.locator('.task-result');
+        await result.getByRole('heading', { name: '任务已完成', exact: true }).waitFor();
+        assert.equal(await card.getByRole('button', { name: '账号归属', exact: true }).isVisible(), false);
+        await edit.press('Enter');
         await selectTask(f.page, 'daily');
         assert.equal(await equipment(f.page).isVisible(), true);
         assert.equal(await weeklyPanel(f.page).isVisible(), false);
-        assert.deepEqual(loginCalls(f.state), [], 'Changing the next task never starts it implicitly');
+        const channel = f.page.getByRole('button', { name: '账号归属', exact: true });
+        await channel.click();
+        await f.page.getByRole('menuitemradio', { name: 'iOS 微信区', exact: true }).click();
+        await equipment(f.page).uncheck();
+        await secretRealm(f.page).click();
+        await f.page.getByRole('menuitemradio', { name: '仅刷一次', exact: true }).click();
+        assert.match(await result.innerText(), /决斗场周胜.*安卓 QQ 区/);
+        assert.deepEqual(loginCalls(f.state), [], 'Editing the next task never starts it implicitly');
+        const gate = deferred();
+        f.state.active = async () => { await gate.promise; return { session: null, showGetButton: true }; };
+        try {
+          await rerun.click();
+          await waitFor(() => loginCalls(f.state).length === 1, 'A new request first checks for an active session');
+          await rerun.waitFor({ state: 'hidden' });
+          assert.equal(await card.getByText('任务已完成', { exact: true }).count(), 0);
+          assert.equal(await card.getByRole('button', { name: '本次申请详情', exact: true }).count(), 0);
+          assert.equal(await card.getByText(task.id, { exact: true }).count(), 0);
+          assert.equal(await card.getByRole('button', { name: '刷新二维码', exact: true }).count(), 0);
+          assert.equal(await f.page.locator('#task-run-details').getByText('任务执行记录', { exact: true }).count(), 0);
+        } finally { gate.resolve(); }
+        await waitFor(() => posts(f.state).length === 1, 'One new task should be submitted');
+        assert.equal(posts(f.state)[0].body.loginType, 'ios_wechat');
+        assert.deepEqual(posts(f.state)[0].body.userOptions, { mainTask: 'daily', equipmentStamina: false, secretRealmMode: 'once' });
       } finally { await f.close(); }
     });
 
@@ -374,7 +406,7 @@ test('main task selection preserves task options and session ownership', { skip:
       });
     }
 
-    await t.test('reload preserves an unconfirmed weekly intent and reuses its saved request ID', async () => {
+    await t.test('reload preserves a newer unconfirmed weekly intent over failed daily history', async () => {
       const f = await fixture();
       const gate = deferred();
       try {
@@ -385,21 +417,36 @@ test('main task selection preserves task options and session ownership', { skip:
         };
         await f.open();
         await selectTask(f.page, 'arena_weekly');
+        const channel = f.page.getByRole('button', { name: '账号归属', exact: true });
+        await channel.click();
+        await f.page.getByRole('menuitemradio', { name: 'iOS 微信区', exact: true }).click();
         await generate(f.page).click();
         await waitFor(() => posts(f.state).length === 1, 'The first submitted request should remain unconfirmed');
         const intent = await f.page.evaluate(userId => JSON.parse(localStorage.getItem(`naruto-login:pending:${userId}`)), user.id);
         assert.equal(intent.userOptions.mainTask, 'arena_weekly');
         const beforeReload = posts(f.state).length;
+        const previous = { ...session('failed'), id: revisionId, loginType: 'android_qq',
+          createdAt: new Date(intent.createdAt - 60_000).toISOString() };
+        const oldRun = { taskId: revisionId, status: 'failed', updatedAt: previous.createdAt,
+          startedAt: previous.createdAt, finishedAt: previous.createdAt };
+        f.state.latest = () => ({ task: previous, run: oldRun });
+        const events = f.state.events;
+        f.state.events = (taskId, url) => taskId === revisionId ? { task: previous, run: oldRun,
+          logs: [], nextCursor: '0-0', hasMore: false, truncated: false } : events(taskId, url);
         await f.page.reload({ waitUntil: 'networkidle' });
-        await generate(f.page).waitFor();
+        const resume = f.page.getByRole('button', { name: '继续本次申请', exact: true });
+        await resume.waitFor();
+        assert.equal(await f.page.getByRole('button', { name: '再次运行', exact: true }).count(), 0);
         assert.equal(await isSelected(weekly(f.page)), true);
         assert.equal(await weekly(f.page).isDisabled(), true, 'An unconfirmed saved intent cannot change task type');
         assert.equal(posts(f.state).length, beforeReload, 'Restoration must not resubmit an unconfirmed intent');
-        await generate(f.page).click();
+        assert.equal(await channel.locator('strong').innerText(), 'iOS 微信区');
+        await resume.click();
         await f.page.locator('img[src^="blob:"]').waitFor();
         assert.equal(posts(f.state).length, 2);
         for (const post of posts(f.state)) {
           assert.equal(post.body.requestId, intent.requestId);
+          assert.equal(post.body.loginType, 'ios_wechat');
           assert.equal(post.body.userOptions.mainTask, 'arena_weekly');
         }
       } finally { gate.resolve(); await f.close(); }

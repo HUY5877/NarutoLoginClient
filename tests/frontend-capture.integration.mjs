@@ -71,7 +71,7 @@ test('抓号接收后立即显示扫码成功，隐藏二维码和刷新，并�
       });
       try {
         await page.goto(origin, { waitUntil: 'networkidle' });
-        await page.getByRole('button', { name: '启动模拟器获取二维码', exact: true }).click();
+        await page.getByRole('button', { name: '获取授权二维码', exact: true }).click();
         const card = page.locator('.login-card');
         await card.getByRole('img', { name: /登录二维码/ }).waitFor();
         captured = true;
@@ -85,7 +85,7 @@ test('抓号接收后立即显示扫码成功，隐藏二维码和刷新，并�
         failed = true;
         await card.getByText('扫码已完成，但游戏登录未完成，脚本尚未开始，请重新申请。', { exact: true }).waitFor();
         await progress.locator('[data-stage="script"][data-state="failed"]').waitFor();
-        assert.equal(await page.getByRole('button', { name: '启动模拟器获取二维码', exact: true }).isEnabled(), true);
+        assert.equal(await page.getByRole('button', { name: '再次运行', exact: true }).isEnabled(), true);
         assert.equal(requests.filter(request => request.method === 'POST').length, 0);
         assert.deepEqual(errors, []);
       } finally { await context.close(); }
