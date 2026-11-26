@@ -132,6 +132,10 @@
   .village-account { grid-column: 1 / -1; border-top: 1px solid var(--scene-line); }
   .village-account > button { min-height: 2rem; }
 }
+@media (max-width: 359px) {
+  .main-task-tabs { padding-inline: .625rem; }
+  .main-task-tabs .qr-sharing-note { line-height: 1.45rem; }
+}
 @media (prefers-reduced-motion: no-preference) {
   .main-task-tabs { animation: task-menu-enter .35s ease-out both; }
   @keyframes task-menu-enter { from { opacity: 0; transform: translateX(.75rem); } to { opacity: 1; transform: none; } }
