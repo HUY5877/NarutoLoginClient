@@ -5,11 +5,9 @@ const refreshDelay = 60_000;
 const requestTimeout = 5_000;
 const achievementNumber = new Intl.NumberFormat('zh-CN');
 
-type AchievementState = { status: 'loading' | 'unavailable' } | { status: 'ready'; total: number };
-
 export function SiteAchievement() {
   const titleId = useId();
-  const [achievement, setAchievement] = useState<AchievementState>({ status: 'loading' });
+  const [requestCount, setRequestCount] = useState<number | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -32,9 +30,9 @@ export function SiteAchievement() {
         if (typeof total !== 'number' || !Number.isSafeInteger(total) || total < 0) {
           throw new Error('Invalid achievement total');
         }
-        if (!disposed) setAchievement({ status: 'ready', total });
+        if (!disposed) setRequestCount(total);
       } catch {
-        if (!disposed) setAchievement(current => current.status === 'ready' ? current : { status: 'unavailable' });
+        if (!disposed) setRequestCount(null);
       } finally {
         window.clearTimeout(timeout);
         inFlight = undefined;
@@ -62,9 +60,9 @@ export function SiteAchievement() {
     };
   }, []);
 
-  const total = achievement.status === 'ready' ? achievementNumber.format(achievement.total) : null;
+  const total = requestCount === null ? null : achievementNumber.format(requestCount);
   return (
-    <section className="site-achievement" aria-labelledby={titleId} data-status={achievement.status}>
+    <section className="site-achievement" aria-labelledby={titleId} data-status={total === null ? 'loading' : 'ready'}>
       <img className="site-achievement-avatar" src="/images/konan-achievement.webp?v=98b569de" alt="" width="42" height="42" />
       <h2 id={titleId}>全站成就</h2>
       <div className="site-achievement-counter" aria-live="polite" aria-atomic="true">
@@ -73,10 +71,10 @@ export function SiteAchievement() {
           <span className="site-achievement-value" data-long={total.length > 10 ? '' : undefined}>
             <strong>{total}</strong> <span>次</span>
           </span>
-        </> : achievement.status === 'loading' ? <>
+        </> : <>
           <span className="site-achievement-label">正在读取成就统计</span>
           <span className="site-achievement-placeholder" aria-hidden="true" />
-        </> : <span className="site-achievement-label">成就统计暂不可用</span>}
+        </>}
       </div>
     </section>
   );
