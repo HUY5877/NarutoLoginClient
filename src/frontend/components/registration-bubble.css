@@ -15,7 +15,6 @@
   box-shadow: 0 .25rem .95rem #251d1840;
   color: #352b25;
   text-align: left;
-  cursor: pointer;
   pointer-events: auto;
 }
 .registration-bubble::after {
@@ -30,17 +29,10 @@
   background: var(--paper);
   transform: skewY(15deg) rotate(45deg);
 }
-.registration-bubble:is(:hover, :focus-visible) { --paper: #fffaf0; }
-.registration-bubble:focus-visible { outline: 3px solid #995e23; outline-offset: 3px; }
-.bubble-heading { display: flex; align-items: center; justify-content: space-between; color: #78552c; font-size: .75rem; font-weight: 700; }
-.bubble-heading svg { width: .9rem; height: .9rem; }
+.bubble-heading { color: #78552c; font-size: .75rem; font-weight: 700; }
 .bubble-message { font-size: .875rem; line-height: 1.5; text-wrap: balance; }
 .bubble-group { display: flex; align-items: baseline; gap: .4rem; color: #64401c; font-size: .75rem; font-weight: 600; white-space: nowrap; }
 .bubble-group strong { font-size: 1.2rem; line-height: 1.25; font-variant-numeric: tabular-nums; letter-spacing: .035em; }
-
-.registration-dialog { gap: 1rem; border: 1px solid #b8ad91; border-radius: .5rem; background: #faf6e9; color: #272721; }
-.registration-dialog-heading { display: flex; align-items: center; justify-content: space-between; }
-.registration-dialog .registration-notice[data-surface='dialog'] { border-color: #d9ceb5; background: #f2eddf; }
 
 @media (min-width: 640px) and (max-width: 979px) {
   .registration-bubble { top: auto; right: 1rem; bottom: calc(100% - .75rem); }

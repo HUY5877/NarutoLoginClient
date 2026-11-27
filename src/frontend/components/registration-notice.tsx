@@ -1,8 +1,6 @@
-import { ChevronRight, UsersRound, X } from 'lucide-react';
+import { UsersRound } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Dialog, DialogClose, DialogContent, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import './registration-bubble.css';
 
@@ -32,23 +30,10 @@ export function RegistrationNotice({ className, surface = 'page' }: {
 
 export function RegistrationBubble() {
   return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <button type="button" className="registration-bubble">
-          <span className="bubble-heading">注册须知<ChevronRight aria-hidden="true" /></span>
-          <span className="bubble-message">注册后请加群，联系群主审核。</span>
-          <span className="bubble-group">QQ 群 <strong>{registrationGroup}</strong></span>
-        </button>
-      </DialogTrigger>
-      <DialogContent className="registration-dialog" showCloseButton={false} aria-describedby={undefined}>
-        <div className="registration-dialog-heading">
-          <DialogTitle>注册须知</DialogTitle>
-          <DialogClose asChild>
-            <Button type="button" size="icon" variant="ghost" aria-label="关闭"><X aria-hidden="true" /></Button>
-          </DialogClose>
-        </div>
-        <RegistrationNotice surface="dialog" />
-      </DialogContent>
-    </Dialog>
+    <div className="registration-bubble" role="note" aria-label="注册须知">
+      <span className="bubble-heading">注册须知</span>
+      <span className="bubble-message">注册后请加群，联系群主审核。</span>
+      <span className="bubble-group">QQ 群 <strong>{registrationGroup}</strong></span>
+    </div>
   );
 }
