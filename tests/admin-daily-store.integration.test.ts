@@ -54,6 +54,19 @@ async function fixture(t: TestContext) {
   return { db, store, calls, insert, assertSingleRead };
 }
 
+test('全站申请数包含历史日常和周胜，每条申请只算一次且不受状态影响', async t => {
+  const f = await fixture(t);
+  assert.equal(await f.store.countGameRequests(), 0);
+  await f.insert(1, new Date('2020-01-01')); // 老申请没有 mainTask
+  await f.insert(2, start, { mainTask: 'daily' });
+  await f.insert(3, start, { mainTask: 'arena_weekly' });
+  await f.insert(4, start, { mainTask: 'other' });
+  await f.db.exec("UPDATE naruto_login.login_events SET status = 'failed' WHERE user_options->>'mainTask' = 'daily'");
+  await f.db.exec("UPDATE naruto_login.login_events SET status = 'queued' WHERE user_options->>'mainTask' = 'arena_weekly'");
+  assert.equal(await f.store.countGameRequests(), 3);
+  assert.equal(await f.store.countGameRequests(), 3);
+});
+
 test('真实SQL一次返回超过两页的全部记录，总数一致且同时间按ID倒序', async t => {
   const f = await fixture(t);
   // Insert in ascending ID order: PostgreSQL must perform the descending tie-break.

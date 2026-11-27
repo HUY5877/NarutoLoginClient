@@ -62,6 +62,7 @@ test('administrator menu, scan history and user CRUD', { skip: skip || false, ti
         const method = route.request().method();
         const reply = (json, status = 200) => route.fulfill({ status, json });
         if (url.pathname === '/api/health') return reply({ ok: true, environment: 'test' });
+        if (url.pathname === '/api/achievements') return reply({ totalRequests: 0 });
         if (url.pathname === '/api/auth/me') return reply({ user: { ...admin, isAdmin: state.access } });
         if (url.pathname === '/api/task-runs/latest') return reply({ task: null, run: null });
         if (url.pathname.startsWith('/api/admin/')) {

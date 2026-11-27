@@ -33,6 +33,21 @@ const otherHeaders = { Cookie: `naruto_session=${otherToken}` };
 const jsonHeaders = { 'Content-Type': 'application/json' };
 const post = { method: 'POST', headers: { ...headers, ...jsonHeaders }, body: '{}' };
 
+test('全站成就可匿名读取且仅公开合计，未配置时返回不可用', async () => {
+  await withApi({ auth: auth({ getUser: async () => assert.fail('public statistics do not read accounts') }), achievements: {
+    countGameRequests: async () => 1290,
+  } }, async base => {
+    const response = await fetch(`${base}/api/achievements`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { totalRequests: 1290 });
+  });
+  await withApi({}, async base => {
+    const response = await fetch(`${base}/api/achievements`);
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).code, 'ACHIEVEMENTS_UNAVAILABLE');
+  });
+});
+
 test('四个渠道透传创建服务，旧请求默认安卓 QQ，非法渠道不能创建任务', async () => {
   const received: string[] = [];
   await withApi({ events: events({ create: async (_user, _request, _options, loginType) => {

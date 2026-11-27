@@ -1,5 +1,6 @@
 // All requests are intercepted; Vite uses an empty env directory and no backend.
 import assert from 'node:assert/strict';
+import { closeDrawer, openDrawer } from './fixtures/task-workspace.mjs';
 import { existsSync } from 'node:fs';
 import { mkdtemp, rmdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -22,7 +23,8 @@ const id = '11111111-1111-4111-8111-111111111111';
 const user = { id: 'recovery-user', username: '恢复测试', isAdmin: false };
 const options = { equipmentStamina: false, secretRealmMode: 'all', mainTask: 'arena_weekly' };
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7nwAAAAASUVORK5CYII=', 'base64');
-const generate = page => page.getByRole('button', { name: '启动模拟器获取二维码', exact: true });
+const generate = page => page.getByRole('button', { name: '获取授权二维码', exact: true });
+const availableStarts = page => page.getByRole('button', { name: /^(获取授权二维码|再次运行)$/, disabled: false });
 const gate = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 async function until(check, message = 'Expected page state', timeout = 8000) {
   const deadline = Date.now() + timeout;
@@ -63,6 +65,7 @@ test('刷新优先恢复统一任务状态', { skip: unavailable || false, timeo
         state.calls.push(`${request.method()} ${url.pathname}`);
         let body;
         if (url.pathname === '/api/health') body = { ok: true, environment: 'test' };
+        else if (url.pathname === '/api/achievements') body = { totalRequests: 0 };
         else if (url.pathname === '/api/auth/me') body = { user };
         else if (url.pathname === '/api/task-runs/latest') {
           if (state.latestGate) await state.latestGate.promise;
@@ -80,7 +83,7 @@ test('刷新优先恢复统一任务状态', { skip: unavailable || false, timeo
       });
       const page = await context.newPage(); page.setDefaultTimeout(8000);
       page.on('pageerror', error => state.errors.push(error.message));
-      return { page, state, async open() { await page.goto(origin, { waitUntil: 'domcontentloaded' }); await generate(page).waitFor(); },
+      return { page, state, async open() { await page.goto(origin, { waitUntil: 'domcontentloaded' }); await page.getByRole('tablist', { name: '主任务' }).waitFor(); },
         async close() { state.latestGate?.resolve(); state.eventsGate?.resolve(); await context.close(); assert.deepEqual(state.errors, []); } };
     }
 
@@ -90,10 +93,10 @@ test('刷新优先恢复统一任务状态', { skip: unavailable || false, timeo
         const f = await fixture('running_daily', 'arena_weekly', absent);
         try {
           await f.open();
-          await until(async () => /执行中/.test(await f.page.getByLabel('任务整体状态', { exact: true }).innerText()));
+          await f.page.locator('.login-card').getByText(/^(周胜任务|脚本)执行中$/).first().waitFor();
           assert.equal(f.state.calls.filter(call => call.endsWith('/api/task-runs/latest')).length, 1);
           assert.equal(await f.page.getByText('任务状态暂时无法确认，请重试查询任务。', { exact: true }).count(), 0);
-          assert.equal(await generate(f.page).isDisabled(), true);
+          assert.equal(await availableStarts(f.page).count(), 0);
           assert.equal(f.state.calls.includes('GET /api/auth/me'), true);
           assert.equal(f.state.calls.includes('GET /api/health'), true);
           assert.equal(f.state.calls.some(call => call.startsWith('POST ')), false);
@@ -107,11 +110,11 @@ test('刷新优先恢复统一任务状态', { skip: unavailable || false, timeo
         try {
           await f.open();
           await until(() => f.state.calls.some(call => call.endsWith(pending === 'latestGate' ? '/latest' : '/events')));
-          assert.equal(await generate(f.page).isDisabled(), true);
+          assert.equal(await availableStarts(f.page).count(), 0);
           assert.equal(f.state.calls.some(call => call.startsWith('POST ')), false);
           f.state[pending].resolve();
-          await until(async () => /执行中/.test(await f.page.getByLabel('任务整体状态', { exact: true }).innerText()));
-          assert.equal(await generate(f.page).isDisabled(), true);
+          await f.page.locator('.login-card').getByText(/^(周胜任务|脚本)执行中$/).first().waitFor();
+          assert.equal(await availableStarts(f.page).count(), 0);
         } finally { await f.close(); }
       });
     }
@@ -122,7 +125,7 @@ test('刷新优先恢复统一任务状态', { skip: unavailable || false, timeo
           await f.open();
           await until(() => f.state.calls.includes(`GET /api/login-sessions/${id}`));
           if (status === 'waiting_scan') await f.page.locator('img[src^="blob:"]').waitFor();
-          assert.equal(await generate(f.page).isDisabled(), true);
+          assert.equal(await availableStarts(f.page).count(), 0);
           assert.equal(f.state.calls.some(call => call.startsWith('POST ')), false);
           assert.equal(f.state.calls.includes('GET /api/login-sessions/active'), false);
         } finally { await f.close(); }
@@ -131,8 +134,11 @@ test('刷新优先恢复统一任务状态', { skip: unavailable || false, timeo
     for (const status of ['failed', 'interrupted', 'expired']) {
       await t.test(`${status}刷新保留记录并允许下一次申请`, async () => {
         const f = await fixture(status, 'daily'); f.state.partial = status !== 'expired';
-        try { await f.open(); await f.page.locator('#task-run-details').getByText('任务执行记录', { exact: true }).waitFor();
-          await until(() => generate(f.page).isEnabled());
+        try {
+          await f.open();
+          await f.page.getByRole('button', { name: '再次运行', exact: true }).waitFor();
+          const drawer = await openDrawer(f.page);
+          await drawer.getByRole('heading', { name: '任务执行记录', exact: true }).waitFor();
         } finally { await f.close(); }
       });
     }
@@ -140,8 +146,8 @@ test('刷新优先恢复统一任务状态', { skip: unavailable || false, timeo
       await t.test(`${status}恢复不受旧扫码期限影响`, async () => {
         const f = await fixture(status); f.state.expiredHeader = true;
         try {
-          await f.open(); await until(async () => /执行中|正在进入游戏/.test(await f.page.getByLabel('任务整体状态', { exact: true }).innerText()));
-          assert.equal(await generate(f.page).isDisabled(), true);
+          await f.open(); await f.page.locator('.login-card').getByText(/^(周胜任务执行中|正在进入游戏)$/).first().waitFor();
+          assert.equal(await availableStarts(f.page).count(), 0);
           assert.equal(f.state.calls.some(call => call.includes('/login-sessions')), false);
           assert.equal(await f.page.getByLabel(/^剩余 \d+ 秒$/).count(), 0);
         } finally { await f.close(); }
@@ -152,49 +158,74 @@ test('刷新优先恢复统一任务状态', { skip: unavailable || false, timeo
       try {
         await f.open(); await f.page.getByText('扫码成功', { exact: true }).first().waitFor();
         assert.equal(f.state.calls.some(call => call.endsWith('/qr')), false);
-        assert.equal(await generate(f.page).isDisabled(), true);
+        assert.equal(await availableStarts(f.page).count(), 0);
+      } finally { await f.close(); }
+    });
+    await t.test('较新的本地申请超时后仍隐藏旧失败记录', async () => {
+      const f = await fixture('failed', 'daily');
+      try {
+        await f.page.addInitScript(({ userId, options }) => {
+          const now = Date.now();
+          localStorage.setItem('naruto-login:pending:' + userId, JSON.stringify({
+            requestId: '22222222-2222-4222-8222-222222222222', createdAt: now, expiresAt: now + 60_000,
+            userOptions: options, loginType: 'ios_wechat',
+          }));
+        }, { userId: user.id, options });
+        await f.open();
+        await f.page.getByRole('button', { name: '继续本次申请', exact: true }).waitFor();
+        await f.page.evaluate(() => { const now = Date.now; Date.now = () => now() + 120_000; });
+        await f.page.locator('.task-result').getByRole('heading', { name: '申请确认超时', exact: true }).waitFor();
+        assert.equal(await f.page.getByRole('button', { name: '再次运行', exact: true }).isEnabled(), true);
+        const drawer = await openDrawer(f.page);
+        assert.equal(await drawer.getByText('任务执行记录', { exact: true }).count(), 0);
+        assert.equal(await f.page.getByText(id, { exact: true }).count(), 0);
+        assert.equal(f.state.calls.some(call => call.startsWith('POST ')), false);
       } finally { await f.close(); }
     });
     await t.test('存在任务但缺少运行状态时禁止申请', async () => {
       const f = await fixture(); f.state.missingRun = true;
       try {
-        await f.open(); await f.page.getByRole('button', { name: '重试查询任务', exact: true }).waitFor();
-        assert.equal(await generate(f.page).isDisabled(), true);
+        await f.open(); await f.page.getByRole('button', { name: '重试连接', exact: true }).waitFor();
+        assert.equal(await availableStarts(f.page).count(), 0);
         assert.equal(f.state.calls.some(call => call.startsWith('POST ')), false);
       } finally { await f.close(); }
     });
     await t.test('本页完成保留结果，刷新已完成隐藏旧记录', async () => {
       const f = await fixture();
       try {
-        await f.open(); await until(async () => /执行中/.test(await f.page.getByLabel('任务整体状态', { exact: true }).innerText()));
+        await f.open(); await f.page.locator('.login-card').getByText(/^(周胜任务|脚本)执行中$/).first().waitFor();
         f.state.status = 'completed';
-        await until(async () => (await f.page.getByLabel('任务整体状态', { exact: true }).innerText()) === '任务已完成');
-        assert.equal(await f.page.locator('#task-run-details').getByText('任务执行记录', { exact: true }).count(), 1);
+        await f.page.locator('.task-result').getByRole('heading', { name: '任务已完成', exact: true }).waitFor();
+        const drawer = await openDrawer(f.page);
+        await drawer.getByRole('heading', { name: '任务执行记录', exact: true }).waitFor();
         await f.page.reload({ waitUntil: 'networkidle' });
-        assert.equal(await f.page.getByLabel('任务整体状态', { exact: true }).innerText(), '待开始');
+        await openDrawer(f.page);
+        assert.equal(await drawer.getByLabel('任务整体状态', { exact: true }).innerText(), '待开始');
         assert.equal(await f.page.getByText('任务执行记录', { exact: true }).count(), 0);
+        await closeDrawer(f.page);
         assert.equal(await generate(f.page).isEnabled(), true);
       } finally { await f.close(); }
     });
     await t.test('首次查询失败保持禁用，重试成功后恢复运行状态', async () => {
       const f = await fixture(); f.state.fail = true;
       try {
-        await f.open(); await f.page.getByRole('button', { name: '重试查询任务', exact: true }).waitFor();
-        assert.equal(await generate(f.page).isDisabled(), true);
-        f.state.fail = false; await f.page.getByRole('button', { name: '重试查询任务', exact: true }).click();
-        await until(async () => /执行中/.test(await f.page.getByLabel('任务整体状态', { exact: true }).innerText()));
-        assert.equal(await generate(f.page).isDisabled(), true);
+        await f.open(); await f.page.getByRole('button', { name: '重试连接', exact: true }).waitFor();
+        assert.equal(await availableStarts(f.page).count(), 0);
+        f.state.fail = false; await f.page.getByRole('button', { name: '重试连接', exact: true }).click();
+        await f.page.locator('.login-card').getByText(/^(周胜任务|脚本)执行中$/).first().waitFor();
+        assert.equal(await availableStarts(f.page).count(), 0);
       } finally { await f.close(); }
     });
     for (const previous of ['none', 'completed']) {
       await t.test(`查询失败后重试${previous}清除旧错误并回到待开始`, async () => {
         const f = await fixture(previous === 'completed' ? 'completed' : 'running_daily'); f.state.fail = true;
         try {
-          await f.open(); await f.page.getByRole('button', { name: '重试查询任务', exact: true }).waitFor();
+          await f.open(); await f.page.getByRole('button', { name: '重试连接', exact: true }).waitFor();
           f.state.fail = false; f.state.noTask = previous === 'none';
-          await f.page.getByRole('button', { name: '重试查询任务', exact: true }).click();
+          await f.page.getByRole('button', { name: '重试连接', exact: true }).click();
           await until(() => generate(f.page).isEnabled());
-          assert.equal(await f.page.getByLabel('任务整体状态', { exact: true }).innerText(), '待开始');
+          const drawer = await openDrawer(f.page);
+          assert.equal(await drawer.getByLabel('任务整体状态', { exact: true }).innerText(), '待开始');
           assert.equal(await f.page.getByText(/任务状态暂时无法确认/).count(), 0);
           assert.equal(await f.page.getByText('任务执行记录', { exact: true }).count(), 0);
         } finally { await f.close(); }

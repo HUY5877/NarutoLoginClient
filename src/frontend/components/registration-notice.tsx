@@ -2,6 +2,9 @@ import { UsersRound } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import './registration-bubble.css';
+
+const registrationGroup = '993904975';
 
 export function RegistrationNotice({ className, surface = 'page' }: {
   className?: string;
@@ -12,9 +15,9 @@ export function RegistrationNotice({ className, surface = 'page' }: {
     <div className="registration-notice-copy">
       <div className="registration-notice-heading">
         <AlertTitle>注册后请加</AlertTitle>
-        <Badge variant="outline" className="registration-group-badge" aria-label="QQ 群 993904975">
+        <Badge variant="outline" className="registration-group-badge" aria-label={`QQ 群 ${registrationGroup}`}>
           <span className="registration-group-label">QQ 群</span>
-          <strong className="registration-group-number">993904975</strong>
+          <strong className="registration-group-number">{registrationGroup}</strong>
         </Badge>
       </div>
       <AlertDescription>
@@ -23,4 +26,14 @@ export function RegistrationNotice({ className, surface = 'page' }: {
       </AlertDescription>
     </div>
   </Alert>;
+}
+
+export function RegistrationBubble() {
+  return (
+    <div className="registration-bubble" role="note" aria-label="注册须知">
+      <span className="bubble-heading">注册须知</span>
+      <span className="bubble-message">注册后请加群，联系群主审核。</span>
+      <span className="bubble-group">QQ 群 <strong>{registrationGroup}</strong></span>
+    </div>
+  );
 }

@@ -400,9 +400,12 @@ export function useLoginSession(userId: string | null, onUnauthorized: () => voi
   }, [userId, replaceQr, updateAvailability]);
 
   const restoreTask = useCallback((task: RunTask | null, snapshot: TaskRun | null) => {
-    if (!userId || restoredRef.current) return;
+    if (!userId || restoredRef.current || (task && !snapshot)) return;
     restoredRef.current = true;
-    if (!task) { setPhase('idle'); setError(''); setRetrying(false); updateAvailability(true); return; }
+    // A saved submission can be newer than the last finished run.
+    if (!task || (snapshot && isRunTerminal(snapshot.status) && readPending(userId))) {
+      setPhase('idle'); setError(''); setRetrying(false); updateAvailability(true); return;
+    }
     setUserOptions(parseUserOptions(task.userOptions) ?? { ...DEFAULT_USER_OPTIONS });
     setLoginType(parseLoginType(task.loginType) ?? DEFAULT_LOGIN_TYPE);
     const status = snapshot!.status;

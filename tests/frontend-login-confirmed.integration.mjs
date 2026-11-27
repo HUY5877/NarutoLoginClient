@@ -1,6 +1,7 @@
 // Focused browser checks. All APIs are mocked and Vite never loads project .env files.
 // Provide existing PLAYWRIGHT_MODULE and PLAYWRIGHT_CHROMIUM_EXECUTABLE when not installed locally.
 import assert from 'node:assert/strict';
+import { closeDrawer, expectLockedOptions, openDrawer, taskDrawer } from './fixtures/task-workspace.mjs';
 import { existsSync } from 'node:fs';
 import { mkdtemp, rmdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -60,6 +61,7 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         state.calls.push(url.pathname);
         let body;
         if (url.pathname === '/api/health') body = { ok: true, environment: 'development' };
+        else if (url.pathname === '/api/achievements') body = { totalRequests: 0 };
         else if (url.pathname === '/api/auth/me') body = { user: { id: 'confirmed-user', username: '授权测试', isAdmin: false } };
         else if (url.pathname === '/api/login-sessions/active') body = { session, showGetButton: false };
         else if (url.pathname === `/api/login-sessions/${taskId}`) {
@@ -90,7 +92,7 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         return route.fulfill({ status: 200, json: body }).catch(() => {});
       });
       await page.goto(origin, { waitUntil: 'domcontentloaded' });
-      await page.getByRole('button', { name: '启动模拟器获取二维码', exact: true }).waitFor();
+      await page.getByRole('tablist', { name: '主任务' }).waitFor();
       return { context, page, state, async close() { state.oldGate.resolve(); await context.close(); assert.deepEqual(state.errors, []); } };
     }
 
@@ -98,17 +100,18 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
       await t.test(`unclaimed task expiry from ${source} shows capacity message and allows retry`, async () => {
         const f = await fixture({ sessionStatus: 'queued', runStatus: null });
         try {
-          await f.page.getByRole('button', { name: '启动模拟器获取二维码', exact: true }).click();
-          await f.page.getByText('申请已收到，正在排队', { exact: true }).waitFor();
+          await f.page.getByRole('button', { name: '获取授权二维码', exact: true }).click();
+          await f.page.locator('.qr-copy').getByText('申请已收到，正在排队', { exact: true }).waitFor();
           if (source === 'clock') await f.page.evaluate(() => { const now = Date.now; Date.now = () => now() + 120_000; });
           else if (source === 'api-expired') f.state.detailStatus = 'expired';
           else f.state.detailHttpStatus = 410;
           await f.page.getByText('服务器可用实例紧张，请稍后再试。', { exact: true }).first().waitFor();
-          const qrStage = f.page.getByLabel('任务执行进度', { exact: true }).locator('[data-stage="qr"][data-state="failed"]');
+          const qrStage = (await openDrawer(f.page)).getByLabel('任务执行进度', { exact: true }).locator('[data-stage="qr"][data-state="failed"]');
           assert.match(await qrStage.innerText(), /服务器可用实例紧张，请稍后再试/);
+          await closeDrawer(f.page);
           assert.equal(await f.page.getByText('二维码已过期', { exact: true }).count(), 0);
           assert.equal(await f.page.getByLabel(/^剩余 \d+ 秒$/).count(), 0);
-          assert.equal(await f.page.getByRole('button', { name: '启动模拟器获取二维码', exact: true }).isEnabled(), true);
+          assert.equal(await f.page.getByRole('button', { name: '再次运行', exact: true }).isEnabled(), true);
         } finally { await f.close(); }
       });
     }
@@ -117,11 +120,12 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
       await t.test(`claimed ${sessionStatus} session does not report capacity pressure at expiry`, async () => {
         const f = await fixture({ sessionStatus, runStatus: sessionStatus === 'queued' ? 'starting_emulator' : null });
         try {
-          await f.page.getByRole('button', { name: '启动模拟器获取二维码', exact: true }).click();
+          await f.page.getByRole('button', { name: '获取授权二维码', exact: true }).click();
+          if (sessionStatus === 'qr_ready') await f.page.locator('img[src^="blob:"]').waitFor();
           await f.page.getByLabel(/^剩余 \d+ 秒$/).waitFor();
           await until(() => f.state.calls.includes(`/api/task-runs/${taskId}/events`));
           await f.page.evaluate(() => { const now = Date.now; Date.now = () => now() + 120_000; });
-          await f.page.getByText('二维码已过期', { exact: true }).first().waitFor();
+          await f.page.locator('.task-result').getByRole('heading', { name: '等待登录超时', exact: true }).waitFor();
           assert.doesNotMatch(await f.page.locator('body').innerText(), /实例紧张|排队超时/);
         } finally { await f.close(); }
       });
@@ -130,7 +134,7 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
     await t.test('matching authorization hides the real QR and countdown before the original expiry', async () => {
       const f = await fixture();
       try {
-        await f.page.getByRole('button', { name: '启动模拟器获取二维码', exact: true }).click();
+        await f.page.getByRole('button', { name: '获取授权二维码', exact: true }).click();
         const image = f.page.locator('img[src^="blob:"]');
         const countdown = f.page.getByLabel(/^剩余 \d+ 秒$/);
         await image.waitFor();
@@ -138,13 +142,13 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         assert.match(await image.getAttribute('alt'), /手机QQ扫码授权/);
         assert.doesNotMatch(await f.page.locator('body').innerText(), /模拟二维码|模拟登录演示|不能授权或登录真实账号/);
         f.state.status = 'finishing_login';
-        await f.page.getByText('扫码授权已完成', { exact: true }).waitFor();
+        await f.page.locator('.login-card').getByText('正在进入游戏', { exact: true }).first().waitFor();
         assert.equal(await image.count(), 0);
         assert.equal(await countdown.count(), 0);
         const before = f.state.calls.filter(value => value.startsWith('/api/login-sessions')).length;
         await f.page.evaluate(() => { const now = Date.now; Date.now = () => now() + 120_000; });
         await f.page.waitForTimeout(1_100); // Exercise the existing once-per-second expiry effect.
-        assert.equal(await f.page.getByText('扫码授权已完成', { exact: true }).isVisible(), true);
+        assert.equal(await f.page.locator('.login-card').getByText('正在进入游戏', { exact: true }).first().isVisible(), true);
         assert.equal(await f.page.getByText('二维码已过期', { exact: true }).count(), 0);
         assert.equal(await countdown.count(), 0);
         assert.equal(f.state.calls.filter(value => value.startsWith('/api/login-sessions')).length, before);
@@ -154,32 +158,36 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
     await t.test('first secret realm completion survives the daily time limit and page reload, then full completion wins', async () => {
       const f = await fixture({ runStatus: 'running_daily', dailyStarted: true, secretRealmCompleted: true });
       try {
+        await expectLockedOptions(f.page, '消耗全部扫荡卷');
+        await openDrawer(f.page);
         await f.page.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^日常任务已初步完成$/ }).waitFor();
-        await f.page.locator('#task-run-details').getByText('日常任务已初步完成，还在扫荡未用完的秘境扫荡券。', { exact: true }).waitFor();
+        await taskDrawer(f.page).getByText('日常任务已初步完成，还在扫荡未用完的秘境扫荡券。', { exact: true }).last().waitFor();
         assert.equal(await f.page.getByLabel('任务执行进度', { exact: true }).locator('[data-stage="script"]').getAttribute('data-state'), 'active');
-        assert.equal(await f.page.getByRole('button', { name: '秘境探险', exact: true }).isDisabled(), true);
         const polls = f.state.calls.filter(value => value === `/api/task-runs/${taskId}/events`).length;
         await until(() => f.state.calls.filter(value => value === `/api/task-runs/${taskId}/events`).length > polls);
         f.state.status = 'failed'; f.state.errorCode = 'daily_timeout';
         const stopped = '日常任务已完成；已达到执行时限，剩余秘境扫荡已停止。';
-        await f.page.locator('#task-run-details').getByText(stopped, { exact: true }).waitFor();
+        await taskDrawer(f.page).getByText(stopped, { exact: true }).last().waitFor();
         assert.equal(await f.page.getByLabel('任务整体状态', { exact: true }).innerText(), '任务已完成');
         assert.equal(await f.page.getByLabel('任务执行进度', { exact: true }).locator('[data-stage="script"]').getAttribute('data-state'), 'completed');
         assert.equal(await f.page.getByLabel('任务失败原因', { exact: true }).count(), 0);
         await f.page.reload({ waitUntil: 'domcontentloaded' });
-        await f.page.locator('#task-run-details').getByText(stopped, { exact: true }).waitFor();
+        await openDrawer(f.page);
+        await taskDrawer(f.page).getByText(stopped, { exact: true }).last().waitFor();
         assert.equal(await f.page.getByLabel('任务整体状态', { exact: true }).innerText(), '任务已完成');
         // 完整完成使用新快照恢复，不能被已保留的初步完成标记降级。
         f.state.status = 'completed'; f.state.errorCode = undefined;
         await f.page.reload({ waitUntil: 'domcontentloaded' });
+        await openDrawer(f.page);
         await f.page.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^待开始$/ }).waitFor();
-        assert.equal(await f.page.locator('#task-run-details').getByText('日常任务已初步完成', { exact: true }).count(), 0);
+        assert.equal(await taskDrawer(f.page).getByText('日常任务已初步完成', { exact: true }).count(), 0);
       } finally { await f.close(); }
     });
 
     await t.test('daily time limit without any secret realm completion keeps its failure', async () => {
       const f = await fixture({ runStatus: 'running_daily', dailyStarted: true });
       try {
+        await openDrawer(f.page);
         await f.page.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^脚本执行中$/ }).waitFor();
         f.state.status = 'failed'; f.state.errorCode = 'daily_timeout';
         await f.page.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^脚本执行失败$/ }).waitFor();
@@ -192,10 +200,11 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
       for (const status of ['failed', 'interrupted']) {
         const f = await fixture({ runStatus: 'running_daily', dailyStarted: true, secretRealmCompleted: true });
         try {
-          const details = f.page.locator('#task-run-details');
+          await expectLockedOptions(f.page, '消耗全部扫荡卷');
+          const drawer = await openDrawer(f.page);
+          const details = drawer.locator('[data-slot="card"]').filter({ has: f.page.getByRole('heading', { name: '任务执行记录', exact: true }) });
           const summary = f.page.getByLabel('任务整体状态', { exact: true });
           await summary.filter({ hasText: /^日常任务已初步完成$/ }).waitFor();
-          assert.equal(await f.page.getByRole('button', { name: '秘境探险', exact: true }).isDisabled(), true);
           f.state.logs.push({ id: '1-0', time: new Date().toISOString(), level: 'INFO', message: '秘境探险首次完成。' });
           await details.getByRole('button', { name: '展开记录', exact: true }).click();
           const log = details.getByRole('log', { name: '任务执行日志', exact: true });
@@ -214,8 +223,11 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
           await details.getByText(/^日常任务已完成；后续秘境扫荡已停止/).waitFor();
           await log.getByText(error, { exact: true }).waitFor();
           assert.equal(await log.getByText('错误', { exact: true }).count(), 1);
+          await closeDrawer(f.page);
+          await f.page.getByRole('button', { name: '修改配置', exact: true }).click();
           assert.equal(await f.page.getByRole('button', { name: '秘境探险', exact: true }).isEnabled(), true);
           await f.page.reload({ waitUntil: 'domcontentloaded' });
+          await openDrawer(f.page);
           await summary.filter({ hasText: /^任务已完成$/ }).waitFor();
           await details.getByRole('button', { name: '展开记录', exact: true }).click();
           await details.getByRole('log', { name: '任务执行日志', exact: true }).getByText(error, { exact: true }).waitFor();
@@ -228,31 +240,22 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
       for (const mobile of [false, true]) {
         const f = await fixture({ runStatus: 'running_daily', dailyStarted: true, secretRealmCompleted: true, secretRealmMode: 'once', mobile });
         try {
-          let details = f.page.locator('#task-run-details');
-          const option = f.page.getByRole('button', { name: '秘境探险', exact: true });
-          await option.getByText('只刷一次就退出', { exact: true }).waitFor();
-          assert.equal(await option.isDisabled(), true);
-          if (mobile) {
-            await f.page.getByRole('button', { name: '任务进度与记录', exact: true }).click();
-            details = f.page.getByRole('dialog', { name: '本次任务', exact: true });
-          }
+          await expectLockedOptions(f.page, '仅刷一次');
+          const details = await openDrawer(f.page);
           await details.getByText('日常任务已初步完成，已完成一次秘境探险，正在完成结算并结束本次日常。', { exact: true }).last().waitFor();
           assert.doesNotMatch(await f.page.locator('body').innerText(), /还在扫荡未用完的秘境扫荡券/);
           f.state.status = 'completed';
-          const progress = mobile ? details : f.page;
-          await progress.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^任务已完成$/ }).waitFor();
-          assert.equal(await progress.getByLabel('任务执行进度', { exact: true }).locator('[data-stage="script"]').getAttribute('data-state'), 'completed');
+          await details.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^任务已完成$/ }).waitFor();
+          assert.equal(await details.getByLabel('任务执行进度', { exact: true }).locator('[data-stage="script"]').getAttribute('data-state'), 'completed');
           assert.doesNotMatch(await f.page.locator('body').innerText(), /还在扫荡|正在完成结算并结束本次日常/);
         } finally { await f.close(); }
       }
     });
 
-    await t.test('mobile overview and task sheet distinguish initial completion from all tickets used', async () => {
+    await t.test('mobile workbench and task drawer distinguish initial completion from all tickets used', async () => {
       const f = await fixture({ runStatus: 'running_daily', dailyStarted: true, secretRealmCompleted: true, mobile: true });
       try {
-        const overview = f.page.getByLabel('任务进度概览', { exact: true }).locator('[data-stage="script"]');
-        await overview.getByText('初步完成', { exact: true }).waitFor();
-        assert.equal(await overview.getAttribute('data-state'), 'active');
+        await f.page.locator('.login-card').getByText('日常任务已初步完成', { exact: true }).first().waitFor();
         await f.page.getByRole('button', { name: '任务进度与记录', exact: true }).click();
         const sheet = f.page.getByRole('dialog', { name: '本次任务', exact: true });
         await sheet.getByLabel('任务整体状态', { exact: true }).filter({ hasText: /^日常任务已初步完成$/ }).waitFor();
@@ -260,9 +263,7 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
         f.state.status = 'failed'; f.state.errorCode = 'daily_timeout';
         await sheet.getByText('日常任务已完成；已达到执行时限，剩余秘境扫荡已停止。', { exact: true }).last().waitFor();
         assert.equal(await sheet.getByLabel('任务整体状态', { exact: true }).innerText(), '任务已完成');
-        assert.equal(await overview.getAttribute('data-state'), 'completed');
-        assert.match(await overview.innerText(), /已完成/);
-        assert.doesNotMatch(await overview.innerText(), /初步完成/);
+        assert.equal(await sheet.locator('[data-stage="script"]').getAttribute('data-state'), 'completed');
         assert.equal(await sheet.getByLabel('任务失败原因', { exact: true }).count(), 0);
       } finally { await f.close(); }
     });
@@ -271,10 +272,10 @@ test('QR authorization confirmation and queue expiry', { skip: skip || false, ti
       const f = await fixture({ old: true });
       try {
         await until(() => f.state.oldRequested);
-        assert.equal(await f.page.getByRole('button', { name: '启动模拟器获取二维码', exact: true }).isDisabled(), true);
+        assert.equal(await f.page.getByRole('button', { name: /^(获取授权二维码|再次运行)$/, disabled: false }).count(), 0);
         assert.equal(await f.page.locator('img[src^="blob:"]').count(), 0);
         f.state.oldGate.resolve();
-        await f.page.getByText('扫码授权已完成', { exact: true }).waitFor();
+        await f.page.locator('.login-card').getByText('正在进入游戏', { exact: true }).first().waitFor();
         assert.equal(f.state.calls.some(value => value.startsWith('/api/login-sessions')), false);
       } finally { await f.close(); }
     });

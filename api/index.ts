@@ -22,6 +22,7 @@ const auth = new AuthService(config, { store });
 const mcpBindings = new McpQqBindingService(config, { beforeInitialize: () => auth.initialize() });
 const qqGroups = new QqGroupDiscoveryService(config);
 const app = createApp(config, {
+  achievements: store,
   mcpBindings,
   events: new LoginEventService(config, { store, tasks }),
   runs,

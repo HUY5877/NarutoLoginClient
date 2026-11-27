@@ -1,16 +1,15 @@
-import { ArrowRight, Check, CheckCheck, CircleAlert, CircleHelp, Clock3, ListChecks, QrCode } from 'lucide-react';
+import { ArrowRight, Check, CircleAlert, CircleHelp, ListChecks, QrCode } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from '@/components/ui/item';
-import { Separator } from '@/components/ui/separator';
 import { Spinner } from '@/components/ui/spinner';
 import type { deriveTaskProgress } from '@/lib/task-progress';
 
 const stepIcons = { submission: ArrowRight, qr: QrCode, script: ListChecks };
 
-export function TaskProgressCards({ progress }: { progress: ReturnType<typeof deriveTaskProgress> }) {
-  const arena = progress.mainTask === 'arena_weekly';
+export function TaskProgressCards({ progress, children }: { progress: ReturnType<typeof deriveTaskProgress>; children?: ReactNode }) {
   return (
     <>
       <Card className="village-glass preparation-card gap-4">
@@ -18,67 +17,64 @@ export function TaskProgressCards({ progress }: { progress: ReturnType<typeof de
           <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base">
             <img src="/icons/shuriken.svg" alt="" width="19" height="19" aria-hidden="true" />任务进度
           </CardTitle>
-          <CardDescription className="text-sm">{arena ? '登录准备、周胜进展，在这里接着看。' : '二维码准备到哪了、日常跑到哪了，都在这里看。'}</CardDescription>
           <CardAction>
             <Badge variant={progress.tone === 'danger' ? 'destructive' : 'outline'} className="font-normal" aria-label="任务整体状态">{progress.summary}</Badge>
           </CardAction>
         </CardHeader>
         <CardContent>
-          <ItemGroup aria-label="任务执行进度" className="gap-1">
+          <ItemGroup aria-label="任务执行进度" className="has-data-[size=sm]:gap-0">
             {progress.steps.map(({ id, title, description, state }, index) => {
               const StepIcon = stepIcons[id];
               const complete = state === 'completed', active = state === 'active', failed = state === 'failed';
               return (
-                <Item key={id} role="listitem" data-stage={id} data-state={state} size="sm" variant={active ? 'muted' : 'default'} className="items-start gap-3 px-2.5 py-3" aria-current={active ? 'step' : undefined}>
-                  <ItemMedia variant="icon" className={`size-8 rounded-lg ${failed ? 'bg-destructive/10 text-destructive' : active || complete ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
+                <Item key={id} role="listitem" data-stage={id} data-state={state} size="sm" variant={active ? 'muted' : 'default'}
+                  className="relative items-start gap-3 px-2 py-2.5 after:absolute after:top-10 after:-bottom-3 after:left-[calc(0.5rem+0.875rem)] after:w-px after:bg-border last:after:hidden"
+                  aria-current={active ? 'step' : undefined}>
+                  <ItemMedia variant="icon" className={`relative z-1 size-7 rounded-full ${failed ? 'bg-destructive/10 text-destructive' : active ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
                     {failed ? <CircleAlert aria-hidden="true" /> : complete ? <Check aria-hidden="true" />
                       : active ? <Spinner aria-hidden="true" className="motion-reduce:animate-none" /> : <StepIcon aria-hidden="true" />}
                   </ItemMedia>
-                  <ItemContent className="min-w-0 gap-1">
-                    <ItemTitle className={`line-clamp-none text-sm leading-6 ${failed ? 'text-destructive' : active || complete ? '' : 'text-muted-foreground'}`}>
+                  <ItemContent className="min-w-0 gap-0.5">
+                    <ItemTitle className={`line-clamp-none text-sm leading-5 ${failed ? 'text-destructive' : active ? 'font-semibold' : complete ? '' : 'text-muted-foreground'}`}>
                       {index + 1}. {title}
                     </ItemTitle>
-                    <ItemDescription className="line-clamp-none text-sm leading-6">{description}</ItemDescription>
+                    <ItemDescription className="line-clamp-none text-sm leading-5">{description}</ItemDescription>
                   </ItemContent>
                 </Item>
               );
             })}
           </ItemGroup>
-          <Separator className="my-4" />
-          <p className="flex items-start gap-2 text-sm leading-6 text-muted-foreground">
-            {progress.tone === 'success' ? <CheckCheck className="mt-1 size-4 shrink-0 text-primary" aria-hidden="true" /> : <Clock3 className="mt-1 size-4 shrink-0" aria-hidden="true" />}
-            {progress.hint}
-          </p>
         </CardContent>
       </Card>
+      {children}
       <Card className="village-glass faq-card gap-2">
         <CardHeader>
           <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base"><CircleHelp className="size-4 text-muted-foreground" aria-hidden="true" />常见问题</CardTitle>
         </CardHeader>
         <CardContent>
           <Accordion type="single" collapsible>
-            <AccordionItem value="simulation">
-              <AccordionTrigger className="text-sm font-medium">现在可以登录游戏吗？</AccordionTrigger>
+            <AccordionItem value="scan-app">
+              <AccordionTrigger className="text-sm font-medium">我应该用哪个手机 App 扫码？</AccordionTrigger>
               <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                选择安卓或 iOS 的 QQ 区、微信区后获取二维码。QQ 区用手机 QQ，微信区用微信扫码并确认授权。授权完成后系统会继续进入游戏和执行{arena ? '决斗场周胜任务' : '日常脚本'}。
+                QQ 区用手机 QQ，微信区用微信。扫码后在手机上确认登录。
               </AccordionContent>
             </AccordionItem>
             <AccordionItem value="account">
-              <AccordionTrigger className="text-sm font-medium">多个页面能同时获取二维码吗？</AccordionTrigger>
+              <AccordionTrigger className="text-sm font-medium">刷新页面会开启新任务吗？</AccordionTrigger>
               <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                同一账户同时只有一个有效申请。每个页面点击「启动模拟器获取二维码」后查询并复用已有申请，过期或准备失败后才能重新申请。
+                同一账户的多个页面共用一个申请。刷新页面会自动查询原任务的进度。
               </AccordionContent>
             </AccordionItem>
-            <AccordionItem value="scan-status">
-              <AccordionTrigger className="text-sm font-medium">扫描了二维码，但没有显示扫描完成怎么办？</AccordionTrigger>
+            <AccordionItem value="expires">
+              <AccordionTrigger className="text-sm font-medium">二维码失效了怎么办？</AccordionTrigger>
               <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                点击「刷新二维码」即可。
+                实例仍可用时，点「刷新二维码」。实例已过期时，点「再次运行」。
               </AccordionContent>
             </AccordionItem>
-            <AccordionItem value="expires" className="border-b-0">
-              <AccordionTrigger className="text-sm font-medium">二维码过期或生成失败怎么办？</AccordionTrigger>
+            <AccordionItem value="connection" className="border-b-0">
+              <AccordionTrigger className="text-sm font-medium">连接中断了怎么恢复？</AccordionTrigger>
               <AccordionContent className="text-sm leading-6 text-muted-foreground">
-                二维码失效时点击「刷新二维码」；实例占用超时或准备失败后，点击「启动模拟器获取二维码」重新申请。网络中断时，按页面提示重试查询或继续本次申请。
+                点「重试连接」查询状态。如果看到「继续本次申请」，点它恢复已保存的申请。
               </AccordionContent>
             </AccordionItem>
           </Accordion>

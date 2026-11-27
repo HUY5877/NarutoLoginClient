@@ -2,6 +2,7 @@
 // Optional external browser dependencies: PLAYWRIGHT_MODULE and PLAYWRIGHT_CHROMIUM_EXECUTABLE.
 // All APIs are intercepted. Vite uses an empty env directory and never starts the backend.
 import assert from 'node:assert/strict';
+import { closeDrawer, expectLockedOptions, openDrawer } from './fixtures/task-workspace.mjs';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rmdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -43,9 +44,9 @@ function deferred() {
   return { promise, resolve };
 }
 const callsToLogin = calls => calls.filter(call => call.path.startsWith('/api/login-sessions'));
-const generate = page => page.getByRole('button', { name: '启动模拟器获取二维码', exact: true });
+const generate = page => page.getByRole('button', { name: '获取授权二维码', exact: true });
 const equipmentStamina = page => page.locator('input[aria-labelledby="equipment-stamina-label"]');
-const secretRealmTitles = { once: '只刷一次就退出', all: '用完所有扫荡卷', skip: '不刷秘境' };
+const secretRealmTitles = { once: '仅刷一次', all: '消耗全部扫荡卷', skip: '不刷秘境' };
 const secretRealmTrigger = page => page.getByRole('button', { name: '秘境探险', exact: true });
 const secretRealmMode = (page, mode = 'once') => ({
   async check() {
@@ -55,7 +56,6 @@ const secretRealmMode = (page, mode = 'once') => ({
     await page.getByRole('menu').waitFor({ state: 'hidden' });
   },
   isChecked: async () => (await secretRealmTrigger(page).getByText(secretRealmTitles[mode], { exact: true }).count()) > 0,
-  isDisabled: () => secretRealmTrigger(page).isDisabled(),
   isEnabled: () => secretRealmTrigger(page).isEnabled(),
 });
 const expandRecords = page => page.getByRole('button', { name: '展开记录', exact: true });
@@ -67,10 +67,10 @@ async function waitFor(predicate, message, timeout = 8_000) {
   }
 }
 async function expectStages(page, expected) {
-  const progress = page.getByLabel('任务执行进度', { exact: true });
+  const progress = (await openDrawer(page)).getByLabel('任务执行进度', { exact: true });
   await progress.waitFor();
   const stages = ['submission', 'qr', 'script'];
-  const titles = ['提交登录申请', '二维码获取状态', '执行脚本'];
+  const titles = ['申请任务', '获取二维码', '执行任务'];
   for (const [index, stage] of stages.entries()) {
     const item = progress.locator(`[data-stage="${stage}"][data-state="${expected[index]}"]`);
     await item.waitFor();
@@ -119,6 +119,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           body: request.method() === 'POST' ? request.postDataJSON() : null });
         let body;
         if (url.pathname === '/api/health') body = { ok: true, environment: 'development' };
+        else if (url.pathname === '/api/achievements') body = { totalRequests: 0 };
         else if (url.pathname === '/api/auth/me') body = { user: state.user };
         else if (url.pathname === '/api/login-sessions/active') body = await state.active(request);
         else if (url.pathname === '/api/login-sessions' && request.method() === 'POST') body = await state.submit(request);
@@ -143,14 +144,14 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
       });
       const page = await context.newPage();
       page.setDefaultTimeout(8_000);
-      return { context, page, state, async open() { await page.goto(origin, { waitUntil: 'networkidle' }); await generate(page).waitFor(); },
+      return { context, page, state, async open() { await page.goto(origin, { waitUntil: 'networkidle' }); await page.getByRole('tablist', { name: '主任务' }).waitFor(); },
         async close() { await context.close(); assert.deepEqual(state.errors, []); } };
     }
 
     await run('channel and secret realm menus keep page scrolling, background and layout stable on desktop and touch screens', async () => {
       for (const width of [1280, 390]) {
         const touch = width === 390;
-        const f = await fixture({ viewport: { width, height: 844 }, hasTouch: touch });
+        const f = await fixture({ viewport: { width, height: 540 }, hasTouch: touch });
         try {
           await f.open();
           await f.page.evaluate(async () => {
@@ -170,7 +171,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           });
           const before = await readLayout();
           assert.ok(before.scrollY > 0, 'exercise an already scrolled page');
-          const selector = f.page.getByRole('button', { name: '登录渠道', exact: true });
+          const selector = f.page.getByRole('button', { name: '账号归属', exact: true });
           if (touch) await selector.tap(); else await selector.click();
           await f.page.getByRole('menuitemradio', { name: '安卓 QQ 区', exact: true }).waitFor();
           assert.equal(await f.page.getByRole('menuitemradio').count(), 4);
@@ -224,7 +225,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           f.state.detail = () => activeTask;
           f.state.refresh = () => ({ ...activeTask, qrRevision: pendingId });
           await f.open();
-          const selector = f.page.getByRole('button', { name: '登录渠道', exact: true });
+          const selector = f.page.getByRole('button', { name: '账号归属', exact: true });
           await selector.click();
           await f.page.getByRole('menuitemradio', { name: label, exact: true }).click();
           await secretRealmMode(f.page).check();
@@ -232,23 +233,20 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           await f.page.locator('img[src^="blob:"]').waitFor();
           assert.equal(callsToLogin(f.state.calls).find(call => call.method === 'POST').body.loginType, loginType);
           assert.deepEqual(callsToLogin(f.state.calls).find(call => call.method === 'POST').body.userOptions, activeTask.userOptions);
-          assert.equal(await selector.isDisabled(), true);
+          await expectLockedOptions(f.page, label, secretRealmTitles.once);
           assert.match(await f.page.locator('img[src^="blob:"]').getAttribute('alt'), new RegExp(`手机${app}扫码授权`));
           f.state.active = () => ({ session: activeTask, showGetButton: false });
           await f.page.reload({ waitUntil: 'networkidle' });
           await generate(f.page).click();
           await f.page.locator('img[src^="blob:"]').waitFor();
-          assert.equal(await selector.locator('strong').innerText(), label);
-          assert.equal(await secretRealmMode(f.page).isChecked(), true);
-          assert.equal(await secretRealmMode(f.page).isDisabled(), true);
+          await expectLockedOptions(f.page, label, secretRealmTitles.once);
           await f.page.getByRole('button', { name: '刷新二维码', exact: true }).click();
           await f.page.locator('img[src^="blob:"]').waitFor();
           const posts = callsToLogin(f.state.calls).filter(call => call.method === 'POST');
           assert.equal(posts.length, 2, 'recovery reuses the original session');
           assert.equal(posts[1].path, `/api/login-sessions/${sessionId}/refresh`);
           assert.deepEqual(posts[1].body, {}, 'refresh uses the task channel saved on the server');
-          assert.equal(await selector.locator('strong').innerText(), label);
-          assert.equal(await secretRealmMode(f.page).isChecked(), true, 'Refreshing the QR preserves all saved user options');
+          await expectLockedOptions(f.page, label, secretRealmTitles.once);
         } finally { await f.close(); }
       });
     }
@@ -316,8 +314,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           assert.equal(posts.length, 1);
           assert.deepEqual(posts[0].body.userOptions, { equipmentStamina: enabled, secretRealmMode: 'all' });
           assert.deepEqual(Object.keys(posts[0].body).sort(), ['loginType', 'requestId', 'userOptions']);
-          assert.equal(await equipmentStamina(f.page).isChecked(), enabled);
-          assert.equal(await equipmentStamina(f.page).isDisabled(), true);
+          await expectLockedOptions(f.page, enabled ? '已开启自动刷取装备' : '已停止自动刷取装备', secretRealmTitles.all);
         } finally { await f.close(); }
       });
     }
@@ -345,11 +342,8 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           assert.equal(posts.length, 1);
           assert.deepEqual(posts[0].body.userOptions, selected);
           assert.deepEqual(Object.keys(posts[0].body).sort(), ['loginType', 'requestId', 'userOptions']);
-          assert.equal(await secretRealmMode(f.page, mode).isChecked(), true);
-          for (const option of ['once', 'all', 'skip']) assert.equal(await secretRealmMode(f.page, option).isDisabled(), true);
-          await secretRealmTrigger(f.page).click({ force: true });
-          assert.equal(await f.page.getByRole('menuitemradio').count(), 0, 'Locked settings cannot open the menu');
-          assert.equal(await secretRealmTrigger(f.page).isVisible(), true, 'The saved selection stays visible on desktop and mobile');
+          await expectLockedOptions(f.page, secretRealmTitles[mode]);
+          assert.equal(await f.page.getByRole('menuitemradio').count(), 0);
         } finally { await f.close(); }
       });
     }
@@ -364,13 +358,17 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         const menu = f.page.getByRole('menu');
         await menu.waitFor();
         assert.ok(await menu.evaluate(element => parseFloat(getComputedStyle(element).animationDuration) < .001));
+        await f.page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitemradio');
         await f.page.keyboard.press('End');
+        await f.page.locator('[role=menuitemradio]:focus').filter({ hasText: secretRealmTitles.skip }).waitFor();
         await f.page.keyboard.press('Enter');
         await menu.waitFor({ state: 'hidden' });
         assert.equal(await secretRealmMode(f.page, 'skip').isChecked(), true);
         await trigger.press('ArrowDown');
         await menu.waitFor();
+        await f.page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitemradio');
         await f.page.keyboard.press('Home');
+        await f.page.locator('[role=menuitemradio]:focus').filter({ hasText: secretRealmTitles.once }).waitFor();
         await f.page.keyboard.press('Enter');
         await menu.waitFor({ state: 'hidden' });
         assert.equal(await secretRealmMode(f.page).isChecked(), true);
@@ -387,10 +385,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         await secretRealmMode(f.page).check();
         await generate(f.page).click();
         await f.page.locator('img[src^="blob:"]').waitFor();
-        assert.equal(await equipmentStamina(f.page).isChecked(), false);
-        assert.equal(await equipmentStamina(f.page).isDisabled(), true);
-        assert.equal(await secretRealmMode(f.page, 'all').isChecked(), true, 'A legacy saved task without the new field keeps all tickets');
-        assert.equal(await secretRealmMode(f.page).isDisabled(), true);
+        await expectLockedOptions(f.page, '已停止自动刷取装备', secretRealmTitles.all);
         assert.equal(callsToLogin(f.state.calls).filter(call => call.method === 'POST').length, 0);
       } finally { await f.close(); }
     });
@@ -404,8 +399,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           await secretRealmMode(f.page, 'skip').check();
           await generate(f.page).click();
           await f.page.locator('img[src^="blob:"]').waitFor();
-          assert.equal(await secretRealmMode(f.page, legacy ? 'once' : 'all').isChecked(), true);
-          assert.equal(await secretRealmMode(f.page, 'skip').isDisabled(), true);
+          await expectLockedOptions(f.page, legacy ? secretRealmTitles.once : secretRealmTitles.all);
           assert.equal(callsToLogin(f.state.calls).filter(call => call.method === 'POST').length, 0);
         } finally { await f.close(); }
       }
@@ -428,16 +422,13 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         await waitFor(() => callsToLogin(f.state.calls).some(call => call.method === 'POST'), 'First request should be submitted');
         const intent = await f.page.evaluate(userId => JSON.parse(localStorage.getItem(`naruto-login:pending:${userId}`)), firstUser.id);
         assert.deepEqual(intent.userOptions, { equipmentStamina: false, secretRealmMode: 'once' });
-        assert.equal(await equipmentStamina(f.page).isDisabled(), true);
-        assert.equal(await secretRealmMode(f.page).isDisabled(), true);
+        await expectLockedOptions(f.page, '已停止自动刷取装备', secretRealmTitles.once);
         await f.page.reload({ waitUntil: 'networkidle' });
-        await generate(f.page).waitFor();
-        assert.equal(await equipmentStamina(f.page).isChecked(), false);
-        assert.equal(await equipmentStamina(f.page).isDisabled(), true);
-        assert.equal(await secretRealmMode(f.page).isChecked(), true);
-        assert.equal(await secretRealmMode(f.page).isDisabled(), true);
+        const resume = f.page.getByRole('button', { name: '继续本次申请', exact: true });
+        await resume.waitFor();
+        await expectLockedOptions(f.page, '已停止自动刷取装备', secretRealmTitles.once);
         assert.equal(callsToLogin(f.state.calls).filter(call => call.method === 'POST').length, 1);
-        await generate(f.page).click();
+        await resume.click();
         await f.page.locator('img[src^="blob:"]').waitFor();
         const posts = callsToLogin(f.state.calls).filter(call => call.method === 'POST');
         assert.equal(posts.length, 2);
@@ -458,10 +449,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         await secretRealmMode(f.page, 'skip').check();
         await generate(f.page).click();
         await f.page.getByRole('button', { name: '继续本次申请', exact: true }).waitFor();
-        assert.equal(await equipmentStamina(f.page).isChecked(), false);
-        assert.equal(await equipmentStamina(f.page).isDisabled(), true);
-        assert.equal(await secretRealmMode(f.page, 'skip').isChecked(), true);
-        assert.equal(await secretRealmMode(f.page, 'skip').isDisabled(), true);
+        await expectLockedOptions(f.page, '已停止自动刷取装备', secretRealmTitles.skip);
         const firstPosts = callsToLogin(f.state.calls).filter(call => call.method === 'POST');
         assert.equal(firstPosts.length, 3);
         f.state.submitStatus = 200;
@@ -504,9 +492,10 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           localStorage.setItem(`naruto-login:pending:${userId}`, JSON.stringify({ requestId, createdAt: now, expiresAt: now + 120_000 }));
         }, { userId: firstUser.id, requestId: pendingId });
         await f.page.reload({ waitUntil: 'networkidle' });
-        await generate(f.page).waitFor();
+        const resume = f.page.getByRole('button', { name: '继续本次申请', exact: true });
+        await resume.waitFor();
         assert.deepEqual(callsToLogin(f.state.calls), []);
-        await generate(f.page).click();
+        await resume.click();
         await f.page.locator('img[src^="blob:"]').waitFor();
         const posts = callsToLogin(f.state.calls).filter(call => call.method === 'POST');
         assert.equal(posts.length, 1);
@@ -523,12 +512,11 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         expiring.expiresAt = new Date(Date.now() + 1_800).toISOString();
         await generate(f.page).click();
         await f.page.locator('img[src^="blob:"]').waitFor();
-        await f.page.getByText('二维码已过期', { exact: true }).first().waitFor();
-        assert.ok(await f.page.getByText('二维码已过期', { exact: true }).count());
+        await f.page.locator('.task-result').getByRole('heading', { name: '等待登录超时', exact: true }).waitFor();
         assert.equal(await f.page.locator('img[src^="blob:"]').count(), 0);
         assert.equal(callsToLogin(f.state.calls).filter(call => call.path.endsWith('/active')).length, 2);
         f.state.active = () => ({ session: session('qr_ready', Date.now() + 60_000), showGetButton: false });
-        await generate(f.page).click();
+        await f.page.getByRole('button', { name: '再次运行', exact: true }).click();
         await f.page.locator('img[src^="blob:"]').waitFor();
         assert.equal(callsToLogin(f.state.calls).filter(call => call.path.endsWith('/active')).length, 3);
       } finally { await f.close(); }
@@ -589,6 +577,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         };
         await f.open();
         await expectStages(f.page, ['pending', 'pending', 'pending']);
+        await closeDrawer(f.page);
         await equipmentStamina(f.page).uncheck();
         await secretRealmMode(f.page).check();
         await generate(f.page).click();
@@ -608,10 +597,9 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         startedAt = new Date().toISOString();
         milestone('登录完成，开始执行日常脚本。');
         await expectStages(f.page, ['completed', 'completed', 'active']);
-        assert.equal(await equipmentStamina(f.page).isChecked(), false);
-        assert.equal(await equipmentStamina(f.page).isDisabled(), true);
-        assert.equal(await secretRealmMode(f.page).isChecked(), true);
-        assert.equal(await secretRealmMode(f.page).isDisabled(), true);
+        await closeDrawer(f.page);
+        await expectLockedOptions(f.page, '已停止自动刷取装备', secretRealmTitles.once);
+        await openDrawer(f.page);
         const progressCard = f.page.locator('[data-slot="card"]').filter({ has: f.page.getByLabel('任务执行进度', { exact: true }) });
         await progressCard.getByText('脚本执行中', { exact: true }).waitFor();
         const screenshotPath = path.join(repository, '.data/login-lazy-integration/running-daily.png');
@@ -622,7 +610,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         // Move only this isolated page's clock beyond the QR TTL; no fixed wait for the full TTL.
         await f.page.evaluate(() => { const realNow = Date.now; Date.now = () => realNow() + 120_000; });
         await f.page.waitForTimeout(1_100);
-        assert.equal(await generate(f.page).isEnabled(), false, 'Confirmed execution keeps QR generation unavailable');
+        assert.equal(await generate(f.page).isVisible(), false, 'Confirmed execution keeps QR generation unavailable');
         await expectStages(f.page, ['completed', 'completed', 'active']);
         assert.equal(await progressCard.getByText('脚本执行中', { exact: true }).isVisible(), true);
         assert.equal(await progressCard.getByText('获取失败', { exact: true }).count(), 0);
@@ -631,15 +619,15 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         created.expiresAt = new Date(Date.now() - 1_000).toISOString();
         await f.page.reload({ waitUntil: 'networkidle' });
         await expectStages(f.page, ['completed', 'completed', 'active']);
-        assert.equal(await equipmentStamina(f.page).isChecked(), false, 'Restore the running task options after the pending intent has been cleared');
-        assert.equal(await equipmentStamina(f.page).isDisabled(), true, 'A restored running task cannot change its queued options');
-        assert.equal(await secretRealmMode(f.page).isChecked(), true, 'Reload restores the running task secret realm choice');
-        assert.equal(await secretRealmMode(f.page).isDisabled(), true);
+        await closeDrawer(f.page);
+        await expectLockedOptions(f.page, '已停止自动刷取装备', secretRealmTitles.once);
         assert.equal(await f.page.locator('img[src^="blob:"]').count(), 0);
         assert.equal(callsToLogin(f.state.calls).length, loginCalls, 'Restoring script progress must not load the QR');
         runStatus = 'completed';
         milestone('日常脚本执行完成。');
         await expectStages(f.page, ['completed', 'completed', 'completed']);
+        await closeDrawer(f.page);
+        await f.page.getByRole('button', { name: '修改配置', exact: true }).click();
         assert.equal(await equipmentStamina(f.page).isEnabled(), true, 'Completed tasks allow configuring the next request');
         await equipmentStamina(f.page).uncheck();
         assert.equal(await equipmentStamina(f.page).isChecked(), false);
@@ -650,6 +638,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         assert.equal(await secretRealmMode(f.page).isChecked(), true);
         await secretRealmMode(f.page, 'all').check();
         assert.equal(await secretRealmMode(f.page).isChecked(), false);
+        await openDrawer(f.page);
         await progressCard.getByText('任务已完成', { exact: true }).waitFor();
         assert.equal(await expandRecords(f.page).getAttribute('aria-expanded'), 'false', 'Reload restores records in the collapsed state');
         await expandRecords(f.page).click();
@@ -675,7 +664,7 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
           return { task: failedTask, run, logs, nextCursor: logs.at(-1)?.id || after,
             hasMore: logs[0]?.id === '1-0', truncated: false };
         };
-        await f.open(); await expandRecords(f.page).click();
+        await f.open(); await openDrawer(f.page); await expandRecords(f.page).click();
         const area = f.page.getByRole('log', { name: '任务执行日志' });
         await area.waitFor();
         const reads = () => f.state.calls.filter(call => call.path.endsWith('/events'));
@@ -780,9 +769,10 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         };
         await f.open();
         await generate(f.page).click();
-        const qrCard = f.page.locator('[data-slot="card"]').filter({ has: f.page.getByRole('heading', { name: '扫码登录', exact: true }) });
+        const qrCard = f.page.locator('.login-card');
         const runCard = f.page.locator('[data-slot="card"]').filter({ has: f.page.getByRole('heading', { name: '任务执行记录', exact: true }) });
         await qrCard.getByText(clockError, { exact: true }).waitFor();
+        await openDrawer(f.page);
         await runCard.getByRole('alert', { name: '任务失败原因' }).waitFor();
         await expandRecords(f.page).click();
         const logArea = f.page.getByRole('log', { name: '任务执行日志' });
@@ -794,11 +784,13 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
         assert.equal(callsToLogin(f.state.calls).filter(call => call.path.endsWith('/qr')).length, 0);
         const loginCalls = callsToLogin(f.state.calls).length;
         await f.page.waitForTimeout(Math.max(0, Date.parse(created.expiresAt) - Date.now()) + 1_100);
+        await closeDrawer(f.page);
         assert.equal(await qrCard.getByText(clockError, { exact: true }).isVisible(), true);
         assert.equal(await qrCard.getByText('二维码已过期', { exact: true }).count(), 0);
         assert.equal(callsToLogin(f.state.calls).length, loginCalls);
         await f.page.reload({ waitUntil: 'networkidle' });
-        await generate(f.page).waitFor();
+        await f.page.getByRole('button', { name: '再次运行', exact: true }).waitFor();
+        await openDrawer(f.page);
         await runCard.getByRole('alert', { name: '任务失败原因' }).waitFor();
         await expandRecords(f.page).click();
         await f.page.getByRole('log', { name: '任务执行日志' }).getByText(clockError, { exact: true }).waitFor();
@@ -819,7 +811,8 @@ test('QR sessions load only after an explicit click', { skip: unavailable || fal
             logs: [], nextCursor: '0-0', hasMore: false, truncated: false };
         };
         await f.open();
-        const runCard = f.page.locator('[data-slot="card"]').filter({ has: f.page.getByRole('heading', { name: '任务执行记录', exact: true }) });
+        const drawer = await openDrawer(f.page);
+        const runCard = drawer.locator('[data-slot="card"]').filter({ has: f.page.getByRole('heading', { name: '任务执行记录', exact: true }) });
         await runCard.getByRole('alert', { name: '任务失败原因' }).getByText(clockError, { exact: true }).waitFor();
         assert.equal(await f.page.getByRole('log', { name: '任务执行日志' }).count(), 0);
         assert.deepEqual(callsToLogin(f.state.calls), []);

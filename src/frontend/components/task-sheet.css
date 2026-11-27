@@ -1,0 +1,108 @@
+.task-sheet-toggle.mobile-task-toggle {
+  min-height: 2.75rem;
+  justify-content: flex-start;
+  padding-inline: 0.875rem;
+  border: 1px solid #eee2c82e;
+  background: #171b19b8;
+  color: #f6efdf;
+}
+.task-sheet-toggle.mobile-task-toggle > span { flex: 1; text-align: left; }
+.task-sheet-toggle.mobile-task-toggle:hover { background: #31372feb; color: #fff8e8; }
+.task-sheet-toggle.mobile-task-toggle:focus-visible,
+.task-drawer :is(button, [tabindex]):focus-visible { outline: 2px solid #edd3a4; outline-offset: 2px; }
+
+.task-drawer.mobile-task-sheet {
+  --background: #242824;
+  --foreground: #f6efdf;
+  --card-foreground: var(--foreground);
+  --popover: #242824;
+  --popover-foreground: var(--foreground);
+  --primary: #e8d1aa;
+  --primary-foreground: #26251f;
+  --secondary: #363c35;
+  --secondary-foreground: var(--foreground);
+  --muted: #383e38;
+  --muted-foreground: #c3bfb0;
+  --destructive: #f0aaa1;
+  --border: #efe5cf30;
+  --input: var(--border);
+  --accent: #41473f;
+  --accent-foreground: var(--foreground);
+  color: var(--foreground);
+  background: linear-gradient(145deg, #2c302bf5, #1b211df5);
+  backdrop-filter: blur(16px);
+  border-color: var(--border);
+}
+.task-drawer .task-sheet-heading { border-bottom: 1px solid var(--border); text-align: left; }
+.task-drawer .task-sheet-heading [data-slot='dialog-description'] { color: var(--muted-foreground); }
+.task-drawer .task-sheet-close {
+  position: absolute;
+  right: 1rem;
+  width: 2.75rem;
+  height: 2.75rem;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--foreground);
+}
+.task-drawer .task-sheet-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.task-drawer .task-sheet-body .village-glass {
+  --primary: inherit;
+  --primary-foreground: inherit;
+  --foreground: inherit;
+  --card-foreground: inherit;
+  --muted: inherit;
+  --muted-foreground: inherit;
+  --border: inherit;
+  --destructive: inherit;
+  margin: 0;
+  padding: 1.125rem 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  backdrop-filter: none;
+  box-shadow: none;
+  color: var(--foreground);
+}
+.task-drawer .task-sheet-body .village-glass + .village-glass,
+.task-drawer .task-sheet-body .faq-card { border-top: 1px solid var(--border); }
+.task-drawer .task-sheet-body .village-glass [data-slot='card-header'],
+.task-drawer .task-sheet-body .village-glass [data-slot='card-content'] { padding-inline: 0.2rem; }
+.task-drawer .preparation-card [aria-current='step'] { border-color: #deca9940; background: #ddc9980c; }
+.task-drawer .preparation-card [data-state='completed'] [data-slot='item-media'] { background: #415347; color: #c6dfc3; }
+.task-drawer .task-sheet-body [role='log'] { background: #171d19; border-color: var(--border); color: var(--foreground); }
+.task-drawer [role='log'] .text-amber-700 { color: #f0cf93; }
+.task-drawer .task-sheet-session { color: var(--muted-foreground); font-size: 0.75rem; overflow-wrap: anywhere; }
+.task-drawer .task-sheet-session code { color: var(--foreground); }
+
+@media (min-width: 640px) {
+  .task-drawer.mobile-task-sheet {
+    inset: 0 0 0 auto;
+    translate: none;
+    display: flex;
+    flex-direction: column;
+    width: min(29rem, 90vw);
+    max-width: none;
+    height: 100dvh;
+    padding: 0;
+    gap: 0;
+    border-left: 1px solid var(--border);
+    border-radius: 0;
+    box-shadow: -1.5rem 0 4rem #0e110f47;
+  }
+  .task-drawer[data-state='open'] { animation: task-drawer-in 220ms ease-out; }
+  .task-drawer[data-state='closed'] { animation: task-drawer-out 160ms ease-in; }
+  .task-drawer .task-sheet-grip { display: none; }
+  .task-drawer .task-sheet-heading { padding: 1.5rem 4.5rem 1.25rem 1.5rem; gap: 0.5rem; }
+  .task-drawer .task-sheet-heading [data-slot='dialog-title'] { font-size: 1.25rem; font-weight: 700; }
+  .task-drawer .task-sheet-close { top: 1rem; }
+  .task-drawer .task-sheet-body { padding: 0.25rem 1.5rem 1.5rem; }
+  .task-drawer .task-sheet-session { margin: 0 0 1rem; }
+}
+@media (max-width: 639px) {
+  .task-sheet-toggle > svg:last-child { rotate: -90deg; }
+}
+@keyframes task-drawer-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
+@keyframes task-drawer-out { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) {
+  .task-drawer.mobile-task-sheet { animation: none; transition: none; }
+}

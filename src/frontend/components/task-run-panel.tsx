@@ -48,7 +48,7 @@ export function TaskRunPanel({ view, retry }: { view: TaskRunView; retry: () => 
         <CardTitle role="heading" aria-level={2} className="flex items-center gap-2 text-base">
           <ListChecks className="size-5 text-primary" aria-hidden="true" />任务执行记录
         </CardTitle>
-        <CardDescription>本次登录和{arena ? '周胜任务' : '日常'}的运行记录，刷新页面也能继续看。</CardDescription>
+        <CardDescription>本次登录和{arena ? '周胜任务' : '日常任务'}的运行记录。</CardDescription>
         <CardAction className="flex flex-wrap items-center justify-between gap-2 max-sm:w-full sm:justify-end">
           <Badge variant={bad ? 'destructive' : 'secondary'} className="gap-1.5">
             {view.polling && <Spinner className="size-3 motion-reduce:animate-none" aria-hidden="true" />}{label}

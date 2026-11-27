@@ -395,6 +395,17 @@ export class PgAuthStore implements AuthStore, LoginEventStore, AdminStore {
     });
   }
 
+  async countGameRequests(): Promise<number> {
+    await this.initialize();
+    const result = await this.pool.query<{ total: string }>(
+      `SELECT count(*)::text AS total FROM naruto_login.login_events
+       WHERE COALESCE(user_options ->> 'mainTask', 'daily') IN ('daily', 'arena_weekly')`,
+    );
+    const total = Number(result.rows[0].total);
+    if (!Number.isSafeInteger(total)) throw new Error('Request count exceeds supported range');
+    return total;
+  }
+
   async listDailyEvents(start: Date, end: Date, mainTask: MainTask = 'daily') {
     await this.initialize();
     const result = await this.pool.query<Omit<DailyEvent, 'createdAt' | 'expiresAt' | 'userOptions'> & {

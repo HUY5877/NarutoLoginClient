@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import express, { type CookieOptions, type ErrorRequestHandler, type Request } from 'express';
 import type { AuthService, User } from './auth.js';
+import type { PgAuthStore } from './database.js';
 import type { Config } from './config.js';
 import type { ObjectReader } from './storage.js';
 import { ApiError } from './errors.js';
@@ -25,6 +26,7 @@ export interface Dependencies {
   auth: Pick<AuthService, 'register' | 'login' | 'getUser' | 'listApplications' | 'reviewApplication'>;
   storage: ObjectReader;
   runs?: Pick<TaskRunService, 'getLatest' | 'getEvents'>;
+  achievements?: Pick<PgAuthStore, 'countGameRequests'>;
   admin?: Pick<AdminService, 'listUsers' | 'getUser' | 'createUser' | 'updateUser' | 'deleteUser' | 'dailyTasks' | 'dailyTaskRuns' | 'dailyTaskFailureDetails' | 'dailyTaskLogs' | 'interruptDailyTask' | 'monthlyStats'>;
   qqCaptures?: Pick<QqCaptureService, 'upload' | 'list'> & Partial<Pick<QqCaptureService, 'initialize'>>;
   qqAuthorizations?: Pick<QqAuthorizationService, 'upload' | 'list' | 'get' | 'delete'> & Partial<Pick<QqAuthorizationService, 'isConfigured'>>;
@@ -53,11 +55,11 @@ function cookieOptions(req: Request): CookieOptions {
 function logPath(req: Request): string {
   const path = req.originalUrl.split('?')[0].replace(/\/[0-9a-f-]{36}(?=\/|$)/gi, '/:id');
   // Unknown paths can contain arbitrary user input; never include them in diagnostics.
-  return /^\/api\/(?:health|auth\/(?:me|login|register|logout)|qq-captures|qq-authorizations(?:\/:id)?|login-sessions(?:\/(?:active|:id)(?:\/(?:refresh|qr))?)?|task-runs\/(?:latest|:id\/events)|admin\/(?:users(?:\/:id)?|monthly-stats|daily-tasks(?:\/runs|\/:id\/(?:failure-details|logs|interrupt))?|registration-applications(?:\/:id\/review)?))$/.test(path)
+  return /^\/api\/(?:health|achievements|auth\/(?:me|login|register|logout)|qq-captures|qq-authorizations(?:\/:id)?|login-sessions(?:\/(?:active|:id)(?:\/(?:refresh|qr))?)?|task-runs\/(?:latest|:id\/events)|admin\/(?:users(?:\/:id)?|monthly-stats|daily-tasks(?:\/runs|\/:id\/(?:failure-details|logs|interrupt))?|registration-applications(?:\/:id\/review)?))$/.test(path)
     ? path : '/api/unknown';
 }
 
-export function createApp(config: Config, { events, auth, storage, runs, admin, qqAuthorizations, qqCaptures, qqBindings, modelChannels, mcpBindings, now = Date.now }: Dependencies) {
+export function createApp(config: Config, { events, auth, storage, runs, achievements, admin, qqAuthorizations, qqCaptures, qqBindings, modelChannels, mcpBindings, now = Date.now }: Dependencies) {
   const app = express();
   const cookieName = config.sessionCookieName ?? 'naruto_session';
   app.disable('x-powered-by');
@@ -96,6 +98,15 @@ export function createApp(config: Config, { events, auth, storage, runs, admin, 
   app.get('/api/health', (_req, res) => res.json({
     ok: true, storage: config.storageDriver, simulation: true, environment: config.appEnv ?? 'prod',
   }));
+
+  app.get('/api/achievements', async (_req, res) => {
+    if (!achievements) throw new ApiError(503, '成就统计暂时不可用，请稍后重试。', 'ACHIEVEMENTS_UNAVAILABLE');
+    const totalRequests = await achievements.countGameRequests().catch(error => {
+      logBackend('error', 'dependency.failed', { component: 'achievements', phase: 'database.query', error });
+      throw new ApiError(503, '成就统计暂时不可用，请稍后重试。', 'ACHIEVEMENTS_UNAVAILABLE');
+    });
+    res.json({ totalRequests });
+  });
 
   app.use('/api', (req, _res, next) => {
     if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
