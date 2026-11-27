@@ -83,41 +83,47 @@ test('the public site achievement shows only task request totals', { skip: skip 
     };
   }
 
+  async function expectReading(f) {
+    await f.card.getByText('正在读取成就统计', { exact: true }).waitFor();
+    await f.card.locator('.site-achievement-placeholder').waitFor();
+    assert.equal(await f.total.count(), 0);
+  }
+
   await t.test('initial loading displays a placeholder before confirming a real zero', async t => {
     const f = await fixture(t);
     let finish;
     const response = new Promise(resolve => { finish = resolve; });
     f.respond(() => response);
     await Promise.all([f.page.waitForRequest(`${origin}/api/achievements`), f.open()]);
-    await f.card.getByText('正在读取成就统计').waitFor();
-    assert.equal(await f.total.count(), 0);
+    await expectReading(f);
     await f.focus();
     finish({ json: { totalRequests: 0 } });
     await f.total.filter({ hasText: /^0$/ }).waitFor();
     assert.deepEqual(f.calls, ['GET']);
   });
 
-  await t.test('invalid and failed responses cannot fabricate or replace a total', async t => {
+  await t.test('failed and invalid responses show the reading placeholder until a valid reply arrives', async t => {
     const f = await fixture(t);
-    f.respond(() => ({ status: 503, json: { error: 'unavailable' } }));
-    await f.open();
-    await f.card.getByText('成就统计暂不可用').waitFor();
-    assert.equal(await f.total.count(), 0);
-    f.respond(() => ({ json: { totalRequests: 12864 } }));
-    await f.focus();
-    await f.total.filter({ hasText: /^12,864$/ }).waitFor();
-    f.respond(() => ({ json: { totalRequests: -1 } }));
-    const invalidReply = f.page.waitForResponse(`${origin}/api/achievements`);
-    await f.focus();
-    await (await invalidReply).finished();
+    const url = `${origin}/api/achievements`;
+    const unavailable = { status: 503, json: { error: 'unavailable' } };
+    f.respond(() => unavailable);
+    const [initial] = await Promise.all([f.page.waitForResponse(url), f.open()]);
+    await initial.finished();
     await f.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    assert.equal(await f.total.innerText(), '12,864');
-    f.respond(() => ({ status: 503, json: { error: 'unavailable' } }));
-    const failedReply = f.page.waitForResponse(`${origin}/api/achievements`);
+    await expectReading(f);
+
+    for (const result of [{ json: { totalRequests: -1 } }, unavailable]) {
+      f.respond(() => ({ json: { totalRequests: 12864 } }));
+      await f.focus();
+      await f.total.filter({ hasText: /^12,864$/ }).waitFor();
+      f.respond(() => result);
+      const [reply] = await Promise.all([f.page.waitForResponse(url), f.focus()]);
+      await reply.finished();
+      await expectReading(f);
+    }
+    f.respond(() => ({ json: { totalRequests: 0 } }));
     await f.focus();
-    await (await failedReply).finished();
-    await f.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    assert.equal(await f.total.innerText(), '12,864');
+    await f.total.filter({ hasText: /^0$/ }).waitFor();
   });
 
   await t.test('refreshes on schedule while visible and recovers when visibility returns', async t => {
@@ -145,18 +151,21 @@ test('the public site achievement shows only task request totals', { skip: skip 
   await t.test('a stalled request times out and can be retried on focus', async t => {
     const f = await fixture(t);
     await f.page.clock.install();
+    await f.open();
+    await f.total.filter({ hasText: /^12,864$/ }).waitFor();
     let finish;
-    f.respond(() => new Promise(resolve => { finish = resolve; }));
-    try {
-      await Promise.all([f.open(), f.page.waitForRequest(`${origin}/api/achievements`)]);
-      await f.page.clock.fastForward(10_000);
-      await f.card.getByText('成就统计暂不可用').waitFor();
-      f.respond(() => ({ json: { totalRequests: 1 } }));
-      await f.focus();
-      await f.total.filter({ hasText: /^1$/ }).waitFor();
-    } finally {
-      finish?.({ json: { totalRequests: 999 } });
-    }
+    const pendingResponse = new Promise(resolve => { finish = resolve; });
+    f.respond(() => pendingResponse);
+    const [stalled] = await Promise.all([f.page.waitForRequest(`${origin}/api/achievements`), f.focus()]);
+    const timedOut = f.page.waitForEvent('requestfailed', request => request === stalled);
+    await f.page.clock.fastForward(10_000);
+    finish({ json: { totalRequests: 999 } });
+    await timedOut;
+    await expectReading(f);
+
+    f.respond(() => ({ json: { totalRequests: 1 } }));
+    await f.focus();
+    await f.total.filter({ hasText: /^1$/ }).waitFor();
   });
 
   await t.test('the home counter and Konan’s registration notice remain accessible at all screen sizes', async t => {
